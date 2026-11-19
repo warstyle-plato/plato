@@ -857,7 +857,7 @@ def _pdf_nonres_value(row: dict[str, Any]) -> str:
 # Метки PDF у разделов объектной вёрстки: свои — `object_<ключ>`, общие
 # с жилой — финансирование (кредит объекта и собственное участие),
 # чувствительность и календарь.
-_PDF_OBJECT_SHARED = {"finance": "financing", "sensitivity": "sensitivity",
+_PDF_OBJECT_SHARED = {"phases": "phases", "finance": "financing", "sensitivity": "sensitivity",
                       "calendar": "calendar"}
 
 
@@ -880,8 +880,12 @@ def _pdf_section_order(object_sections: dict[str, Any]) -> list[tuple[str, bool]
     order: list[tuple[str, bool]] = []
     for index, key in enumerate(object_sections):
         name = _PDF_OBJECT_SHARED.get(key, f"object_{key}")
-        order.append((name, index > 0 and key != "calendar"))
-        if key == "object":
+        if key == "expenses":
+            order.append(("expenses", False))
+        order.append((name, index > 0 and key not in ("calendar", "expenses")))
+        if key == "finance" and "summary" in object_sections:
+            order.append(("object_finance", False))
+        if key in ("object", "site"):
             order.append(("screening", False))
     return order + [("footer", False)]
 
@@ -909,15 +913,25 @@ def _object_pdf_sections(story: list[Any], sections: dict[str, Any], inputs: dic
                          KeepTogether: Any, Spacer: Any, mm: float, *,
                          sensitivity_done: bool,
                          entry_price: dict[str, Any] | None = None,
-                         strategy_compare: dict[str, Any] | None = None) -> None:
+                         strategy_compare: dict[str, Any] | None = None,
+                         chart_builders: dict[str, Any] | None = None) -> None:
     """Разделы объектной вёрстки в поток PDF — блоками движка, без пересчёта."""
     for key, section in sections.items():
-        if key in ("finance", "calendar") or (key == "sensitivity" and sensitivity_done):
+        if key in ("phases", "calendar") or (key == "sensitivity" and sensitivity_done):
             continue
-        story.append(_PdfSection(_PDF_OBJECT_SHARED.get(key, f"object_{key}")))
-        story.append(P(str(section.get("title") or ""), h2))
+        if key == "finance":
+            extra = [b for b in section.get("blocks") or [] if b.get("pdf_extra")]
+            if not extra:
+                continue
+            section = {**section, "blocks": extra}
+        if key == "expenses":
+            section = {**section, "blocks": [b for b in section.get("blocks") or []
+                                              if b.get("kind") != "expense_structure"]}
+        story.append(_PdfSection("object_finance" if key == "finance" else _PDF_OBJECT_SHARED.get(key, f"object_{key}")))
+        if key != "expenses":
+            story.append(P(str(section.get("title") or ""), h2))
         _object_pdf_blocks(story, section, inputs, P, table, small, KeepTogether, Spacer, mm,
-                           entry_price, strategy_compare)
+                           entry_price, strategy_compare, chart_builders)
 
 
 def _strategy_compare_pdf(story: list[Any], block: dict[str, Any], P: Any, table: Any, small: Any,
@@ -1104,19 +1118,30 @@ def _site_massing_scheme_pdf(scheme: dict[str, Any] | None, P: Any, small: Any,
     return out
 
 
-def _object_pdf_charts(block: dict[str, Any], width: float, P: Any, small: Any) -> list[Any]:
+def _object_pdf_charts(block: dict[str, Any], width: float, P: Any, small: Any, builders: dict[str, Any] | None = None) -> list[Any]:
     """Chart values are the exact same rows/fields as the report table."""
     from reportlab.graphics.shapes import Circle, Drawing, Line, PolyLine, Rect, String
     from reportlab.lib import colors
     from reportlab.platypus import KeepTogether
     regular, _ = _pdf_font_names()
     out = []
-    palette = [colors.HexColor("#2b6475"), colors.HexColor("#a76828")]
+    palette = [colors.HexColor("#202020"), colors.HexColor("#888888")]
     for chart in block.get("charts") or []:
         rows = chart.get("rows", block.get("years") or [])
         fields = chart.get("fields") or []
         multiplier = chart.get("multiplier", 1)
         heading = P(str(chart.get("title") or ""), small)
+        if builders and not chart.get("horizontal"):
+            if len(fields) == 1:
+                drawing = builders["sales"](rows, height=104, key=fields[0][0], factor=multiplier,
+                                             unit_label=chart.get("unit") or "", digits=1)
+            else:
+                drawing = builders["line"](rows, [{"key": f[0], "label": f[1],
+                    "factor": multiplier, "color": "#202020" if i == 0 else "#888888"}
+                    for i, f in enumerate(fields)], chart.get("unit") or "", height=104)
+            if drawing:
+                out.append(KeepTogether([heading, drawing]))
+            continue
         if chart.get("horizontal"):
             height = 20 * len(rows) + 8
             drawing = Drawing(width, height)
@@ -1170,11 +1195,25 @@ def _object_pdf_charts(block: dict[str, Any], width: float, P: Any, small: Any) 
 def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[str, Any],
                        P: Any, table: Any, small: Any, KeepTogether: Any, Spacer: Any,
                        mm: float, entry_price: dict[str, Any] | None = None,
-                       strategy_compare: dict[str, Any] | None = None) -> None:
+                       strategy_compare: dict[str, Any] | None = None,
+                       chart_builders: dict[str, Any] | None = None) -> None:
     """Блоки одного раздела объектной вёрстки — таблицами движка."""
     for block in section.get("blocks") or []:
         title = str(block.get("title") or "")
         ref = block.get("ref")
+        if block.get("kind") == "group":
+            if title:
+                story.append(P(title, small))
+            _object_pdf_blocks(story, {**section, "blocks": block.get("blocks") or []}, inputs,
+                P, table, small, KeepTogether, Spacer, mm, entry_price, strategy_compare, chart_builders)
+            continue
+        if block.get("kind") == "unit_economics" and block.get("items"):
+            rows = [["Показатель", "Всего", "На м² своей базы", "База", "тыс ₽/м² продаваемой"]]
+            rows += [[i.get("label") or "—", _pdf_money(i.get("total")),
+                      _pdf_unit_num(i.get("per_base_th"), 1), _pdf_unit_base(i),
+                      _pdf_unit_saleable(i, 1)] for i in block["items"]]
+            story.extend([P(title, small), table(rows, [40*mm, 32*mm, 24*mm, 50*mm, 24*mm], font_size=7.2)])
+            continue
         if block.get("kind") == "verdict" and section.get("verdict"):
             verdict = section["verdict"]
             story.append(table([["Вывод", str(verdict.get("title") or "")],
@@ -1237,7 +1276,7 @@ def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[s
             widths = [float(w) for w in block.get("widths") or []]
             if len(widths) != len(columns):
                 widths = [170 / max(1, len(columns))] * len(columns)
-            charts = _object_pdf_charts(block, 170*mm, P, small)
+            charts = _object_pdf_charts(block, 170*mm, P, small, chart_builders)
             heading = P(title, small)
             data_table = table(rows, [w*mm for w in widths], font_size=6.8)
             if block.get("kind") == "expense_structure" and charts:
@@ -2160,7 +2199,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         story.append(P(f"Отличается от базы класса «{_class_dev['label']}»: {_dev_text}.",
                        ParagraphStyle("class_dev",parent=small,fontSize=8.0,
                                       textColor=colors.HexColor("#a02418"))))
-    story.append(_PdfSection("expenses"));story.append(P("Структура расходов",h2))
+    story.append(_PdfSection("expenses"))
+    if "summary" in _object_sections:
+        story.extend([P("Расходы", h2), P("Структура расходов", small)])
+    else:
+        story.append(P("Структура расходов", h2))
     expense_chart=expense_bar_chart(expense_structure)
     if expense_chart:
         story.extend([expense_chart,Spacer(1,2*mm)])
@@ -2881,7 +2924,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     elif _object_sections:
         _cal_rows = [r for b in (_object_sections.get("calendar") or {}).get("blocks") or []
                      for r in b.get("rows") or []]
-        story.append(P("Календарь", h2))
+        story.append(P(str((_object_sections.get("calendar") or {}).get("title") or "Календарный план"), h2))
         story.append(P("Календаря объекта нет" + (
             f": {_cal_rows[0]['label']} — {_cal_rows[0]['value']}." if _cal_rows else
             " — расчёт объекта не построил ни одной вехи."), small))
@@ -2891,7 +2934,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                                  sensitivity and (sensitivity.get("items") or [])),
                              entry_price=payload.get("entry_price"),
                              strategy_compare=payload.get("strategy_compare")
-                             or (payload.get("result") or {}).get("strategy_compare"))
+                             or (payload.get("result") or {}).get("strategy_compare"),
+                             chart_builders={"sales": sales_bar_chart, "line": line_chart})
     story.append(_PdfSection("footer"))
     story.extend([Spacer(1,4*mm),P("Отчёт сформирован автоматически DevelopAid на основании текущих вводных модели. Перед инвестиционным решением требуется проверка исходных данных, юридических предпосылок и условий кредитования.",small)])
 
