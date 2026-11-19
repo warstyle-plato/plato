@@ -408,6 +408,11 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     counted = [r for r in records if not awaits_confirmation(r)]
     acts = act_dates.resolve(acts, counted)
     performed = acts_in_card.accumulated(counted, cut)
+    performed['excluded'].extend({
+        'number': r['act'].get('number'), 'date': r['act'].get('date'),
+        'sha256': r.get('sha256'), 'filename': r.get('filename'),
+        'reason': 'скан, значения не подтверждены'}
+        for r in records if awaits_confirmation(r) and r.get('act'))
     for record in records:
         notes = _scan_notes(record) if record.get("scan") else []
         if not record.get("contract"):

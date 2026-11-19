@@ -76,6 +76,33 @@ def test_new_archive_keeps_contracts_it_does_not_contain(stored):
     check_union(contracts.build(PROJECT, SECOND), first, second)
 
 
+def test_saved_archives_and_reupload_do_not_multiply_incomplete_works_or_headings(context):
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    wb = openpyxl.load_workbook(io.BytesIO(ks()))
+    sheet = wb.active
+    sheet['D9'] = None  # An explicitly numbered work with no unit stays unknown.
+    sheet.insert_rows(9)
+    sheet['B9'], sheet['C9'] = '1', 'Корпус 1'
+    sheet['G9'] = 0  # A source heading with an explicit zero cost is retained.
+    output = io.BytesIO()
+    wb.save(output)
+    payload = archive([('KS.xlsx', output.getvalue())])
+    days = [(TODAY - dt.timedelta(days=offset)).isoformat() for offset in (8, 4, 1, 0)]
+    projections = []
+    for index, day in enumerate(days):
+        ledgers.store_archive(PROJECT, payload, day, f'Загрузка {index}.zip')
+        row, = contracts.build(PROJECT, day)['rows']
+        projections.append(row['physical_items'])
+    assert [len(items) for items in projections] == [3, 3, 3, 3]
+    assert sum(item.get('is_group') is True for item in projections[-1]) == 1
+    assert all(len(item['history_sources']) == 4 for item in projections[-1])
+    work = next(item for item in projections[-1] if item['position'] == '1.1')
+    assert work['detail_history_state'] == 'unknown' and work['completed_amount'] is None
+    past, = contracts.build(PROJECT, days[0])['rows']
+    assert len(past['physical_items']) == 3
+    assert all(item['snapshot_date'] == days[0] for item in past['physical_items'])
+
+
 def test_latest_archive_only_is_not_accepted(stored, monkeypatch):
     first, second = stored
     monkeypatch.setattr(contracts, '_archives', lambda project, cut, cache=None: [contracts._archive(project, cut)])
