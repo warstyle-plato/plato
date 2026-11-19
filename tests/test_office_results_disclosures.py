@@ -211,3 +211,24 @@ def test_office_teaser_keeps_project_and_owner_irr_after_regrouping():
     text = '\n'.join(p.extract_text() for p in pages)
     assert 'IRR проекта' in text and 'IRR собственника' in text
     assert 'Удельная экономика' in pages[0].extract_text()
+
+
+def test_shared_pdf_line_renderer_gets_gaps_for_unknown_values():
+    from reportlab.graphics.shapes import Drawing
+    from reportlab.platypus import Paragraph
+    from reportlab.lib.styles import getSampleStyleSheet
+    captured = []
+    def line(rows, specs, unit, **kwargs):
+        captured.extend(specs)
+        for spec in specs:
+            assert spec['active'](rows[0])
+            assert not spec['active'](rows[1])
+            assert spec['active'](rows[2])
+        return Drawing(100, 100)
+    block = {'years': [{'month': '2027-01', 'sold': 0, 'left': 3},
+                       {'month': '2027-02', 'sold': None, 'left': None},
+                       {'month': '2027-03', 'sold': 3, 'left': 0}],
+             'charts': [{'title': 'План', 'unit': 'м²', 'fields': [['sold', 'Продано'], ['left', 'Остаток']]}]}
+    charts = core._object_pdf_charts(block, 400, Paragraph, getSampleStyleSheet()['BodyText'],
+                                    {'line': line})
+    assert charts and len(captured) == 2

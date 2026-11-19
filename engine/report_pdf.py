@@ -1137,7 +1137,8 @@ def _object_pdf_charts(block: dict[str, Any], width: float, P: Any, small: Any, 
                                              unit_label=chart.get("unit") or "", digits=1)
             else:
                 drawing = builders["line"](rows, [{"key": f[0], "label": f[1],
-                    "factor": multiplier, "color": "#202020" if i == 0 else "#888888"}
+                    "factor": multiplier, "color": "#202020" if i == 0 else "#888888",
+                    "active": lambda r, key=f[0]: r.get(key) is not None}
                     for i, f in enumerate(fields)], chart.get("unit") or "", height=104)
             if drawing:
                 out.append(KeepTogether([heading, drawing]))
