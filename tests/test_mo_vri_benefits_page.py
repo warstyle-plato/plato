@@ -57,7 +57,7 @@ def test_unfinished_row_and_a_changed_area_cannot_apply_a_stale_estimate(served)
         assert page.evaluate('inputs.land_rights_cost_mln') == 1000
 
 
-def test_two_successive_recalculations_keep_the_new_fee_in_both_model_and_form(served):
+def test_project_budget_edits_keep_the_ncs_fee_in_both_model_and_form(served):
     from playwright.sync_api import expect
     with full_page(served, 1440) as (page, requests, accesses):
         page.evaluate('''()=>{inputs.school_cost_mln_per_place=3;renderInputs()}''')
@@ -67,19 +67,20 @@ def test_two_successive_recalculations_keep_the_new_fee_in_both_model_and_form(s
         page.get_by_role('button', name='Добавить обязательство', exact=True).click()
         page.get_by_label('Нормативная потребность, мест', exact=True).fill('100')
         page.get_by_label('Проектная мощность, мест', exact=True).fill('125')
+        page.get_by_label('Тип объекта по НЦС', exact=True).select_option('03-03-001')
         page.locator('#moVriPreviewButton').click()
         expect(page.locator('#moVriApplyButton')).to_be_enabled()
         page.locator('#moVriApplyButton').click()
         page.wait_for_function('calcIdle()')
-        assert page.evaluate('inputs.land_rights_cost_mln') == 425
+        assert page.evaluate('inputs.land_rights_cost_mln') == 461.648
         page.evaluate('''async()=>{document.getElementById('f_school_cost_mln_per_place').value='4';await settledCalculate()}''')
-        assert page.evaluate('inputs.land_rights_cost_mln') == 400
-        expect(page.locator('#f_land_rights_cost_mln')).to_have_value('400')
+        assert page.evaluate('inputs.land_rights_cost_mln') == 461.648
+        expect(page.locator('#f_land_rights_cost_mln')).to_have_value('461.648')
         page.evaluate('async()=>{await settledCalculate()}')
-        assert page.evaluate('inputs.land_rights_cost_mln') == 400
+        assert page.evaluate('inputs.land_rights_cost_mln') == 461.648
 
 
-def test_project_cost_edit_invalidates_a_preview_and_hidden_manual_input_is_ignored(served):
+def test_project_cost_edit_keeps_the_ncs_preview_and_hidden_manual_input_is_ignored(served):
     from playwright.sync_api import expect
     with full_page(served, 1440) as (page, requests, accesses):
         page.locator('#moCompensation').fill('-1')
@@ -89,8 +90,38 @@ def test_project_cost_edit_invalidates_a_preview_and_hidden_manual_input_is_igno
         page.get_by_role('button', name='Добавить обязательство', exact=True).click()
         page.get_by_label('Нормативная потребность, мест', exact=True).fill('100')
         page.get_by_label('Проектная мощность, мест', exact=True).fill('125')
+        page.get_by_label('Тип объекта по НЦС', exact=True).select_option('03-03-001')
         page.locator('#moVriPreviewButton').click()
         expect(page.locator('#moVriApplyButton')).to_be_enabled()
         page.evaluate('()=>{inputs.school_cost_mln_per_place=4;renderMoVriRelief()}')
-        expect(page.locator('#moVriApplyButton')).to_be_disabled()
+        expect(page.locator('#moVriApplyButton')).to_be_enabled()
         assert page.evaluate('inputs.land_rights_cost_mln') == 1000
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_ncs_source_selection_and_saved_calculation_are_visible(served, width):
+    from playwright.sync_api import expect
+    with full_page(served, width) as (page, _, _):
+        page.locator('#moVriBenefitMode').select_option('calculated')
+        page.locator('#moVriGross').fill('500')
+        page.locator('#moVriBenefitKind').select_option('kindergarten')
+        page.get_by_role('button', name='Добавить обязательство', exact=True).click()
+        page.get_by_label('Нормативная потребность, мест', exact=True).fill('200')
+        page.get_by_label('Проектная мощность, мест', exact=True).fill('250')
+        page.locator('#moVriPreviewButton').click()
+        expect(page.locator('#moVriApplyButton')).to_be_disabled()
+        page.get_by_label('Тип объекта по НЦС', exact=True).select_option('03-01-001')
+        page.locator('#moVriPreviewButton').click()
+        expect(page.locator('#moVriApplyButton')).to_be_enabled()
+        expect(page.locator('#moVriBenefitBreakdown')).to_contain_text('НЦС 81-02-03-2026')
+        expect(page.locator('#moVriBenefitBreakdown')).to_contain_text('без НДС')
+        expect(page.get_by_role('link', name='НЦС-2026 — скан сборника')).to_have_attribute(
+            'href', 'https://k-css.ru/f/19032026_167_pr_sbornik_3.pdf')
+        page.locator('#moVriApplyButton').click()
+        page.wait_for_function('calcIdle()')
+        assert page.evaluate('inputs.mo_vri_benefits.result.total_rub') == 68_220_000
+        page.evaluate('''()=>{const snapshot=JSON.parse(JSON.stringify({inputs,tep,phasing,scenario:'base'}));
+            applyProjectSnapshot(snapshot);openTab('vri')}''')
+        expect(page.get_by_label('Тип объекта по НЦС', exact=True)).to_have_value('03-01-001')
+        expect(page.locator('#moVriBenefitBreakdown')).to_contain_text('03-01-001')
+        assert not page.evaluate('document.documentElement.scrollWidth>innerWidth+1')
