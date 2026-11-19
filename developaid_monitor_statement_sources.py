@@ -30,17 +30,36 @@ def _content(value):
 def _qualified_source(reference, ledger):
     source = reference.get('source') or {}
     return bool(ledger is not None and source.get('filename') and source.get('sheet')
+        and ledger.get('source_parse_state') in (None, 'current', 'refreshed')
         and source.get('snapshot_id') and _day(reference.get('source_date'))
         and re.fullmatch(r'[0-9a-f]{64}', str(source.get('file_sha256') or '')))
+
+
+def _proof_items(ledger):
+    """Index source cells for proof without changing persisted li:ii bindings."""
+    indexed = []
+    for item in ledger.get('items') or []:
+        source = item.get('source') or {}
+        sheet = source.get('sheet') or (ledger.get('source') or {}).get('sheet')
+        row = source.get('row')
+        if not isinstance(sheet, str) or not sheet or type(row) is not int or row < 1:
+            return None
+        indexed.append(((sheet, row), item))
+    if len(indexed) != len({key for key, _ in indexed}):
+        return None
+    return sorted(indexed, key=lambda value: value[0])
 
 
 def _family(reference, ledger):
     if not _qualified_source(reference, ledger) or reference.get('source_complete') is not True:
         return None
+    indexed = _proof_items(ledger)
+    if not indexed:
+        return None
     definition = {key: ledger.get(key) for key in
                   ('period_year', 'object_scope', 'system_scope', 'site_scope', 'scope_evidence')}
     definition['items'] = [{**{key: item.get(key) for key in _DEFINITION},
-        'source_row': (item.get('source') or {}).get('row')} for item in ledger.get('items') or []]
+        'source_row': source_row} for (_, source_row), item in indexed]
     return _digest([_content(definition), (reference.get('source') or {}).get('sheet'),
                     reference.get('planned_amount_basis'), reference.get('completed_amount_basis')])
 
@@ -51,7 +70,10 @@ def _covers(newer, older):
     New periods or zero placeholders filled later may extend a cumulative book.
     Missing periods, changed nonzero facts or ambiguous labels prove no coverage.
     """
-    for new, old in zip(newer.get('items') or [], older.get('items') or []):
+    new_items, old_items = _proof_items(newer), _proof_items(older)
+    if new_items is None or old_items is None or [key for key, _ in new_items] != [key for key, _ in old_items]:
+        return False
+    for (_, new), (_, old) in zip(new_items, old_items):
         periods = {}
         for period in new.get('periods') or []:
             key = (period.get('label'), period.get('date_start'), period.get('date_end'))
@@ -90,10 +112,14 @@ def unique_statement_sources(references, physical_sources):
         source = reference.get('source') or {}
         ledger = ledgers.get(_source(source))
         valid = _qualified_source(reference, ledger)
+        indexed = _proof_items(ledger) if ledger is not None else None
+        content = {key: ledger.get(key) for key in _CONTENT} if ledger is not None else {}
+        if indexed is not None:
+            content['items'] = [item for _, item in indexed]
         signature = _digest([
             {key: value for key, value in reference.items()
              if key not in {'source', 'source_date', 'label'}},
-            _content({key: ledger.get(key) for key in _CONTENT}), source['sheet'],
+            _content(content), source['sheet'],
         ]) if valid else None
         if signature is not None and signature in signatures:
             signatures[signature].setdefault('source_copies', []).append(copy.deepcopy(source))

@@ -797,7 +797,8 @@ def _qualify(snapshot: dict, cut: str) -> tuple[list[dict], list[dict], list[dic
     owners: dict[int, dict] = {}
     primary, unresolved = [], []
     for original in snapshot.get("ledgers") or []:
-        ledger = dict(original, kind="ledger", source_date=archive_day, archive_snapshot_id=identifier)
+        ledger = dict(original, kind="ledger", source_date=archive_day, archive_snapshot_id=identifier,
+                      source_parse_state=snapshot.get('source_parse_state'))
         missing = [label for field, label in (("customer", "заказчик"), ("contractor", "контрагент"),
                    ("contract", "номер договора"), ("contract_date", "действительная дата договора"))
                    if not (_date(ledger.get(field)) if field == "contract_date" else str(ledger.get(field) or "").strip())]
