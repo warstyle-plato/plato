@@ -154,7 +154,8 @@ def payments(path: Any, cut: dt.date) -> tuple[list[dict] | None, list[str]]:
     if path is None:
         return None, ["Реестр платежей РСС не загружен; оплаты по договорам не показаны."]
     try:
-        rows = actuals.read_payments(path, include_incomplete=True).get("rows") or []
+        rows = actuals.read_payments(path, include_incomplete=True,
+                                    include_contract_allocation=True).get("rows") or []
     except (KeyError, ValueError, OSError):
         return None, ["Реестр платежей в выбранном снимке РСС не прочитан; оплаты по договорам не показаны."]
     out, undated = [], 0
@@ -178,6 +179,19 @@ def payments(path: Any, cut: dt.date) -> tuple[list[dict] | None, list[str]]:
                     "advance_label": "аванс" in _norm(row.get("purpose")),
                     "source": {"label": "Реестр платежей РСС", "filename": Path(path).name,
                                "sheet": actuals._PAYMENTS_SHEET, "row": row.get("source_row")}})
+        allocation = row.get('contract_allocation')
+        if allocation is not None:
+            purpose = _norm(allocation.get('purpose'))
+            out.append({'contractor': allocation.get('contractor') or '',
+                        'contract': allocation.get('contract') or '',
+                        'contract_date': None, 'date': day, 'amount': amount,
+                        'advance_label': True if purpose == 'аванс' else
+                            False if purpose in {'выполнение', 'гу'} else None,
+                        'source': {'label': 'Распределение платежа по договору в РСС',
+                                   'kind': 'contract_allocation', 'filename': Path(path).name,
+                                   'sheet': actuals._PAYMENTS_SHEET, 'row': row.get('source_row'),
+                                   'cells': allocation['source_cells'],
+                                   'header_roles': allocation['header_roles']}})
     warnings = ([f"В реестре платежей {undated} строк без даты платежа; итог оплаты по подходящим договорам неизвестен."]
                 if undated else [])
     return out, warnings
@@ -193,6 +207,7 @@ def advance(row: dict, paid_rows: list[dict] | None, *, reference_key,
     result = {"paid": None, "paid_advance_labelled": None, "unworked": None, "payments_count": 0,
               "unworked_with_materials": None, "basis": "total",
               "confirmed_paid": None, "confirmed_paid_advance_labelled": None,
+              "allocation_recorded_total": None, "allocation_recorded_count": 0,
               "unmatched_candidates": 0, "unmatched_amount": None, "reason": "", "sources": []}
     if paid_rows is None:
         return dict(result, reason="Реестр платежей не прочитан.")
@@ -206,6 +221,13 @@ def advance(row: dict, paid_rows: list[dict] | None, *, reference_key,
     related = [(payment, payment_identity(payment, reference_key=reference_key))
                for payment in paid_rows]
     related = [(payment, key) for payment, key in related if compatible(key)]
+    # L/M observations are a second attribution level of the same cash row.
+    # They never enter a confirmed paid amount without the legal date.
+    allocations = [p for p, key in related if (p.get('source') or {}).get('kind') == 'contract_allocation'
+                   and all(key[:2]) and key[:2] == identity[:2]]
+    if allocations and all(p.get('amount') is not None and p.get('date') is not None for p in allocations):
+        result.update(allocation_recorded_total=math.fsum(p['amount'] for p in allocations),
+                      allocation_recorded_count=len(allocations))
     result["sources"] = [payment["source"] for payment, _ in related if payment.get("source")]
     if identity_counts is not None and identity_counts.get(identity, 0) != 1:
         return dict(result, unmatched_candidates=len(related),
