@@ -59,7 +59,7 @@ def test_partial_coverage_and_remaining_start_are_visible_next_to_the_measured_r
     result = rendered(c)
     assert 'Сверить с КС-6а' in result['brief']
     for html in (result['parts'],):
-        assert 'Сопоставлено работ по ГПР: 2 из 5.' in html
+        assert 'В расчёте 2 из 5 работ ГПР. Проценты относятся к этим работам.' in html
         assert 'Выполнение остальных работ не определено.' in html
         assert 'Расчёт с 01.02.2026.' in html
         assert 'Периоды КС до этой даты учтены отдельно: 7.' in html
@@ -77,5 +77,5 @@ def test_complete_known_scope_keeps_its_finish_visible():
     for html in (result['parts'],):
         assert '04.03.2026' in html
         assert 'Прогноз всего договора не определён' not in html
-        assert 'Сопоставлено работ по ГПР: 2 из 2.' in html
+        assert 'В расчёте 2 из 2 работ ГПР. Проценты относятся к этим работам.' in html
     assert result['unchanged']

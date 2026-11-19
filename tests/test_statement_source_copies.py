@@ -19,6 +19,70 @@ def save(day, name, content):
     return ledgers.store_archive(PROJECT, archive([(name, content)]), day)
 
 
+def versions():
+    sources, references = [], []
+    first = {'label': 'КС-2 № 1', 'quantity': 1, 'material_quantity': 0,
+             'amount': 100, 'work_amount': 100, 'material_amount': 0}
+    for index, day in enumerate((FIRST, SECOND), 1):
+        origin = {'filename': 'KS.xlsx', 'sheet': 'Работы', 'snapshot_id': day,
+                  'source_date': day, 'file_sha256': str(index)*64}
+        item = {'position': '1', 'name': 'Монтаж', 'unit': 'м2', 'plan_quantity': 10,
+                'planned_amount': 1000, 'completed_quantity': index, 'completed_amount': 100*index,
+                'source': {'row': 9}, 'periods': [copy.deepcopy(first)]}
+        if index == 2:
+            item['periods'].append(dict(first, label='КС-2 № 2'))
+        ledger = {'source': origin, 'archive_snapshot_id': day, 'source_date': day,
+                  'file_sha256': origin['file_sha256'], 'period_year': 2026, 'items': [item]}
+        sources.append((ledger, []))
+        references.append({'source': origin, 'source_date': day, 'source_complete': True,
+                           'planned': 1000, 'completed': 100*index})
+    return references, sources
+
+
+@pytest.mark.parametrize('field,value', [('file_sha256', None), ('snapshot_id', None),
+                                        ('source_date', None), ('source_date', 'not-a-date')])
+def test_a_covered_version_without_verified_provenance_is_not_hidden(field, value):
+    from developaid_monitor_statement_sources import unique_statement_sources
+    references, sources = versions()
+    references[0]['source'][field] = value
+    if field == 'source_date':
+        references[0]['source_date'] = value
+    sources[0][0][{'snapshot_id': 'archive_snapshot_id'}.get(field, field)] = value
+    assert len(unique_statement_sources(references, sources)) == 2
+
+
+@pytest.mark.parametrize('field', ['material_quantity', 'material_amount'])
+@pytest.mark.parametrize('value', [None, 1])
+def test_covered_nonzero_period_cannot_lose_or_change_a_known_zero_component(field, value):
+    from developaid_monitor_statement_sources import unique_statement_sources
+    references, sources = versions()
+    assert len(unique_statement_sources(references, sources)) == 1
+    sources[1][0]['items'][0]['periods'][0][field] = value
+    assert len(unique_statement_sources(references, sources)) == 2
+
+
+def test_statement_family_proof_is_per_call_and_does_not_modify_cached_observations():
+    from developaid_monitor_statement_sources import statement_family_map
+    from developaid_monitor_statement_union import _source
+    references, sources = versions()
+    for ledger, _ in sources:
+        ledger['source_complete'] = True
+    before = copy.deepcopy(sources)
+    families = statement_family_map(sources)
+    assert families[_source(references[0]['source'])] == families[_source(references[1]['source'])]
+    assert sources == before
+    assert statement_family_map(sources[:1]) == {}
+
+
+def test_simultaneous_different_observations_do_not_get_a_shared_statement_family():
+    from developaid_monitor_statement_sources import statement_family_map
+    _, sources = versions()
+    for ledger, _ in sources:
+        ledger.update(source_complete=True, source_date=SECOND)
+        ledger['source']['source_date'] = SECOND
+    assert statement_family_map(sources) == {}
+
+
 @pytest.mark.parametrize('undated', [False, True])
 def test_three_identical_archives_have_one_current_statement_and_unchanged_imports(context, undated):
     context.setattr(contracts, '_archive', ARCHIVE_READER)
@@ -79,6 +143,51 @@ def test_union_accepts_projected_rows_bound_to_an_older_identical_copy(context):
     result = statement_union(row)
     assert result['state'] == 'known' and result['source_count'] == 1
     assert result['completed'] == 400 and result['planned'] == 1020
+
+
+def test_new_cumulative_book_keeps_covered_previous_edition_in_history_not_current_sources(context):
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    save(FIRST, 'KS.xlsx', ks(period='jan'))
+    save(MIDDLE, 'KS.xlsx', ks())
+    save(SECOND, 'Renamed.xlsx', ks())
+    row, = contracts.build(PROJECT, SECOND, include_history=False)['rows']
+    reference, = row['reported_performance_sources']
+    assert row['performance_source_count'] == 1 and reference['completed'] == 400
+    previous, = reference['source_versions']
+    assert previous['completed'] == 200 and previous['source_date'] == FIRST
+    assert len(reference['source_copies']) == 1
+    assert all(source['source_date'] != FIRST for source in reference['source_copies'])
+    assert row['completed'] == 400 and len(row['physical_items'][0]['history_sources']) == 3
+
+
+def test_incremental_period_is_not_mistaken_for_a_complete_replacement(context):
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    save(FIRST, 'KS.xlsx', ks(period='jan'))
+    save(SECOND, 'KS.xlsx', ks(period='feb'))
+    row, = contracts.build(PROJECT, SECOND, include_history=False)['rows']
+    assert len(row['reported_performance_sources']) == 2
+    assert row['completed'] == 400
+    assert not any(source.get('source_versions') for source in row['reported_performance_sources'])
+
+
+def test_renamed_proven_copies_keep_named_periods_readable_for_summary_dates(context):
+    import developaid_contract_fact as fact
+    import developaid_contract_act_dates as dates
+    context.setattr(contracts, '_archive', ARCHIVE_READER)
+    content = book(split=True)
+    save(FIRST, 'Original.xlsx', content)
+    save(MIDDLE, 'Renamed.xlsx', content)
+    save(SECOND, 'Current.xlsx', content)
+    row, = contracts.build(PROJECT, SECOND, include_history=False)['rows']
+    found = fact.acts(row)
+    work = next(work for work in found['unread'] if work['number'] == '1.1')
+    assert work['reported_quantity'] == 4
+    assert len(work['periods']) == 1
+    found['summary_acts'] = [{'number': '1', 'date': FIRST, 'amount': 700}]
+    resolved = dates.resolve(found, [])
+    assert not resolved['unread'] and any(period.get('quantity') == 4 for period in resolved['acts'])
+    earlier, = contracts.build(PROJECT, FIRST, include_history=False)['rows']
+    assert len(earlier['physical_items'][0].get('history_sources') or []) <= 1
 
 
 @pytest.mark.parametrize('width', [390, 1440])

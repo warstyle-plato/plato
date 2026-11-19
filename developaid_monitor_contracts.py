@@ -1087,7 +1087,9 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
         detail_history = None
         if len({ledger.get('archive_snapshot_id') for ledger, _ in physical_sources}) > 1:
             from developaid_contract_detail_history import compose
-            detail_history = compose(physical_sources, cut)
+            from developaid_monitor_statement_sources import statement_family_map
+            detail_history = compose(physical_sources, cut,
+                                     statement_families=statement_family_map(physical_sources))
             physical = detail_history['items']
             row_warnings.extend(detail_history['warnings'])
         money_parts: dict = {}

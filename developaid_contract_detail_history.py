@@ -230,7 +230,8 @@ def _undated_history(records):
     buckets, unmatched, problems, families = {}, [], [], {}
     for record in records:
         view, provenance = record['view'], record['provenance']
-        family = _place(view)[:2]
+        family = (('proved_statement', record['statement_family']) if record.get('statement_family')
+                  else _place(view)[:2])
         for original in view.get('undated_periods') or []:
             if not _nonempty_period(original):
                 continue
@@ -556,7 +557,7 @@ def _compatible_scope(left, right):
 
 
 @stage_profile.stage('detail_history')
-def compose(sources, cut):
+def compose(sources, cut, *, statement_families=None):
     """Compose one contract's detail history without mutating any input.
 
     ``history_sources`` stores full input views with archive/file provenance.
@@ -575,6 +576,9 @@ def compose(sources, cut):
             warnings.append('Накопительный источник позже даты среза не включён в историю.')
             continue
         for record in _records(ledger, views):
+            if statement_families:
+                from developaid_monitor_statement_union import _source as source_key
+                record['statement_family'] = statement_families.get(source_key(record['provenance']['source']))
             identity, valid = record['identity']
             key = identity if valid else _incomplete_identity(record)
             observations.append((key, record))

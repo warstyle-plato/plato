@@ -85,6 +85,7 @@ def acts(row: dict | None) -> dict | None:
                            "reported_quantity": item.get("reported_completed_quantity"),
                            "periods": [{"label": p.get("label") or "", "quantity": p.get("quantity"),
                                         "material_quantity": p.get('material_quantity'),
+                                        "amount_split": p.get('amount_split') is True,
                                         "work_amount": p.get('work_amount'), "material_amount": p.get('material_amount'),
                                         "amount": p.get("amount"), "start": p.get("date_start"),
                                         "end": p.get("date_end"), "source": p.get("source") or {}}
@@ -310,6 +311,17 @@ def _period_act(label):
     return contract_acts.edition({'number': match[1]}) if match else None
 
 
+def _proved_zero_work(work):
+    """A separate zero work component is proof; missing quantity is not zero."""
+    periods = work.get('periods') or []
+    return bool(periods) and work.get('reported_quantity') == 0 and all(
+        period.get('quantity') in (None, 0)
+        and (period.get('amount_split') is True and period.get('work_amount') == 0 or
+             period.get('quantity') == 0 and not any(period.get(field) for field in
+                 ('amount', 'material_quantity', 'work_amount', 'material_amount')))
+        for period in periods)
+
+
 def confirmation(performed: dict | None, found: dict | None, cut: str, reconciliation=None) -> dict:
     """Document confirmation is separate from the completeness of KS-6a facts."""
     if found is None or found.get('problem'):
@@ -533,6 +545,43 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
             else row["act_amount"] + act["act_amount"]
         row["periods"] += 1
         row["last"] = max(row["last"], act["end"])
+    # A missing dated row is not zero when that very position has unread KS-6a.
+    # Resolve uncertainty by the same strict position and link rules as fact;
+    # never assign an unread position by its caption alone.
+    uncertain = {}
+    for work in result['unread']:
+        matched = match(work, current['estimates'])
+        if isinstance(matched, str):
+            continue
+        e, i, _ = matched
+        position = current['estimates'][e]['positions'][i]
+        key = links.position_key(position)
+        link = links_now.get(key)
+        if not link or link['status'] not in _LINKED:
+            continue
+        zero_work = _proved_zero_work(work)
+        for target in link['lines']:
+            if not target['share']:
+                continue
+            code = target['code']
+            item = uncertain.setdefault(code, {'quantity_incomplete': False, 'reasons': []})
+            reason = work.get('reason') or 'В КС-6а не подтверждены даты или объёмы выполнения.'
+            if reason not in item['reasons']:
+                item['reasons'].append(reason)
+            item['quantity_incomplete'] |= not zero_work
+            lines[code] = None
+            if not zero_work:
+                unknown_work.add(code)
+                observed = position_facts.setdefault(code, {}).setdefault(key,
+                    {'key': key, 'quantity': 0.0, 'last': None, 'sources': []})
+                observed['known_quantity'] = observed.get('known_quantity', observed['quantity'])
+                observed['quantity'] = None
+            if position.get('amount', {}).get('material') != 0:
+                unknown_material.add(code)
+    if uncertain:
+        result['known_total'] = result.get('known_total', result['total'])
+        result['total'] = None
+        result['quantity_incomplete'] = any(item['quantity_incomplete'] for item in uncertain.values())
     order = [line["code"] for line in links.leaves(current.get("schedule"))]
     # Every work of the statement, done or not yet, belongs to its position of the edition in force.
     items_of = {}
@@ -561,7 +610,8 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
                         'work_fact': None if code in unknown_work else work_money.get(code, 0.0),
                         'material_fact': None if code in unknown_material else material_money.get(code, 0.0),
                         'material_volumes': list(material_volumes.get(code, {}).values()),
-                        "last": last.get(code), "complete": complete(code)}
+                        "last": last.get(code), "complete": complete(code) and not uncertain.get(code, {}).get('quantity_incomplete'),
+                        **uncertain.get(code, {})}
                        for code in order if code in lines]
     result['component_gaps'] = list(dict.fromkeys(result['component_gaps']))
     result["positions"] = list(positions.values())
@@ -576,6 +626,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         for end in _month_ends(first, day):
             relevant = [m for d, m in dated_money if d <= end]
             total = _sum_money(relevant)
-            result['months'].append({'month': end.isoformat()[:7], 'fact': total,
-                **({'known_fact': sum(m for d, m in dated_known_money if d <= end)} if total is None else {})})
+            result['months'].append({'month': end.isoformat()[:7], 'fact': None if uncertain else total,
+                **({'known_fact': sum(m for d, m in dated_known_money if d <= end)}
+                   if total is None or uncertain else {})})
     return result

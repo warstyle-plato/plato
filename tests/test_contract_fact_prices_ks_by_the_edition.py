@@ -75,7 +75,9 @@ REGISTER_ROW = {**ROW, "physical_items": [
     _item("2.1", "Устройство лестниц", (0.5, 1000, "2026-02-01", "2026-02-03")),
     _item("1.2", "Устройство плит перекрытия", (2, 1000, "2026-02-01", "2026-02-03"), unit="т"),
     _item("9.9", "Кладка перегородок", (1, 500, "2026-02-01", "2026-02-03")),
-    {**_item("1.2", "Устройство плит перекрытия"), "completed_quantity": None,
+    # A foreign unread work must not change pricing of the known linked works.
+    # The matching-unread variant is covered by test_contract_ks6a_unknown_execution.
+    {**_item("8.8", "Неопределённая дополнительная работа"), "completed_quantity": None,
      "quantity_basis": "Есть выполнение без даты периода; итог на дату среза не определён."},
 ]}
 
@@ -115,7 +117,7 @@ def test_the_fact_of_the_card_is_priced_by_the_estimate_and_laid_on_confirmed_li
         ("1.2", "В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём не пересчитать в деньги."),
         ("9.9", "В расчёте нет позиции с этим номером или с таким же названием и единицей (№ 9.9).")]
     assert [(u["number"], u["reason"]) for u in got["unread"]] == [
-        ("1.2", "Есть выполнение без даты периода; итог на дату среза не определён.")]
+        ("8.8", "Есть выполнение без даты периода; итог на дату среза не определён.")]
     # В КС за 01–03.02 записано 4 100 ₽, а по цене расчёта — 4 000 ₽.
     assert got["price_differs"] == 1
     walls = [r for r in got["positions"] if r["number"] == "1.1"]

@@ -28,6 +28,8 @@ def _building_section(headings):
 
 
 def _row(line, volume, *, unknown=False, reason=''):
+    unknown = unknown or line.get('state') == 'unknown'
+    reason = reason or line.get('reason') or ''
     natural = volume is not None
     split = 'work_amount' in line
     share = line.get('plan_share')

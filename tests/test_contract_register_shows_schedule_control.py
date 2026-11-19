@@ -115,7 +115,7 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         # The same native result is presented once, in the modal work table.
         more = opened(page, CONTRACT)
         expect(more.locator('#contractCardSummary')).to_contain_text('55 %')
-        expect(more.locator('#contractCardSummary')).to_contain_text('Готовность сопоставленных работ: 50 %')
+        expect(more.locator('#contractCardSummary')).to_contain_text('Готовность к полному объёму работ: 50 %')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('06.02.2026')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Не определён')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Оценка сопоставленных работ')

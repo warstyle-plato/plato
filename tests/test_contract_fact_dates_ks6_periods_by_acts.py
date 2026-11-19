@@ -246,7 +246,8 @@ def test_the_card_shows_the_dates_of_the_acts_and_the_missing_one_in_red(card):
     walls = _work("1.1", "Устройство стен", _period("КС-2 № 2", 0.5, 4000.0))
     floors = _work("1.2", "Устройство плит перекрытия", _period("КС-2 № 3", 0.25, 2000.0))
     listed = files.listing("Учебный", CONTRACT, "2026-02-04", fact.acts(_row(walls, floors)))
-    assert listed["fact"]["note"] == "" and listed["fact"]["total"] == 4000.0
+    assert listed["fact"]["note"] == "" and listed["fact"]["total"] is None
+    assert listed['fact']['known_total'] == 4000.0
     with browser_page(1440) as (page, _, errors):
         _serve(page, listed, [])
         _open(page)

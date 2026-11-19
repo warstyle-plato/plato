@@ -155,6 +155,6 @@ def test_the_card_shows_the_ks6a_fact_and_the_ks2_reconciliation(card, width):  
         expect(first.nth(4)).to_have_text("объём разный")
         assert first.nth(3).get_attribute("data-label") == "По КС-6а"
         expect(page.locator("#contractCardSummary")).to_contain_text("55 %")
-        expect(page.locator("#contractCardSummary")).to_contain_text("Готовность сопоставленных работ: 50 %")
+        expect(page.locator("#contractCardSummary")).to_contain_text("Готовность к полному объёму работ: 50 %")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []
