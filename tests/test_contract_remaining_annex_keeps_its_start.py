@@ -79,7 +79,8 @@ def test_ks_volume_between_remaining_editions_still_counts_after_the_later_agree
     performed = {'positions': [{'number': '1', 'name': 'Стены', 'unit': 'м3', 'parts': [
         {'quantity': 5, 'amount': 500, 'day': '2026-03-15', 'act': '1', 'name': 'Стены',
          'preliminary': False}]}]}
-    result = fact.build(editions, planned['in_force'], None, '2026-04-15', performed)
+    statement = {'acts': fact.from_acts(performed), 'unread': [], 'works': 1, 'items': []}
+    result = fact.build(editions, planned['in_force'], statement, '2026-04-15', performed)
     assert result['total'] == 500
     assert result['lines'][0]['volumes'] == [{'unit': 'м3', 'quantity': 5}]
     assert result['before']['start'] == '2026-02-01' and result['before']['count'] == 0
@@ -94,4 +95,4 @@ def test_missing_acts_are_explicit_dated_summary_entries_with_full_numbers():
                               {'number': '5', 'date': '2026-05-01'},
                               {'number': '9', 'date': '2026-12-01'},
                               {'number': '7', 'date': None}]}
-    assert fact._missing_acts(performed, found, '2026-06-01') == ['1', '1/2025', '5']
+    assert fact.confirmation(performed, found, '2026-06-01')['missing_acts'] == ['1', '1/2025', '5']

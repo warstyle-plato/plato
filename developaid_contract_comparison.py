@@ -65,6 +65,7 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
               'plan_assumption': listed['plan'].get('assumption') or '',
               'plan_editions': [{key:e.get(key) for key in ('title','date','until','in_force','total','note')} for e in listed['plan'].get('editions') or []],
               'data_gaps': canonical.get('data_gaps') or [],
+              'confirmation': canonical.get('confirmation'),
               'left_out': canonical.get('left_out'), 'preliminary': canonical.get('preliminary',False),
               'schedule_source': canonical.get('schedule_source'),
               'assumption': canonical.get('assumption') or '', 'weights': canonical.get('weights') or ''}

@@ -110,7 +110,7 @@ def test_materials_are_visible_separately_with_their_own_quantity_and_cost(sourc
         page.locator('#contractsTab').click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
         materials = page.locator('#contractMaterials')
-        expect(materials).to_contain_text('Материалы по КС — отдельно от выполнения работ')
+        expect(materials).to_contain_text('Материалы по КС-6а — отдельно от выполнения работ')
         materials.locator('summary').click()
         expect(materials.locator('tbody tr')).to_have_count(1)
         expect(materials.locator('tbody td').nth(2)).to_have_text('5')

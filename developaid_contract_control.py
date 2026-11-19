@@ -1,7 +1,7 @@
 """Plan and fact of the contract's works in natural volumes, three percentages, lag, overdue and forecast.
 
 The plan is the edition in force on the cut (`developaid_contract_plan`), the
-fact is the acts КС-2 (or the KS-6a) priced by the estimate
+fact is the KS-6a priced by the estimate; КС-2 supplies confirmation and reconciliation
 (`developaid_contract_fact`); both lie on the same ГПР lines. Methodology of
 12.11.2026 (docs/contract_schedule_control.md):
 
@@ -169,6 +169,7 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
     result = {"cut": cut, "assumption": ASSUMPTION, "weights": WEIGHTS, "note": "", "total": None, "lines": [],
               "behind": [], "ahead": [], "done": [], "overdue": [], "forecast": None, "left_out": _left_out(fact),
               "source": fact.get("source"), "source_note": fact.get("source_note") or "",
+              "confirmation": fact.get("confirmation"),
               "preliminary": bool(fact.get("preliminary")), "data_gaps": _data_gaps(fact)}
     current = next((e for e in planned.get("editions") or [] if e.get("in_force")), None)
     if current is None:
@@ -300,9 +301,6 @@ def _left_out(fact):
 def _data_gaps(fact):
     gaps = ([f'Позиций КС с неподтверждённым разделением работ и материалов: {len(fact["component_gaps"])}.']
             if fact.get('component_gaps') else [])
-    if fact.get('missing_acts'):
-        gaps.append('В карточке нет актов КС-2 № ' + ', '.join(fact['missing_acts']) +
-                    ', которые указаны в сводной. Их выполнение в расчёт не вошло.')
     if fact.get('unread'):
         gaps.append(f'Работ КС-6а без подтверждённой истории выполнения: {len(fact["unread"])}.')
     outside = sum(v.get('count', 0) for v in (fact.get('outside') or {}).values())

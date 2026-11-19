@@ -527,7 +527,7 @@ def _day(text: str) -> str | None:
 
 
 def _fact(editions, in_force, acts, cut, performed):
-    """The fact on `cut`: the acts КС-2 of the card, else the KS-6a with the dates the acts gave its periods."""
+    """KS-6a fact on `cut`, with dates and confirmation supplied by the КС-2."""
     return {**fact.build(editions, in_force, acts, cut, performed),
             "act_dates": (acts or {}).get("act_dates") or []}
 
@@ -624,6 +624,7 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
                                          "readiness", "plan_share", "plan_done", "overdue_days", "overdue_works",
                                          "auto", "incomplete")},
             "source": found.get("source"), "preliminary": bool(found.get("preliminary")),
+            "confirmation": found.get("confirmation"),
             "left_out": found["left_out"],
             "coverage": found.get("coverage"),
             "data_gaps": found["data_gaps"],

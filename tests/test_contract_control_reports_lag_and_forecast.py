@@ -191,7 +191,7 @@ def test_the_register_deadline_is_the_limit_and_a_ks_without_work_yet_is_a_zero_
     got = files.listing("Учебный", CONTRACT, "2026-02-04", fact.acts(idle))
     assert got["fact"]["note"] == "" and got["fact"]["total"] == 0.0
     empty = files.listing("Учебный", CONTRACT, "2026-02-04", fact.acts({**ROW, "physical_items": []}))
-    assert empty["fact"]["note"].startswith("Актов КС-2 в карточке нет, а в накопительной КС-6а этого договора нет выполнения")
+    assert empty["fact"]["note"] == "В накопительной КС-6а нет позиций работ для расчёта выполнения."
 
 
 FINISHED_ROW = {**ROW, "physical_items": [

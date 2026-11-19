@@ -1239,6 +1239,8 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                 "period_dates_known": bool(ledger.get("period_dates_known")),
                 "future_periods_excluded": future_excluded,
                 "label": "Сумма сохранённых итогов позиций этой ведомости; справочно, период закрытия не установлен"})
+        from developaid_monitor_statement_sources import unique_statement_sources
+        references = unique_statement_sources(references, physical_sources)
         physical = physical_sections(physical)
         summary_only = not any(ledger.get('kind') == 'ledger' for ledger in ledger_items)
         row = {"id": identifier, "contractor": str(first.get("contractor") or ""),
@@ -1278,7 +1280,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                "scope": sorted({str(item.get("scope") or "") for item in physical if item.get("scope")}),
                "performance_basis": ('Денежное закрытие по КС-2 из сводной; не физическая готовность и не объёмы КС-6а'
                    if summary_only else "Денежное выполнение только по загруженным накопительным и завершённым датированным периодам; не оплата и не физическая готовность"),
-               "performance_source_count": len(physical_sources), "reported_performance_sources": references}
+               "performance_source_count": len(references), "reported_performance_sources": references}
         if summary_items:
             latest_summary = max(summary_items, key=lambda item: str(item.get('source_date') or ''))
             row['summary_source_date'] = latest_summary.get('source_date')
@@ -1322,12 +1324,13 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                 row['statement_progress'] = {'state': 'unknown', 'ratio': None,
                     'why': 'В истории КС есть неполные или противоречивые наблюдения. Общий процент не выбран автоматически.'}
             elif detail_history is not None:
-                # Raw references stay visible. The numeric union qualifies
-                # only the base sources of the projected work-year rows.
+                # Qualify the base sources of projected rows, including older
+                # immutable bindings represented by one identical statement.
                 from developaid_monitor_statement_union import _source as source_key
+                from developaid_monitor_statement_sources import statement_source_keys
                 active = {source_key(item.get('source')) for item in physical}
                 row['statement_progress'] = statement_union(dict(row,
-                    reported_performance_sources=[ref for ref in references if source_key(ref.get('source')) in active]))
+                    reported_performance_sources=[ref for ref in references if statement_source_keys(ref) & active]))
             else:
                 row["statement_progress"] = statement_union(row)
         row["risk"] = contract_risk.forecast(

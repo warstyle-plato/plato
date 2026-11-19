@@ -1,13 +1,10 @@
 """Accumulated fact of a contract: KS quantities priced by the Расчёт and laid on the ГПР lines.
 
-The fact is read from the positions of the acts КС-2 of the card, accumulated
-from the start of the construction (`developaid_contract_acts.accumulated`);
-the cumulative KS-6a is then a control reconciliation beside it. A card without
-acts КС-2 takes the fact from the KS-6a, and says so (owner's decision 1А of
-12.11.2026).
+The cumulative KS-6a supplies the quantities of the fact. Uploaded acts КС-2
+confirm and reconcile those quantities; adding or removing an act never
+replaces the statement's quantities (owner's instruction of 19.11.2026).
 
-A fact row is one act КС-2 position or one dated period of one work of the
-cumulative KS-6a. It belongs
+A fact row is one dated period of one work of the cumulative KS-6a. It belongs
 to the edition of the plan in force on the last day of its period, and its money
 is the quantity × the unit price of that edition's «Расчёт» (owner's decision
 4А), not the sum written in the KS. The row finds its position by number, or by
@@ -25,8 +22,7 @@ work was accepted before the agreement and is shown beside the plan, not in it.
 With the KS-6a as the fact, a line is complete by volume (owner's decision А)
 when every position linked to it has KS-6a works and each of them reached its
 full volume of the statement by the cut; the money of a complete line may stay
-below its cost in the estimate. With the acts КС-2 the line is complete when its
-natural fact reaches its volume in the estimate (`developaid_contract_control`).
+below its cost in the estimate. КС-2 never replaces that source volume.
 The last day of the line is the end of its last KS period up to the cut.
 """
 from __future__ import annotations
@@ -45,7 +41,7 @@ ASSUMPTION = ("Работы периода КС относятся к редак
               "Деньги факта — объём КС × цена за единицу этой редакции, а не сумма, записанная в КС.")
 _STATUSES = ("review", "extra", "missing")
 _LINKED = ("confirmed", "proposed")
-FROM_KS6A = "Актов КС-2 в карточке нет: факт взят из накопительной КС-6а."
+FROM_KS6A = "Выполнение рассчитано по накопительной КС-6а. Акты КС-2 используются для сверки и подтверждения."
 
 
 def _day(iso):
@@ -291,7 +287,7 @@ def _month_ends(first: dt.date, last: dt.date):
 
 
 def from_acts(performed: dict | None) -> list[dict]:
-    """Fact rows of the acts КС-2 in force up to the cut: one row per act and position of the estimate."""
+    """КС-2 rows for reconciliation: one row per act and position of the estimate."""
     rows = []
     for position in (performed or {}).get("positions") or []:
         for part in position["parts"]:
@@ -308,17 +304,43 @@ def from_acts(performed: dict | None) -> list[dict]:
     return rows
 
 
-def _missing_acts(performed: dict | None, found: dict | None, cut: str) -> list[str]:
-    """Only acts explicitly observed by this contract's dated summary can be missing.
+def _period_act(label):
+    match = re.fullmatch(r'\s*(?:(?:акт\s+)?КС\s*-?\s*2|акт)?\s*№\s*(\d+(?:\s*[/.-]\s*\d+)*)\s*',
+                         str(label or ''), re.I)
+    return contract_acts.edition({'number': match[1]}) if match else None
 
-    Do not infer gaps from consecutive numbering or combine their volumes with
-    uploaded acts. Full normalized numbers keep different years distinct.
-    """
-    present = {contract_acts.edition(a) for a in (performed or {}).get('acts') or []}
-    expected = {contract_acts.edition(a) for a in (found or {}).get('summary_acts') or []
-                if a.get('date') and a['date'] <= cut}
-    return sorted((n for n in expected-present if n is not None),
-                  key=lambda n: (tuple(map(int, re.findall(r'\d+', n))), n))
+
+def confirmation(performed: dict | None, found: dict | None, cut: str, reconciliation=None) -> dict:
+    """Document confirmation is separate from the completeness of KS-6a facts."""
+    if found is None or found.get('problem'):
+        return {'state': 'no_statement', 'missing_acts': [], 'upload_required': False, 'message': ''}
+    expected = {contract_acts.edition(act) for act in found.get('summary_acts') or []
+                if act.get('date') and act['date'] <= cut}
+    periods = [*(found.get('acts') or []),
+               *(period for work in found.get('unread') or [] for period in work.get('periods') or [])]
+    expected.update(_period_act(period.get('label')) for period in periods
+                    if (not period.get('end') or period['end'] <= cut)
+                    and any(period.get(field) for field in ('quantity', 'material_quantity', 'quantity_material',
+                                                          'amount', 'act_amount')))
+    expected.discard(None)
+    present = {contract_acts.edition(act) for act in [*(performed or {}).get('acts', []),
+                                                    *(performed or {}).get('excluded', [])]
+               if not act.get('day') or act['day'] <= cut}
+    present.discard(None)
+    missing = sorted(expected-present, key=lambda n: (tuple(map(int, re.findall(r'\d+', n))), n))
+    upload = bool(missing or not present)
+    issues = [message for act in found.get('act_dates') or [] for message in act.get('warnings') or []]
+    differs = bool(issues or reconciliation and (reconciliation['differs'] or reconciliation['only_ks2']
+                                                 or reconciliation['only_ks6a']))
+    verified = bool(reconciliation and not differs and not found.get('unread')
+                    and not (performed or {}).get('excluded'))
+    message = ('Загрузите КС-2' + (' № ' + ', '.join(missing) if missing else '') + ' для подтверждения.'
+               if upload else 'КС-2 и КС-6а расходятся: проверьте сверку.' if differs else
+               'Объёмы работ по КС-6а совпадают с КС-2.' if verified else
+               'КС-2 загружены; для подтверждения проверьте даты и позиции актов.')
+    return {'state': 'pending' if upload else 'differs' if differs else 'confirmed' if verified else 'review',
+            'expected_acts': sorted(expected), 'missing_acts': missing,
+            'upload_required': upload, 'message': message, 'issues': issues}
 
 
 def reconcile(performed: dict | None, found: dict | None, cut: str) -> dict | None:
@@ -355,8 +377,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
           performed: dict | None = None) -> dict:
     """The fact on `cut` by the lines of the edition `in_force` (sha256) of the plan.
 
-    `performed` are the acts КС-2 of the card accumulated on `cut`; when they bring positions the fact is
-    theirs, otherwise the KS-6a works of `found` (`acts`).
+    KS-6a supplies the fact. `performed` is used only to reconcile and confirm it.
     """
     result = {"cut": cut, "assumption": ASSUMPTION, "total": 0.0, "lines": [], "months": [], "positions": [],
               "outside": {status: {"count": 0, "amount": 0.0} for status in _STATUSES},
@@ -364,36 +385,31 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
               "source": None, "source_note": "", "preliminary": False, "reconciliation": None,
               "materials": [], "component_gaps": [], 'material_statement': statement_materials(found, cut),
               'physical_groups': (found or {}).get('physical_groups') or []}
-    rows = from_acts(performed)
-    if rows:
-        result["source"] = "ks2"
-        result["preliminary"] = any(a["preliminary"] for a in rows)
-        result["after_cut"] = (performed or {}).get("later") or 0
-        result["reconciliation"] = reconcile(performed, None if (found or {}).get("problem") else found, cut)
-        # The KS-6a works without a dated period are not reconciled: they are named, not dropped.
-        result["unread"] = [] if (found or {}).get("problem") else (found or {}).get("unread") or []
-        result['missing_acts'] = _missing_acts(performed, found, cut)
-    elif found is None:
+    result['reconciliation'] = reconcile(performed, None if (found or {}).get('problem') else found, cut)
+    result['confirmation'] = confirmation(performed, found, cut, result['reconciliation'])
+    if found is None:
         result['total'] = None
-        result["note"] = ("Актов КС-2 в карточке нет, а накопительная КС-6а этого договора на дату среза "
-                          "не найдена: факт не рассчитан.")
+        result["note"] = "Накопительная КС-6а этого договора на дату среза не найдена: загрузите КС-6а для расчёта выполнения."
         return result
     elif found.get("problem"):
         result['total'] = None
-        result["note"] = f"Актов КС-2 в карточке нет, а факт по КС-6а не рассчитан. {found['problem']}"
+        result["note"] = f"Выполнение по КС-6а не рассчитано. {found['problem']}"
         return result
     else:
         result["source"], result["source_note"] = "ks6a", FROM_KS6A
-        result["unread"] = found["unread"]
-        rows = found["acts"]
+        result["unread"] = found.get("unread") or []
+        rows = found.get("acts") or []
+        result['preliminary'] = any(row.get('preliminary') for row in rows)
     current = next((e for e in editions if e["sha256"] == in_force), None)
     if current is None:
         result["note"] = "Нет редакции плана, действующей на дату среза: факт не с чем сопоставить."
         return result
     if result["source"] == "ks6a" and not found.get("works"):
         # No work with a known quantity: a zero here would be a missing KS-6a, not an answer.
-        result["note"] = ("Актов КС-2 в карточке нет, а в накопительной КС-6а этого договора нет выполнения "
-                          "с датированными периодами до даты среза.")
+        result['total'] = None
+        result["note"] = ("В КС-6а не подтверждены даты или объёмы выполнения до среза. Причины указаны по работам."
+                          if result['unread'] else
+                          "В накопительной КС-6а нет позиций работ для расчёта выполнения.")
         return result
     dated = sorted((e for e in editions if e.get("date")), key=lambda e: e["date"])
     start = _day(current["start"]) if current.get("start") else None
