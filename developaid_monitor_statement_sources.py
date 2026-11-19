@@ -125,12 +125,8 @@ def statement_source_keys(reference):
                                           *(reference.get('source_copies') or [])]}
 
 
-def statement_family_map(physical_sources):
-    """Proof for this composition only; never write family tags into cached input.
-
-    Exact copies and fully covered editions share the identity of their named
-    periods. Their annual totals still remain distinct historical observations.
-    """
+def _family_references(physical_sources):
+    """The exact qualification inputs shared by composition and its audit."""
     references = []
     for ledger, _ in physical_sources:
         def basis(field):
@@ -142,6 +138,16 @@ def statement_family_map(physical_sources):
             'source_complete': ledger.get('source_complete') is True,
             'planned_amount_basis': basis('planned_amount_basis'),
             'completed_amount_basis': basis('completed_amount_basis')})
+    return references
+
+
+def statement_family_map(physical_sources):
+    """Proof for this composition only; never write family tags into cached input.
+
+    Exact copies and fully covered editions share the identity of their named
+    periods. Their annual totals still remain distinct historical observations.
+    """
+    references = _family_references(physical_sources)
     families = {}
     def observations(reference):
         yield reference.get('source') or {}

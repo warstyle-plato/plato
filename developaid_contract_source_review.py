@@ -202,6 +202,7 @@ def _review_raw(project, contract_id, cut):
     if len(snapshots) > MAX_ARCHIVES:
         raise SourceReviewProblem('Слишком много сохранённых версий для одного чтения; проверка остановлена.')
     result, unavailable, exclusions, total_bytes = [], [], [], 0
+    verified_ledgers = []
     used_items = used_periods = used_cells = used_result_bytes = 0
     for snapshot in snapshots:
         snapshot_id = snapshot['snapshot_id']
@@ -233,6 +234,9 @@ def _review_raw(project, contract_id, cut):
         payloads = _raw_payloads(raw, {r['file_sha256'] for r, _ in matched}) if matched else {}
         books = {}
         for record, kind in matched:
+            if kind == 'cumulative':
+                verified_ledgers.append(dict(record, archive_snapshot_id=snapshot_id,
+                                             source_date=snapshot_id[:10]))
             used_items += len(record.get('items') or [])
             used_periods += sum(len(item.get('periods') or []) for item in record.get('items') or [])
             if used_items > MAX_ITEMS or used_periods > MAX_PERIODS:
@@ -272,6 +276,8 @@ def _review_raw(project, contract_id, cut):
                       'периодов, не создаёт факты и не меняет связи договора.'}
     if row.get('document_provenance'):
         output['document_provenance'] = row['document_provenance']
+    from developaid_contract_statement_proof import read as statement_proof
+    output['composition_proof'] = statement_proof(project, contract_id, cut, verified_ledgers)
     if len(json.dumps(output, ensure_ascii=False, default=str).encode()) > MAX_RESULT_BYTES:
         raise SourceReviewProblem('Результат проверки превышает предел; исходные строки не возвращены частично.')
     return output
