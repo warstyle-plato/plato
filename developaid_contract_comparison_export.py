@@ -178,6 +178,9 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         note("Сопоставление не охватывает весь договор.")
     if comparison.get("preliminary"):
         note("Предварительно: у части актов использована дата составления.")
+    confirmation = comparison.get('confirmation') or {}
+    if confirmation.get('message'):
+        note(confirmation['message'])
     for gap in comparison.get('data_gaps') or []:
         note(gap)
     for value in [comparison.get("reason"), comparison.get("source_note"), comparison.get("plan_assumption"),

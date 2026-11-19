@@ -75,7 +75,9 @@ REGISTER_ROW = {**ROW, "physical_items": [
     _item("2.1", "Устройство лестниц", (0.5, 1000, "2026-02-01", "2026-02-03")),
     _item("1.2", "Устройство плит перекрытия", (2, 1000, "2026-02-01", "2026-02-03"), unit="т"),
     _item("9.9", "Кладка перегородок", (1, 500, "2026-02-01", "2026-02-03")),
-    {**_item("1.2", "Устройство плит перекрытия"), "completed_quantity": None,
+    # A foreign unread work must not change pricing of the known linked works.
+    # The matching-unread variant is covered by test_contract_ks6a_unknown_execution.
+    {**_item("8.8", "Неопределённая дополнительная работа"), "completed_quantity": None,
      "quantity_basis": "Есть выполнение без даты периода; итог на дату среза не определён."},
 ]}
 
@@ -115,7 +117,7 @@ def test_the_fact_of_the_card_is_priced_by_the_estimate_and_laid_on_confirmed_li
         ("1.2", "В расчёте позиция № 1.2 измеряется в «м3», а в КС — в «т»: объём не пересчитать в деньги."),
         ("9.9", "В расчёте нет позиции с этим номером или с таким же названием и единицей (№ 9.9).")]
     assert [(u["number"], u["reason"]) for u in got["unread"]] == [
-        ("1.2", "Есть выполнение без даты периода; итог на дату среза не определён.")]
+        ("8.8", "Есть выполнение без даты периода; итог на дату среза не определён.")]
     # В КС за 01–03.02 записано 4 100 ₽, а по цене расчёта — 4 000 ₽.
     assert got["price_differs"] == 1
     walls = [r for r in got["positions"] if r["number"] == "1.1"]
@@ -163,15 +165,13 @@ def test_the_fact_accumulates_to_each_month_end_and_to_the_cut(card):
 
 def test_without_ks_6a_or_a_plan_the_fact_says_why(card):
     assert files.listing("Учебный", CONTRACT, "2026-02-04")["fact"]["note"] == (
-        "Актов КС-2 в карточке нет, а накопительная КС-6а этого договора на дату среза не найдена: "
-        "факт не рассчитан.")
+        "Накопительная КС-6а этого договора на дату среза не найдена: загрузите КС-6а для расчёта выполнения.")
     empty = files.listing("Учебный", CONTRACT, "2026-02-04", fact.acts(ROW))["fact"]
-    assert empty["note"] == ("Актов КС-2 в карточке нет, а в накопительной КС-6а этого договора нет выполнения "
-                             "с датированными периодами до даты среза.")
+    assert empty["note"] == "В накопительной КС-6а нет позиций работ для расчёта выполнения."
     early = files.listing("Учебный", CONTRACT, "2026-01-15", fact.acts(REGISTER_ROW))["fact"]
     assert early["note"] == "Нет редакции плана, действующей на дату среза: факт не с чем сопоставить."
     broken = files.listing("Учебный", CONTRACT, "2026-02-04", fact.unavailable("Выберите проект."))["fact"]
-    assert broken["note"] == "Актов КС-2 в карточке нет, а факт по КС-6а не рассчитан. Выберите проект."
+    assert broken["note"] == "Выполнение по КС-6а не рассчитано. Выберите проект."
 
 
 # --- маршрут карточки ---------------------------------------------------------------
@@ -199,7 +199,7 @@ def test_the_card_route_takes_the_fact_from_the_register_of_the_same_cut(card, m
     listed = _finished(api, api.post("/monitor/contracts/documents", json=body))
     # Документы карточки видны, а факт называет причину, по которой его нет.
     assert listed["ok"] and len(listed["documents"]) == 2
-    assert listed["fact"]["note"] == ("Актов КС-2 в карточке нет, а факт по КС-6а не рассчитан. "
+    assert listed["fact"]["note"] == ("Выполнение по КС-6а не рассчитано. "
                                      "Накопительные ведомости проекта не прочитаны.")
     upload = _finished(api, api.post("/monitor/contracts/document-upload", json={
         **body, "filename": "ДС4.pdf", "content_base64": base64.b64encode(estimate_pdf()).decode()}))

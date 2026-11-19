@@ -28,6 +28,8 @@ def _building_section(headings):
 
 
 def _row(line, volume, *, unknown=False, reason=''):
+    unknown = unknown or line.get('state') == 'unknown'
+    reason = reason or line.get('reason') or ''
     natural = volume is not None
     split = 'work_amount' in line
     share = line.get('plan_share')
@@ -65,6 +67,7 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
               'plan_assumption': listed['plan'].get('assumption') or '',
               'plan_editions': [{key:e.get(key) for key in ('title','date','until','in_force','total','note')} for e in listed['plan'].get('editions') or []],
               'data_gaps': canonical.get('data_gaps') or [],
+              'confirmation': canonical.get('confirmation'),
               'left_out': canonical.get('left_out'), 'preliminary': canonical.get('preliminary',False),
               'schedule_source': canonical.get('schedule_source'),
               'assumption': canonical.get('assumption') or '', 'weights': canonical.get('weights') or ''}

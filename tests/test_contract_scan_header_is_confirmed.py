@@ -107,6 +107,25 @@ def test_an_unconfirmed_act_scan_dates_nothing_until_it_is_confirmed(card, ocr):
     assert document["warnings"][0].endswith("; исправлено вручную: начало отчётного периода.")
 
 
+@pytest.mark.parametrize('has_read_act', [False, True])
+def test_existing_unconfirmed_scan_requests_review_instead_of_another_upload(card, ocr, has_read_act):
+    from tests.test_contract_fact_dates_ks6_periods_by_acts import act_pdf
+    row = _row(WALLS, summary=[('1', '2026-01-31', 2000), ('2', '2026-02-04', 4000),
+                               ('5', '2026-02-04', 4000)])
+    before = files.listing('Учебный', CONTRACT, '2026-02-04', fact.acts(row))
+    if has_read_act:
+        files.store('Учебный', ROW, 'КС-2 1.pdf', act_pdf(number='1', date='31.01.2026',
+                    start='01.01.2026', finish='31.01.2026'))
+    sha = files.store('Учебный', ROW, 'КС-2 2 скан.pdf', scan_pdf())['sha256']
+    listed = files.listing('Учебный', CONTRACT, '2026-02-04', fact.acts(row))
+    confirmation = listed['fact']['confirmation']
+    assert confirmation['missing_acts'] == (['5'] if has_read_act else ['1', '5'])
+    assert listed['fact']['source'] == 'ks6a'
+    assert listed['fact']['total'] == before['fact']['total']
+    assert any(a['number'] == '2' and 'скан' in a['reason'] for a in listed['performed']['excluded'])
+    assert any(d['sha256'] == sha and not d['scan']['confirmed_at'] for d in listed['documents'])
+
+
 def test_confirming_checks_the_fields_and_the_contract_of_the_card(card, ocr):
     sha = files.store("Учебный", ROW, "скан.pdf", scan_pdf())["sha256"]
     act = {"contract_number": "12-ТСТ", "act_number": "2", "act_date": "2026-02-03",

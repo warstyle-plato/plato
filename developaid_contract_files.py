@@ -408,6 +408,11 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     counted = [r for r in records if not awaits_confirmation(r)]
     acts = act_dates.resolve(acts, counted)
     performed = acts_in_card.accumulated(counted, cut)
+    performed['excluded'].extend({
+        'number': r['act'].get('number'), 'date': r['act'].get('date'),
+        'sha256': r.get('sha256'), 'filename': r.get('filename'),
+        'reason': 'скан, значения не подтверждены'}
+        for r in records if awaits_confirmation(r) and r.get('act'))
     for record in records:
         notes = _scan_notes(record) if record.get("scan") else []
         if not record.get("contract"):
@@ -527,7 +532,7 @@ def _day(text: str) -> str | None:
 
 
 def _fact(editions, in_force, acts, cut, performed):
-    """The fact on `cut`: the acts КС-2 of the card, else the KS-6a with the dates the acts gave its periods."""
+    """KS-6a fact on `cut`, with dates and confirmation supplied by the КС-2."""
     return {**fact.build(editions, in_force, acts, cut, performed),
             "act_dates": (acts or {}).get("act_dates") or []}
 
@@ -624,6 +629,7 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
                                          "readiness", "plan_share", "plan_done", "overdue_days", "overdue_works",
                                          "auto", "incomplete")},
             "source": found.get("source"), "preliminary": bool(found.get("preliminary")),
+            "confirmation": found.get("confirmation"),
             "left_out": found["left_out"],
             "coverage": found.get("coverage"),
             "data_gaps": found["data_gaps"],
