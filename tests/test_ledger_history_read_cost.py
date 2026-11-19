@@ -20,7 +20,8 @@ def isolated_cache():
 def test_five_large_recent_archives_parse_once_each_and_keep_identical_independent_values(monkeypatch):
     # Each cell is within the real parser's per-cell bound. The whole parsed
     # archive is >4 MiB and was therefore never retained by the previous cache.
-    payload={'ledgers':[{'items':[{'name':'Источник '+('я'*9000),'position':i,'quantity':None}
+    payload={'parser_fingerprint':ledgers._PARSER_FINGERPRINT,
+             'ledgers':[{'items':[{'name':'Источник '+('я'*9000),'position':i,'quantity':None}
                                   for i in range(300)]}]}
     assert ledgers._PARSE_CACHE_BYTES<len(json.dumps(payload,ensure_ascii=False).encode())<ledgers.MAX_PARSED_BYTES
     calls=[]
@@ -41,7 +42,8 @@ def test_five_large_recent_archives_parse_once_each_and_keep_identical_independe
 def test_filename_source_digest_and_parser_revision_remain_separate_cache_identities(monkeypatch):
     calls=[]
     def parse(data,filename):
-        calls.append(1);return {'name':filename,'raw':data.decode()}
+        calls.append(1);return {'name':filename,'raw':data.decode(),
+                               'parser_fingerprint':ledgers._PARSER_FINGERPRINT}
     monkeypatch.setattr(ledgers,'parse_archive',parse)
     first=ledgers._current_archive(b'first','a'*64,'first.zip')
     assert ledgers._current_archive(b'first','a'*64,'first.zip')==first
@@ -50,12 +52,17 @@ def test_filename_source_digest_and_parser_revision_remain_separate_cache_identi
     monkeypatch.setattr(ledgers,'PARSER_SCHEMA',ledgers.PARSER_SCHEMA+1)
     ledgers._current_archive(b'first','a'*64,'first.zip')
     assert len(calls)==4
+    monkeypatch.setattr(ledgers,'_PARSER_FINGERPRINT','changed-reader')
+    refreshed=ledgers._current_archive(b'first','a'*64,'first.zip')
+    assert refreshed['parser_fingerprint']=='changed-reader'
+    assert ledgers._current_archive(b'first','a'*64,'first.zip')==refreshed
+    assert len(calls)==5
 
 
 def test_lru_retains_recent_entries_without_exceeding_the_total_compressed_byte_budget(monkeypatch):
     rng=random.Random(741)
     text=''.join(rng.choices('abcdefghijklmnopqrstuvwxyz0123456789',k=6000))
-    payload={'text':text}
+    payload={'text':text,'parser_fingerprint':ledgers._PARSER_FINGERPRINT}
     envelope={'identity':ledgers._archive_cache_key('0'*64,'source.zip'),'parsed':payload}
     length=len(gzip.compress(json.dumps(envelope,ensure_ascii=False).encode(),compresslevel=3,mtime=0))
     monkeypatch.setattr(ledgers,'_PARSE_CACHE_BYTES',length+100)
@@ -70,7 +77,7 @@ def test_lru_retains_recent_entries_without_exceeding_the_total_compressed_byte_
 
 def test_incompressible_or_oversized_result_is_returned_intact_but_not_retained(monkeypatch):
     monkeypatch.setattr(ledgers,'_PARSE_CACHE_BYTES',10)
-    payload={'data':[1,2,3]}
+    payload={'data':[1,2,3],'parser_fingerprint':ledgers._PARSER_FINGERPRINT}
     monkeypatch.setattr(ledgers,'parse_archive',lambda *a:copy.deepcopy(payload))
     assert ledgers._current_archive(b'raw','a'*64,'source.zip')==payload
     assert not ledgers._PARSE_CACHE
@@ -83,7 +90,9 @@ def test_incompressible_or_oversized_result_is_returned_intact_but_not_retained(
 @pytest.mark.parametrize('damage',['header','deflate'])
 def test_damaged_disposable_cache_reparses_the_original(monkeypatch,damage):
     calls=[]
-    def parse(*a):calls.append(1);return {'data':['preserved',None,0]}
+    def parse(*a):
+        calls.append(1)
+        return {'data':['preserved',None,0],'parser_fingerprint':ledgers._PARSER_FINGERPRINT}
     monkeypatch.setattr(ledgers,'parse_archive',parse)
     first=ledgers._current_archive(b'raw','a'*64,'source.zip')
     key=ledgers._archive_cache_key('a'*64,'source.zip')
