@@ -211,7 +211,6 @@ def advance(row: dict, paid_rows: list[dict] | None, *, reference_key,
     result = {"paid": None, "paid_advance_labelled": None, "unworked": None, "payments_count": 0,
               "unworked_with_materials": None, "basis": "total",
               "confirmed_paid": None, "confirmed_paid_advance_labelled": None,
-              "allocation_recorded_total": None, "allocation_recorded_count": 0,
               "unmatched_candidates": 0, "unmatched_amount": None, "reason": "", "sources": []}
     if paid_rows is None:
         return dict(result, reason="Реестр платежей не прочитан.")
@@ -230,6 +229,8 @@ def advance(row: dict, paid_rows: list[dict] | None, *, reference_key,
     # They never enter a confirmed paid amount without the legal date.
     allocations = [p for p, key in related if (p.get('source') or {}).get('kind') == 'contract_allocation'
                    and all(key[:2]) and key[:2] == identity[:2]]
+    if allocations:
+        result.update(allocation_recorded_total=None, allocation_recorded_count=0)
     if allocations and all(p.get('amount') is not None and p.get('date') is not None for p in allocations):
         result.update(allocation_recorded_total=math.fsum(p['amount'] for p in allocations),
                       allocation_recorded_count=len(allocations))

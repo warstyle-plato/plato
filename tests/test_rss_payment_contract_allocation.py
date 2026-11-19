@@ -77,7 +77,10 @@ def test_parent_date_cannot_confirm_additional_contract_even_if_equal(tmp_path, 
     assert result['unmatched_candidates'] == 1 and result['unmatched_amount'] == 100
     assert 'без даты договора' in result['reason']
     parent = {'contractor': 'Parent', 'contract': 'GP-1', 'contract_date': dt.date(2025, 1, 1), 'completed': 20}
-    assert observe(path, parent)['paid'] == 100  # The same cash row is counted once.
+    parent_result = observe(path, parent)
+    assert parent_result['paid'] == 100  # The same cash row is counted once.
+    assert 'allocation_recorded_total' not in parent_result
+    assert 'allocation_recorded_count' not in parent_result
 
 
 @pytest.mark.parametrize('purpose, expected', [('Аванс', True), ('Выполнение', False), ('ГУ', False), (None, None)])
@@ -92,7 +95,7 @@ def test_additional_purpose_never_inherits_parent_advance_label(tmp_path, purpos
 def test_unverified_additional_header_cannot_confirm_or_attribute_cash(tmp_path):
     path = native_book(tmp_path, lambda pay, _: setattr(pay['L7'], 'value', 'Unrelated notes'))
     result = observe(path, child())
-    assert result['paid'] is None and result['allocation_recorded_total'] is None
+    assert result['paid'] is None and result.get('allocation_recorded_total') is None
     assert result['confirmed_paid'] == 0 and result['unmatched_candidates'] == 1
 
 
