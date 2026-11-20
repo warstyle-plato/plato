@@ -125,3 +125,7 @@ def test_ncs_source_selection_and_saved_calculation_are_visible(served, width):
         expect(page.get_by_label('Тип объекта по НЦС', exact=True)).to_have_value('03-01-001')
         expect(page.locator('#moVriBenefitBreakdown')).to_contain_text('03-01-001')
         assert not page.evaluate('document.documentElement.scrollWidth>innerWidth+1')
+        bounds = page.locator('#moVriBenefitBreakdown tbody td:last-child').evaluate(
+            '(node)=>{const r=node.getBoundingClientRect();return {left:r.left,right:r.right,width:innerWidth}}')
+        assert bounds['left'] >= 0 and bounds['right'] <= bounds['width']
+        assert 'ставка бюджета проекта' not in page.locator('#moVriReliefPanel').inner_text()

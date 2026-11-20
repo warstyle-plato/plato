@@ -392,7 +392,7 @@ PAGE += r"""</head>
         </div>
         <div class="field"><label for="moVriBenefitMode">Как определить сумму</label><select id="moVriBenefitMode" onchange="moVriBenefitModeChanged()"><option value="calculated">Рассчитать по основаниям 1310-ПП</option><option value="manual">Указать готовую сумму соглашения</option></select></div>
         <div id="moVriBenefitsEditor">
-          <p class="hint">Добавьте каждое обязательство один раз. Школы и сады — совокупной мощностью по каждому виду. Ставки инвестобъектов подставляются по 933-ПП (без НДС). Для соцобъектов показывается ставка бюджета проекта, для переселения — цена КЦТ выбранного муниципалитета; их применение к Ксу* требует подтверждения стоимости в ДоКРТ.</p>
+          <p class="hint">Для школы или ДОО выберите тип одного здания по НЦС. Несколько зданий — отдельный расчёт ставки. Инвестобъекты — 933-ПП; переселение — цена КЦТ выбранного муниципалитета.</p>
           <div id="moVriBenefitRows"></div>
           <label class="hint"><input type="checkbox" id="moVriDistinctOffset" onchange="moVriReliefEdited(false)"> Отдельный денежный зачёт переданных площадей относится к другим обязательствам и не входит в оценку переселения.</label>
           <div class="toolbar"><select id="moVriBenefitKind" aria-label="Основание льготы"><option value="kindergarten">Детский сад</option><option value="school">Школа</option><option value="resettlement">Переселение из аварийного жилья</option><option value="victims">Возмещение пострадавшим дольщикам</option><option value="investment">Инвестиционное соглашение</option></select><button type="button" class="btn" onclick="addMoVriBenefitRow()">Добавить обязательство</button></div>

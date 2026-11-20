@@ -116,6 +116,8 @@ def estimate(config: dict, *, inputs: dict, tep: dict, social_needs: dict | None
                 else:
                     if mode == "manual":
                         rate = number(row.get("rub_per_place"), "стоимость одного засчитываемого места")
+                        if row.get("valuation_mode") == "manual" and not str(row.get("valuation_basis") or "").strip():
+                            raise ValueError("Укажите документ или источник отдельного расчёта стоимости места.")
                         out["valuation_basis"] = str(row.get("valuation_basis") or "Ставка места введена пользователем")
                     elif mode == "ncs":
                         observed = education_ncs.rate(kind, row.get("ncs_table"), planned)

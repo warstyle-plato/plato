@@ -64,6 +64,14 @@ def test_manual_rate_and_its_source_remain_an_explicit_choice():
     assert 'ncs' not in result['rows'][0]
 
 
+def test_new_manual_mode_requires_a_source_but_legacy_explicit_rates_still_open():
+    cfg = configuration(valuation_mode='manual', rub_per_place=2000000)
+    result = benefits.estimate(cfg, inputs={}, tep={})
+    assert result['total_rub'] is None and 'источник' in result['rows'][0]['error']
+    cfg['rows'][0].pop('valuation_mode')
+    assert benefits.estimate(cfg, inputs={}, tep={})['total_rub'] == 550_000_000
+
+
 @pytest.mark.parametrize('places,expected', [(117, 1534080), (130, 1534080), (1320, 1119400)])
 def test_exact_and_ten_percent_edges_use_the_published_point(places, expected):
     assert education_ncs.rate('school', '03-03-001', Decimal(places))['rate'] == expected
