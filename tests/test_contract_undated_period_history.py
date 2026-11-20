@@ -174,3 +174,61 @@ def test_changed_component_amounts_with_equal_combined_total_are_still_a_conflic
     changed = dict(first, work_amount=first['work_amount']+5, material_amount=first['material_amount']-5)
     got = only([source('2026-11-01', view(first)), source('2026-11-12', view(changed), sha='b')])
     assert 'conflict' in got['detail_history_problems'] and got['reported_completed_amount'] is None
+
+
+@pytest.mark.parametrize('heading', ['КС2-{}', 'КС-2-{}', ' кс 2 – 0{} '])
+def test_compact_act_headings_survive_history_and_are_dated_once_by_summary(heading):
+    import developaid_contract_act_dates as dates
+    import developaid_contract_fact as fact
+
+    movements = [dict(period(n, quantity=n, material=0), label=heading.format(n)) for n in (1, 2, 3)]
+    raw = view(*movements)
+    sources = [source('2026-11-01', raw), source('2026-11-12', raw, sha='b')]
+    before = copy.deepcopy(sources)
+    got = only(sources)
+    assert sources == before
+    assert got['detail_history_problems'] == ['undated']
+    assert got['completed_quantity'] is None  # A number supplies no execution date.
+    assert got['reported_completed_quantity'] == 6 and got['reported_completed_amount'] == 60
+    assert len(got['undated_periods']) == 3
+    summary = [{'number': str(n), 'date': f'2026-0{n+1}-28', 'amount': n*10} for n in (1, 2, 3)]
+    found = fact.acts({'physical_items': [got], 'financial_sources': [{'acts': summary}]})
+    assert found['period_amounts'] == {heading.format(n): n*10 for n in (1, 2, 3)}
+    resolved = dates.resolve(found, [])
+    assert resolved['unread'] == [] and len(resolved['acts']) == 3
+    assert [(a['quantity'], a['end']) for a in resolved['acts']] == [
+        (1, '2026-02-28'), (2, '2026-03-28'), (3, '2026-04-28')]
+    assert all(a['start'] is None and a['dated_by'].startswith('Дата подписания акта')
+               for a in resolved['acts'])
+    assert all(a['preliminary'] is True for a in resolved['acts'])
+    missing = dates.resolve(fact.acts({'physical_items': [got]}), [])
+    assert missing['unread'] and not missing['acts']
+
+
+@pytest.mark.parametrize('heading', ['КС2-1', 'КС-2-01'])
+def test_compact_heading_does_not_hide_changed_execution_in_retained_imports(heading):
+    first = dict(period(1, quantity=2, material=0), label=heading)
+    changed = dict(first, quantity=3, amount=30, work_amount=30)
+    got = only([source('2026-11-01', view(first)), source('2026-11-12', view(changed), sha='b')])
+    assert 'conflict' in got['detail_history_problems']
+    assert got['reported_completed_quantity'] is None and got['reported_completed_amount'] is None
+
+
+@pytest.mark.parametrize('heading', ['КС2-1 от 01.02.2026', 'КС2-1/2026', 'КС2-1.02.2026',
+                                     'Период КС2-1', 'КС2-1 и КС2-2', 'КС-2 от 01.02.2026'])
+def test_compact_heading_recognizer_does_not_extract_an_act_from_dates_or_mentions(heading):
+    import developaid_contract_act_dates as dates
+    assert dates.compact_number(heading) is None
+    assert dates.number(heading) is None
+
+
+@pytest.mark.parametrize('statement,estimate', [('смен', 'смена'), ('штук', 'шт'),
+                                               ('чел-час', 'человеко-час')])
+def test_grammatical_unit_variants_match_the_same_estimate_position(statement, estimate):
+    import developaid_contract_fact as fact
+    position = {'number': '1.1', 'name': 'Учебная работа', 'unit': estimate}
+    work = dict(position, unit=statement)
+    assert fact.match(work, [{'positions': [position]}]) == (0, 0, 'number')
+    # These are names of the same unit, never a conversion between units.
+    work['unit'] = 'маш-смена' if estimate == 'смена' else 'м2'
+    assert isinstance(fact.match(work, [{'positions': [position]}]), str)

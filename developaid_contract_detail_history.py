@@ -16,6 +16,7 @@ import math
 import re
 
 import developaid_contract_stage_profile as stage_profile
+from developaid_contract_act_dates import compact_number
 
 _SCOPES = ('object_scope', 'system_scope', 'site_scope')
 _PLAN = ('plan_quantity', 'planned_amount', 'planned_work_amount',
@@ -46,7 +47,8 @@ def _norm(value):
 def normalize_unit(value):
     text = _norm(value).replace('²', '2').replace('³', '3')
     return {'м^2': 'м2', 'м^3': 'м3', 'м.кв.': 'м2', 'кв.м': 'м2',
-            'м.куб.': 'м3', 'куб.м': 'м3', 'пог.м': 'м', 'п.м': 'м'}.get(text, text)
+            'м.куб.': 'м3', 'куб.м': 'м3', 'пог.м': 'м', 'п.м': 'м',
+            'штук': 'шт', 'смен': 'смена', 'чел-час': 'человеко-час'}.get(text, text)
 
 
 def _number(value):
@@ -178,7 +180,7 @@ def _period_value(period):
 def _act_period(period):
     match = _ACT_PERIOD.fullmatch(_norm(period.get('label')))
     if match is None:
-        return None
+        return compact_number(period.get('label'))
     return re.sub(r'\d+', lambda m: str(int(m[0])), re.sub(r'\s+', '', match[1]))
 
 
