@@ -179,7 +179,7 @@ def test_the_nonres_book_writes_the_project_npv_as_a_formula():
 
 
 def test_the_object_report_prints_the_project_irr_as_a_number():
-    """Отчёт нежилого проекта (`object_report`, раздел «Решение»): IRR проекта
+    """Отчёт нежилого проекта (`object_report`, раздел «Итог»): IRR проекта
     числом, IRR и NPV собственника — подписью капитала."""
     import golden_snapshot
 
@@ -189,8 +189,8 @@ def test_the_object_report_prints_the_project_irr_as_a_number():
     _unpaid(result["summary"])
     report = core.object_report(result)
     assert report, "эталон nonresidential перестал быть нежилым проектом"
-    decision = next(s for s in report["sections"] if s["key"] == "decision")
-    rows = {row["label"]: row for block in decision["blocks"] for row in block.get("rows") or []}
+    summary_section = next(s for s in report["sections"] if s["key"] == "summary")
+    rows = {row["label"]: row for block in summary_section["blocks"] for row in block.get("rows") or []}
     project = next(v for k, v in rows.items() if k.startswith("IRR проекта"))
     assert project["unit"] == "pct" and isinstance(project["value"], float), project
     owner = next(v for k, v in rows.items() if k.startswith("IRR собственника"))

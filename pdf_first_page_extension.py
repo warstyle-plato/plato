@@ -352,7 +352,8 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
             # «Продаваемая» и «Передаваемая бесплатно» — понятия жилья.
             sections = {s.get("key"): s for s in
                         ((result.get("report") or {}).get("object_report") or {}).get("sections") or []}
-            for row in ((sections.get("object") or {}).get("brief") or [])[1:3]:
+            site_section = sections.get("site") or sections.get("object") or {}
+            for row in (site_section.get("brief") or [])[1:3]:
                 info_rows.append([para(row.get("label"), label_style),
                                   para(core._pdf_object_value(row))])
         else:

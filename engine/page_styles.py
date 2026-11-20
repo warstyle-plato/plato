@@ -397,7 +397,7 @@ details.cadastral-box>summary::marker{color:#888}
 .hint.hotel-origin{color:#1f6f43}.hint.hotel-default{color:#667085}.hint.hotel-empty{color:#a15c00}.hint.hotel-manual{color:#667085}
 .hotel-preset{display:inline-flex;gap:6px;align-items:center;margin:6px 8px 0 0}
 [data-layout][hidden]{display:none!important}
-.object-report table.object-years td,.object-report table.object-years th{text-align:right;white-space:nowrap}
+.object-report table.object-years td,.object-report table.object-years th{text-align:right}
 .object-report table.object-years td:first-child,.object-report table.object-years th:first-child{text-align:left}
 .strategy-compare-caption{font-weight:600;margin:10px 0 4px}
 .strategy-compare-lead{font-size:13px;line-height:1.5;margin:0 0 10px}
@@ -532,10 +532,10 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
 """
 
 PAGE += r"""<style>
-.object-plan-charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}.object-chart{margin:12px 0;min-width:0}.object-chart figcaption{font-size:12px;font-weight:600;margin-bottom:10px}
-.object-chart svg{display:block;width:100%;max-height:260px}.object-chart-table{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:24px;align-items:start}
-.object-bar-row{display:grid;grid-template-columns:minmax(90px,1fr) minmax(40px,1fr) 65px;gap:8px;align-items:center;font-size:11px;margin:9px 0}
-.object-bar-track{background:#f2f3f4}.object-bar-row b{text-align:right}.object-note{font-size:12px;color:#555;line-height:1.5}
-.object-report details summary{cursor:pointer;font-size:12px;padding:12px 0;font-weight:600}
-@media(max-width:760px){.object-chart svg text{font-size:18px}.object-plan-charts{grid-template-columns:minmax(0,1fr)}.object-chart-table{grid-template-columns:minmax(0,1fr)}.object-chart svg{min-height:180px}.object-report .card{min-width:0}.object-bar-row{grid-template-columns:minmax(95px,1fr) minmax(40px,1fr) 65px}}
-</style>"""
+.sales-period-chart{margin:12px 0;min-width:0}.sales-period-chart figcaption{font-size:12px;font-weight:600;margin-bottom:10px}
+.sales-period-chart svg{display:block;width:100%;height:auto}.sales-period-charts .hint{font-size:11px}
+.object-note{font-size:12px;color:#555;line-height:1.5}
+.object-report .card .card{border:0;padding:0;margin:14px 0}.object-report details.card>summary{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777}
+.object-report .card{min-width:0}
+</style>
+"""

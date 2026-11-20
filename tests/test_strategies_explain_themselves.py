@@ -108,7 +108,7 @@ SET = r"""([id, value]) => {
   el.onchange();
 }"""
 
-CARD = "#rsObj-comparison [data-strategy-compare-card]"
+CARD = "#rsObj-income [data-strategy-compare-card]"
 
 SPOTS = r"""(card) => {
   const box = document.querySelector(card);
