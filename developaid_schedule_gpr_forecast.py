@@ -124,7 +124,7 @@ def history(project: str, cut: dt.date) -> dict[str, list[tuple[dt.date, float, 
         try:
             parent, source_carry = parent_facts(project, selected['source_sha256'], cut.isoformat())
             baseline = {'works':list(parent.values()), 'source_format':'corpus-gpr-v1'}
-            base_day = _day(source_carry['parent_effective_from'])
+            base_day = _day(source_carry.get('reference_effective_from', source_carry['parent_effective_from']))
         except DateCarryProblem:
             pass  # The original future-source fact gate remains closed.
     baseline_dates = {str(work.get('id') or work.get('wbs') or '').strip():

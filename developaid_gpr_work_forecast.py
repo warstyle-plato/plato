@@ -138,6 +138,71 @@ def _profile_state(state):
     return 'invalid'
 
 
+def _carry_steps(carry):
+    """Check owned multi-hop metadata, without source reads or new facts."""
+    common = ['from_source_sha256', 'to_source_sha256', 'source_revision', 'source_effective_from',
+              'source_approved_at', 'parent_effective_from', 'parent_approved_at', 'changed_date_cells', 'persisted']
+    if 'lineage_steps' not in carry:
+        if any(k in carry for k in ('reference_source_sha256', 'reference_effective_from',
+                                   'reference_approved_at', 'immediate_parent_source_sha256')):
+            return None
+        # Existing single-edge DTO and its compatibility policy stay unchanged.
+        return [{key: carry.get(key) for key in common}]
+    steps = carry['lineage_steps']
+    if type(steps) is not list or not 2 <= len(steps) <= 8:
+        return None
+    seen = set()
+    for index, step in enumerate(steps):
+        if (type(step) is not dict or set(step) != {'kind', *common}
+                or step['kind'] != 'approved_date_only_projection' or step['persisted'] is not False
+                or any(type(step[k]) is not str or not _SHA.fullmatch(step[k])
+                       for k in ('from_source_sha256', 'to_source_sha256'))
+                or step['from_source_sha256'] == step['to_source_sha256']
+                or type(step['source_revision']) is not int or step['source_revision'] < 2):
+            return None
+        try:
+            stamps = [dt.datetime.fromisoformat(step[k]) for k in ('parent_approved_at', 'source_approved_at')]
+        except (ValueError, TypeError):
+            return None
+        cells = step['changed_date_cells']
+        if (any(x.utcoffset() != dt.timedelta(0) for x in stamps) or stamps[0] > stamps[1]
+                or any(not _day(step[k]) for k in ('parent_effective_from', 'source_effective_from'))
+                or step['parent_effective_from'] > step['source_effective_from']
+                or type(cells) is not list or not 1 <= len(cells) <= 100
+                or any(type(x) is not str or not re.fullmatch(r'[A-Z]+[1-9][0-9]*', x) for x in cells)
+                or cells != sorted(set(cells)) or step['to_source_sha256'] in seen):
+            return None
+        if index:
+            previous = steps[index-1]
+            if (step['from_source_sha256'] != previous['to_source_sha256']
+                    or step['source_revision'] != previous['source_revision']+1
+                    or step['parent_effective_from'] != previous['source_effective_from']
+                    or step['parent_approved_at'] != previous['source_approved_at']):
+                return None
+        else:
+            seen.add(step['from_source_sha256'])
+        seen.add(step['to_source_sha256'])
+    first, last = steps[0], steps[-1]
+    expected = dict(last, from_source_sha256=first['from_source_sha256'],
+                    changed_date_cells=sorted({cell for step in steps for cell in step['changed_date_cells']}))
+    if (not _same_carry_steps({k: carry.get(k) for k in common},
+                             {k: expected[k] for k in common})
+            or carry.get('reference_source_sha256') != first['from_source_sha256']
+            or carry.get('reference_effective_from') != first['parent_effective_from']
+            or carry.get('reference_approved_at') != first['parent_approved_at']
+            or carry.get('immediate_parent_source_sha256') != last['from_source_sha256']):
+        return None
+    return [{key: step[key] for key in common} for step in steps]
+
+
+def _same_carry_steps(left, right):
+    # JSON kind matters: a bool/float revision is not an integer revision.
+    try:
+        return json.dumps(left, allow_nan=False) == json.dumps(right, allow_nan=False)
+    except (TypeError, ValueError):
+        return False
+
+
 def _carry_consistent(schedule, state, carry):
     """Cross-check already-owned lineage evidence without opening a source."""
     if not isinstance(carry, dict):
@@ -176,20 +241,24 @@ def _carry_consistent(schedule, state, carry):
             or carry.get('source_effective_from') != source.get('effective_from')
             or carry.get('source_approved_at') != source.get('approved_at')):
         return False
-    common = ['from_source_sha256', 'to_source_sha256', 'source_revision', 'source_effective_from',
-              'source_approved_at', 'parent_effective_from', 'parent_approved_at', 'changed_date_cells', 'persisted']
+    profile_steps = _carry_steps(carry)
+    if profile_steps is None:
+        return False
     fact = state.get('fact_source_carry')
     source_fact = schedule.get('fact_source_carry')
     if fact is not None or source_fact is not None:
         if (not isinstance(fact, dict) or not isinstance(source_fact, dict)
                 or fact.get('kind') != 'unchanged_parent_gpr_facts' or fact != source_fact
-                or any(fact.get(key) != carry.get(key) for key in common)):
+                or not (fact_steps := _carry_steps(fact))
+                or len(fact_steps) > len(profile_steps)
+                or not _same_carry_steps(fact_steps, profile_steps[-len(fact_steps):])):
             return False
     reference = state.get('profile_reference_source_sha256')
     if reference is None:
-        # A retained old-producer snapshot needs independent fact lineage.
-        # In its absence an update is required; another cut is never consulted.
-        if not fact:
+        # Without the owner event's original source, independent fact lineage
+        # must corroborate the entire profile chain, not just its current suffix.
+        # The typed suffix comparison above already verifies each shared step.
+        if not fact or len(fact_steps) != len(profile_steps):
             return False
     elif reference != carry['from_source_sha256']:
         return False
@@ -197,7 +266,7 @@ def _carry_consistent(schedule, state, carry):
         row_carry = row.get('gpr_fact_source_carry')
         if row_carry is not None and (not fact or not isinstance(row_carry, dict)
                 or row_carry.get('kind') != fact['kind']
-                or any(row_carry.get(key) != carry.get(key) for key in common)):
+                or not _same_carry_steps(_carry_steps(row_carry), fact_steps)):
             return False
     return True
 

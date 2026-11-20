@@ -1,4 +1,4 @@
-"""One approved, audited date correction can preserve current-plan choices.
+"""Bounded approved, audited date corrections preserve current-plan choices.
 
 The original readiness event and every source stay untouched. This is not a
 general cross-source mapping: all work semantics and explicit weights survive.
@@ -18,6 +18,7 @@ import developaid_monitor as monitor
 import developaid_schedule_elements as elements
 import developaid_schedule_versions as versions
 
+MAX_CHAIN_EDGES = 8
 MAX_AUDIT_ROWS = 160
 MAX_AUDIT_XML = 1024 * 1024
 _BANNER = 'Производная копия только листа ГПР из сохранённого разбора; не исходная книга.'
@@ -26,7 +27,7 @@ _REASONS = {
     'source_unreadable': 'Не удалось прочитать проверяемые утверждённые источники ГПР.',
     'source_digest': 'Отпечаток сохранённого источника ГПР не совпал с утверждённым.',
     'provenance_invalid': 'Протокол исправления дат отсутствует, повреждён или неоднозначен.',
-    'lineage': 'Нет одного подтверждённого перехода между остаточными версиями ГПР.',
+    'lineage': 'Нет ограниченной подтверждённой цепочки между остаточными версиями ГПР.',
     'scope': 'Профиль не относится к оценке текущего остаточного состава.',
     'source_format': 'Формат источника не поддерживает проверяемый перенос долей.',
     'date_audit': 'Протокол не совпал с точным набором исправленных дат источника.',
@@ -150,8 +151,8 @@ def _date_cells(source):
     return result
 
 
-def verified_transition(project, target_sha, *, expected_parent_sha=None):
-    """Shared source-only proof; no readiness weights or fact admission here."""
+def _journal(project, target_sha):
+    """Read a bounded native journal; callers still verify every used edge."""
     current = _source_call(monitor._working_baseline_state, project)
     if (not isinstance(current, dict) or not isinstance(current.get('versions'), list)
             or len(current['versions']) > versions.MAX_VERSIONS
@@ -170,7 +171,14 @@ def verified_transition(project, target_sha, *, expected_parent_sha=None):
     if revisions != list(range(1, len(events)+1)):
         raise DateCarryProblem('lineage')
     child = next((e for e in events if e['revision'] == current['revision']), None)
-    parent = next((e for e in events if child and e['revision'] == child['revision']-1), None)
+    if not child or child.get('source_sha256') != target_sha or current['source_sha256'] != target_sha:
+        raise DateCarryProblem('lineage')
+    return events, current['revision']
+
+
+def _verified_edge(project, parent, child, *, expected_parent_sha=None):
+    """The same complete byte/audit/semantic proof for one native journal edge."""
+    target_sha = child.get('source_sha256') if isinstance(child, dict) else None
     for event in (parent, child):
         if (event is None or event.get('baseline_scope') != 'remaining_work'
                 or any(not isinstance(event.get(field), str) or not versions._SHA.fullmatch(event[field])
@@ -186,8 +194,8 @@ def verified_transition(project, target_sha, *, expected_parent_sha=None):
         if approved.utcoffset() != dt.timedelta(0):
             raise DateCarryProblem('lineage')
     parent_sha = parent['source_sha256'] if parent else ''
-    if (not child or not parent or target_sha != current['source_sha256']
-            or child['source_sha256'] != target_sha or child['previous_source_sha256'] != parent_sha
+    if (not child or not parent or child['revision'] != parent['revision']+1
+            or child['previous_source_sha256'] != parent_sha
             or expected_parent_sha is not None and parent_sha != expected_parent_sha
             or target_sha == parent_sha
             or any(e.get('baseline_scope') != 'remaining_work' for e in (parent, child))):
@@ -252,13 +260,74 @@ def verified_transition(project, target_sha, *, expected_parent_sha=None):
     return full, child_rows, provenance
 
 
+def verified_transition(project, target_sha, *, expected_parent_sha=None):
+    """Strictly the current single edge; never infer a more distant parent."""
+    events, revision = _journal(project, target_sha)
+    return _verified_edge(project, events[revision-2] if revision >= 2 else None,
+                          events[revision-1], expected_parent_sha=expected_parent_sha)
+
+
+def _combined(edges):
+    """Keep the single-edge wire unchanged; describe every multi-edge hop."""
+    if len(edges) == 1:
+        return edges[0]
+    for _, _, edge in edges:
+        if (versions._day(edge['parent_effective_from']) > versions._day(edge['source_effective_from'])
+                or dt.datetime.fromisoformat(edge['parent_approved_at'])
+                   > dt.datetime.fromisoformat(edge['source_approved_at'])):
+            raise DateCarryProblem('lineage')
+    first, last = edges[0][2], edges[-1][2]
+    proof = dict(last, from_source_sha256=first['from_source_sha256'],
+                 changed_date_cells=sorted({cell for edge in edges for cell in edge[2]['changed_date_cells']}),
+                 reference_source_sha256=first['from_source_sha256'],
+                 reference_effective_from=first['parent_effective_from'],
+                 reference_approved_at=first['parent_approved_at'],
+                 immediate_parent_source_sha256=last['from_source_sha256'],
+                 lineage_steps=[copy.deepcopy(edge[2]) for edge in edges])
+    return edges[0][0], edges[-1][1], proof
+
+
+def _available(proof, day):
+    return (versions._day(proof['parent_effective_from']) <= day
+            and dt.datetime.fromisoformat(proof['parent_approved_at']).date() <= day)
+
+
+def _chain(project, target_sha, *, reference_sha=None, day=None):
+    # The public single-edge function stays authoritative, including typed
+    # failures. Only an already-proven edge can start a longer chain.
+    edge = verified_transition(project, target_sha)
+    edges = [edge]
+    seen = {target_sha, edge[2]['from_source_sha256']}
+    events, revision = None, edge[2]['source_revision']
+    if reference_sha is not None:
+        events, current_revision = _journal(project, target_sha)
+        if (current_revision != revision or sum(e.get('source_sha256') == reference_sha
+                                               for e in events[:revision]) != 1):
+            raise DateCarryProblem('lineage')
+    while ((reference_sha is not None and edges[0][2]['from_source_sha256'] != reference_sha)
+           or (day is not None and not _available(edges[0][2], day))):
+        if len(edges) >= MAX_CHAIN_EDGES or revision <= 2:
+            raise DateCarryProblem('parent_future' if day is not None else 'lineage')
+        if events is None:
+            events, current_revision = _journal(project, target_sha)
+            if current_revision != edge[2]['source_revision']:
+                raise DateCarryProblem('lineage')
+        child, parent = events[revision-2], events[revision-3]
+        if child.get('source_sha256') != edges[0][2]['from_source_sha256']:
+            raise DateCarryProblem('lineage')
+        prior = _verified_edge(project, parent, child)
+        if prior[2]['from_source_sha256'] in seen:
+            raise DateCarryProblem('lineage')
+        seen.add(prior[2]['from_source_sha256'])
+        edges.insert(0, prior)
+        revision -= 1
+    return _combined(edges)
+
+
 def parent_facts(project, target_sha, cut):
-    """Authorize only the immediate parent's already available dated facts."""
-    parent, child, provenance = verified_transition(project, target_sha)
+    """Use only an eligible ancestor, with unchanged facts across every hop."""
     day = versions._day(cut)
-    if (versions._day(provenance['parent_effective_from']) > day
-            or dt.datetime.fromisoformat(provenance['parent_approved_at']).date() > day):
-        raise DateCarryProblem('parent_future')
+    parent, child, provenance = _chain(project, target_sha, day=day)
     return parent, dict(provenance, kind='unchanged_parent_gpr_facts')
 
 
@@ -271,8 +340,8 @@ def project(project, profile, target_sha):
         raise DateCarryProblem('scope')
     if set(profile)-CONFIG_FIELDS-{'remaining_source_sha256', 'full_fingerprint', 'remaining_fingerprint', 'recorded_at'}:
         raise DateCarryProblem('weights')
-    full, child_rows, provenance = verified_transition(project, target_sha,
-        expected_parent_sha=profile['full_source_sha256'])
+    full, child_rows, provenance = _chain(project, target_sha,
+        reference_sha=profile['full_source_sha256'])
     if (profile.get('full_fingerprint') != _fingerprint(full)
             or profile.get('remaining_fingerprint') != _fingerprint(full)):
         raise DateCarryProblem('definitions')
