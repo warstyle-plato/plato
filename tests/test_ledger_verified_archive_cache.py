@@ -48,6 +48,37 @@ def entries(root):
     return list((root / disk.DIRECTORY).glob('*.json.gz'))
 
 
+@pytest.mark.parametrize('stamp', [None, 'old-reader'])
+def test_current_schema_does_not_certify_stale_derived_metadata(source, monkeypatch, stamp):
+    root, saved = source
+    manifest = root / (saved['snapshot_id'] + '.json')
+    saved['ledgers'][0]['items'][0]['context_headings'] = [{'name': 'Устаревший контекст'}]
+    if stamp is None:
+        saved.pop('parser_fingerprint', None)
+    else:
+        saved['parser_fingerprint'] = stamp
+    manifest.write_text(json.dumps(saved))
+    before = manifest.read_bytes()
+    assert ledgers.basis_metadata_current(saved)
+    assert not ledgers.source_parser_current(saved)
+    current = ledgers.read_snapshot('Example', saved['snapshot_id'])
+    assert current['source_parse_state'] == 'refreshed'
+    assert ledgers.source_parser_current(current)
+    assert current['ledgers'][0]['items'][0].get('context_headings') != [{'name': 'Устаревший контекст'}]
+    assert manifest.read_bytes() == before
+
+
+def test_missing_original_does_not_certify_old_parser_metadata(source):
+    root, saved = source
+    manifest = root / (saved['snapshot_id'] + '.json')
+    saved.pop('parser_fingerprint', None)
+    manifest.write_text(json.dumps(saved))
+    (root / (saved['snapshot_id'] + '.zip')).unlink()
+    current = ledgers.read_snapshot('Example', saved['snapshot_id'])
+    assert current['source_parse_state'] == 'original_unavailable'
+    assert not ledgers.source_parser_current(current)
+
+
 def test_prepared_identity_reader_uses_shared_raw_parse_and_fresh_worker(source, monkeypatch):
     root, saved = source
     assert ledgers.basis_metadata_current(saved)
@@ -129,7 +160,7 @@ def test_fingerprint_tracks_the_stage_decorator_code_dependency(tmp_path, monkey
     assert disk.fingerprint(reader) != first
 
 
-@pytest.mark.parametrize('damage', ['header', 'deflate', 'identity', 'decoded_size', 'compressed_size'])
+@pytest.mark.parametrize('damage', ['header', 'deflate', 'identity', 'parser_fingerprint', 'decoded_size', 'compressed_size'])
 def test_corrupt_or_oversized_cache_reparses_verified_original(source, monkeypatch, damage):
     root, saved = source
     expected = read(saved)
@@ -146,6 +177,10 @@ def test_corrupt_or_oversized_cache_reparses_verified_original(source, monkeypat
     elif damage == 'identity':
         envelope = json.loads(gzip.decompress(blob))
         envelope['identity'][1] = '0' * 64
+        broken = gzip.compress(json.dumps(envelope).encode())
+    elif damage == 'parser_fingerprint':
+        envelope = json.loads(gzip.decompress(blob))
+        envelope['parsed'].pop('parser_fingerprint')
         broken = gzip.compress(json.dumps(envelope).encode())
     elif damage == 'decoded_size':
         broken = gzip.compress(b' ' * (ledgers.MAX_PARSED_BYTES + 1))

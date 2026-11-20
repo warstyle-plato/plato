@@ -61,6 +61,42 @@ def test_covered_nonzero_period_cannot_lose_or_change_a_known_zero_component(fie
     assert len(unique_statement_sources(references, sources)) == 2
 
 
+def test_preserved_binding_order_does_not_split_the_same_covered_statement():
+    from developaid_monitor_statement_sources import unique_statement_sources
+    references, sources = versions()
+    for ledger, _ in sources:
+        extra = copy.deepcopy(ledger['items'][0])
+        extra.update(position='2', name='Вторая работа', source={'row': 10})
+        ledger['items'].append(extra)
+    # Refresh aligns source cells to old li:ii bindings, whose order can differ
+    # from the parser's current row order. No native evidence has changed.
+    sources[0][0]['items'].reverse()
+    before = copy.deepcopy(sources)
+    current, = unique_statement_sources(references, sources)
+    assert len(current['source_versions']) == 1
+    assert sources == before
+
+
+def test_missing_original_cannot_produce_a_statement_family():
+    from developaid_monitor_statement_sources import unique_statement_sources, statement_family_map
+    references, sources = versions()
+    for ledger, _ in sources:
+        ledger['source_complete'] = True
+    sources[0][0]['source_parse_state'] = 'original_unavailable'
+    assert len(unique_statement_sources(references, sources)) == 2
+    assert statement_family_map(sources) == {}
+
+
+def test_ambiguous_source_coordinates_do_not_certify_covered_editions():
+    from developaid_monitor_statement_sources import unique_statement_sources
+    references, sources = versions()
+    for ledger, _ in sources:
+        extra = copy.deepcopy(ledger['items'][0])
+        extra.update(position='2', name='Другая работа')
+        ledger['items'].append(extra)
+    assert len(unique_statement_sources(references, sources)) == 2
+
+
 def test_statement_family_proof_is_per_call_and_does_not_modify_cached_observations():
     from developaid_monitor_statement_sources import statement_family_map
     from developaid_monitor_statement_union import _source

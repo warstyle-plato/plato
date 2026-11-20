@@ -26,7 +26,7 @@ def rendered(control, source=None):
 def assert_matched_scope(result):
     assert 'Сверить с КС-6а' in result['brief']
     assert '0,1 %' not in result['brief']
-    assert 'готовность сопоставленных работ' in result['parts']
+    assert 'готовность работ в расчёте' in result['parts']
     assert 'готовность договора' not in result['parts']
     assert result['unchanged']
 
@@ -36,9 +36,9 @@ def test_low_schedule_readiness_is_named_as_matched_scope_without_changing_finan
 
 
 def test_scope_assertion_rejects_the_previous_whole_contract_wording():
-    old = page.MONITOR_PAGE.replace('готовность сопоставленных работ ${contractShare(s.readiness)}',
+    old = page.MONITOR_PAGE.replace('готовность работ в расчёте ${contractShare(s.readiness)}',
                                     'готовность ${contractShare(s.readiness)}').replace(
-        '<div class="contract-sub">готовность сопоставленных работ</div>',
+        '<div class="contract-sub">готовность работ в расчёте</div>',
         '<div class="contract-sub">готовность договора</div>')
     with pytest.raises(AssertionError):
         assert_matched_scope(rendered(CONTROL, old))
@@ -47,7 +47,7 @@ def test_scope_assertion_rejects_the_previous_whole_contract_wording():
 def test_unknown_schedule_readiness_is_not_rendered_as_zero():
     result = rendered(dict(CONTROL, readiness=None, plan_done=None))
     assert 'готовность' not in result['brief']
-    assert 'готовность сопоставленных работ' not in result['parts']
+    assert 'готовность работ в расчёте' not in result['parts']
     assert '0 %' not in result['parts']
     assert result['unchanged']
 
@@ -61,10 +61,11 @@ def test_partial_coverage_and_remaining_start_are_visible_next_to_the_measured_r
     for html in (result['parts'],):
         assert 'В расчёте 2 из 5 работ ГПР. Проценты относятся к этим работам.' in html
         assert 'Выполнение остальных работ не определено.' in html
+        assert 'Готовность всего договора пока не определена.' in html
         assert 'Расчёт с 01.02.2026.' in html
         assert 'Периоды КС до этой даты учтены отдельно: 7.' in html
         assert 'Прогноз всего договора не определён.' in html
-        assert 'Оценка сопоставленных работ: 04.03.2026.' in html
+        assert 'Прогноз работ в расчёте: 04.03.2026.' in html
     assert result['unchanged']
 
 
@@ -77,5 +78,6 @@ def test_complete_known_scope_keeps_its_finish_visible():
     for html in (result['parts'],):
         assert '04.03.2026' in html
         assert 'Прогноз всего договора не определён' not in html
+        assert 'Готовность всего договора пока не определена' not in html
         assert 'В расчёте 2 из 2 работ ГПР. Проценты относятся к этим работам.' in html
     assert result['unchanged']

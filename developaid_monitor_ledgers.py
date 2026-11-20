@@ -1508,7 +1508,8 @@ def parse_archive(data: bytes, filename: str = '') -> dict:
     members = _zip_members(data)
     budget = {'text_bytes': 0}
     result = {'files': [], 'ledgers': [], 'summary_contracts': [], 'warnings': [],
-              'identity_schema': 4, 'parser_schema': PARSER_SCHEMA}
+              'identity_schema': 4, 'parser_schema': PARSER_SCHEMA,
+              'parser_fingerprint': _PARSER_FINGERPRINT}
     if not members:
         raise LedgerProblem('Архив пуст. Добавьте накопительные книги Excel.')
     for name, payload in members:
@@ -1740,6 +1741,12 @@ def basis_metadata_current(snapshot: dict) -> bool:
         for field in ('planned_amount_basis', 'completed_amount_basis'))
 
 
+def source_parser_current(snapshot: dict) -> bool:
+    """A schema tag alone does not attest derived source metadata or context."""
+    return (basis_metadata_current(snapshot)
+            and snapshot.get('parser_fingerprint') == _PARSER_FINGERPRINT)
+
+
 def _archive_cache_key(digest: str, filename: str) -> tuple:
     return (PARSER_SCHEMA, digest, filename, _PARSER_FINGERPRINT)
 
@@ -1761,6 +1768,8 @@ def _decode_archive(blob: bytes, key: tuple) -> dict:
     if (not isinstance(envelope, dict) or envelope.get('identity') != list(key)
             or not isinstance(envelope.get('parsed'), dict)):
         raise ValueError('parsed cache identity mismatch')
+    if envelope['parsed'].get('parser_fingerprint') != _PARSER_FINGERPRINT:
+        raise ValueError('parsed cache reader mismatch')
     return envelope['parsed']
 
 
@@ -1923,7 +1932,7 @@ def read_snapshot(project: str, snapshot_id: str) -> dict:
         snapshot = _read_manifest(path)
     except (OSError, ValueError):
         raise LedgerProblem('Сохранённый архив не читается. Обратитесь к администратору.') from None
-    if not basis_metadata_current(snapshot):
+    if not source_parser_current(snapshot):
         parsed = verified_archive(project, snapshot_id, snapshot.get('filename') or '')
         if parsed is not None:
             parsed = _preserve_source_indices(snapshot, parsed)
