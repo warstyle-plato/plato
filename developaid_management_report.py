@@ -2626,6 +2626,7 @@ def _bookings_line(block: dict[str, Any] | None, kind: str) -> str:
     deals = [item for item in period if item["outcome"] == "deal"]
     dropped = [item for item in period if item["outcome"] == "dropped"]
     unknown = [item for item in period if item["outcome"] == "unknown"]
+    registering = [item for item in period if item["outcome"] == "registering"]
     if period:
         parts = []
         if deals:
@@ -2637,6 +2638,8 @@ def _bookings_line(block: dict[str, Any] | None, kind: str) -> str:
                          f"без сделки ({names})")
         if unknown:
             parts.append(f"по {len(unknown)} договора в загруженной контрактации пока нет")
+        if registering:
+            parts.append(f"{len(registering)} передано на регистрацию по отчёту отдела продаж")
         text = (f"Брони за {PERIODS[kind]}: из списка ушли {len(period)} — "
                 + ", ".join(parts) + ".")
     else:

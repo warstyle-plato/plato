@@ -58,14 +58,14 @@ def test_the_booking_list_is_read_item_by_item():
 def test_a_gone_booking_is_a_deal_or_a_drop():
     got = salesroom.booking_outcomes(_chat(), DEALS, "2026-10-24", "2026-10-18", "2026-10-24")
     assert got["since"] == "2026-10-01" and got["latest"] == "2026-10-20"
-    assert got["total"] == {"deal": 1, "dropped": 1, "unknown": 0}
+    assert got["total"] == {"deal": 1, "dropped": 1, "unknown": 0, "registering": 0}
     [gone] = got["period"]
     assert (gone["apartment"], gone["outcome"], gone["gone"], gone["days"]) == ("45", "dropped",
                                                                                "2026-10-20", 19)
     assert [lot["apartment"] for lot in got["held"]] == ["20"]
     # Контрактация старше ухода брони: отсутствие договора — ещё не срыв.
     old = salesroom.booking_outcomes(_chat(), DEALS, "2026-10-15", "2026-10-18", "2026-10-24")
-    assert old["total"] == {"deal": 1, "dropped": 0, "unknown": 1}
+    assert old["total"] == {"deal": 1, "dropped": 0, "unknown": 1, "registering": 0}
 
 
 def test_the_report_says_how_many_bookings_failed():

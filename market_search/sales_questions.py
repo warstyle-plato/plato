@@ -148,7 +148,7 @@ def _dropped(read: dict[str, Any] | None, rows: list[dict[str, Any]], uploaded: 
     got = salesroom.booking_outcomes(read, rows, uploaded or None, first, today) or {}
     out = []
     for item in got.get("period") or []:
-        if item.get("outcome") == "deal" or not (first <= item["gone"] <= today):
+        if item.get("outcome") in {"deal", "registering"} or not (first <= item["gone"] <= today):
             continue
         where = ", ".join(x for x in (item.get("tower") or "",
                                       _area(item["area"]) if item.get("area") else "") if x)

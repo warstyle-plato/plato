@@ -84,7 +84,12 @@ def test_office_and_retail_keep_area_based_liabilities_out_of_common_cost_weight
         inputs[obj.enabled_key] = False
     inputs.update(settings(), project_kind="nonresidential", project_start="2027-01-01",
                   ird_months=12, construction_months=12, land_rights_cost_mln=0,
-                  land_rent_payment_mode="manual", land_rent_payment_schedule="100%@120")
+                  # A payment after both operating horizons is sufficient to
+                  # expose common-cost allocation of independent liabilities.
+                  # Month120 and editable long tails are covered above and in
+                  # test_native_land_rent_books; avoid multiplying their full
+                  # calendar across every office/retail comparison here.
+                  land_rent_payment_mode="manual", land_rent_payment_schedule="100%@48")
     for prefix, cost in (("offices", 100), ("retail", 200)):
         inputs.update({prefix + "_enabled": True, prefix + "_gba_sqm": 5000,
             prefix + "_saleable_sqm": 3500, prefix + "_cost_th_per_sqm": cost,
@@ -101,6 +106,11 @@ def test_office_and_retail_keep_area_based_liabilities_out_of_common_cost_weight
     shares = result["land_rent"]["land_exposures"]
     assert len(shares) == 2
     assert [e["share"] for e in shares] == pytest.approx([.5, .5])
+    cash_date = date(2031, 1, 1)
+    for exposure in shares:
+        assert cash_date > date.fromisoformat(exposure["lease_exit"])
+        assert set(exposure["monthly"]) == {cash_date.isoformat()}
+        assert exposure["monthly"][cash_date.isoformat()] > 0
     prepared = core.prepared_calculation(copy.deepcopy(inputs), copy.deepcopy(tep), [])
     spec = core.nonres_book_spec(prepared, result, "Synthetic separate parcel liabilities")
     office_keys = {o.key for o in core.STANDALONE_OBJECTS if o.product == "offices"}
