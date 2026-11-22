@@ -1367,6 +1367,30 @@ def apply_mo_vri_benefits(inputs: dict, tep: dict) -> dict:
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     if not estimate["complete"]:
+        old_result = config.get("result")
+        old_rows = old_result.get("rows", []) if isinstance(old_result, dict) else []
+        old_budget = {str(r.get("id") or "") for r in old_rows if isinstance(r, dict)
+                      and r.get("valuation_basis") == "Ставка строительства из проекта"}
+        needs_ncs = {str(r.get("id") or "") for r in config.get("rows", [])
+                     if r.get("kind") in ("school", "kindergarten") and not r.get("valuation_mode")
+                     and r.get("rub_per_place") in (None, "") and not r.get("ncs_table")}
+        if old_budget & needs_ncs:
+            # Сохраняем исходный расчёт для справки, но не продолжаем применять
+            # устаревшую бюджетную ставку. Известная плата до льгот доступна.
+            config = copy.deepcopy(config)
+            config["suspended"] = {"applied": config.pop("applied"), "result": config.get("result"),
+                                   "reason": "Выберите тип школы или ДОО по НЦС и пересчитайте льготу."}
+            config["result"] = estimate
+            vri = mo_vri_compensation(gross)
+            vri.update(payment_used_mln=gross / 1e6, benefits=estimate,
+                       warnings=["Прежняя льгота по стоимости места из бюджета проекта снята. "
+                                 "Выберите тип школы или ДОО по НЦС и пересчитайте льготу."])
+            inputs.update(mo_vri_benefits=config, land_rights_cost_mln=gross / 1e6,
+                          mo_vri_compensation_mln=0.0,
+                          _mo_vri_relief={"schema": 1, "vri": vri,
+                              "source": {"kind": "benefits_need_ncs", "label": vri["warnings"][0]}})
+            return {"vri": vri, "inputs": {k: copy.deepcopy(inputs[k]) for k in
+                    ("mo_vri_benefits", "land_rights_cost_mln", "mo_vri_compensation_mln", "_mo_vri_relief")}}
         missing = "; ".join(r.get("error", "") for r in estimate["rows"] if not r["complete"])
         raise HTTPException(status_code=422, detail="Льготы 1310-ПП требуют уточнения: " + missing)
     if (estimate["has_resettlement"] and n(inputs, "vri_transfer_offset_mln") > 0
