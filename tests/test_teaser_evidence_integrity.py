@@ -59,6 +59,158 @@ def test_matching_facts_keep_the_source_and_server_normalization(candidate, text
     assert not got["unverified"]
 
 
+@pytest.mark.parametrize('key',['apartments_gns_sqm','residential_spp_sqm'])
+def test_saleable_area_is_retained_as_a_source_fact_and_never_becomes_gns(key):
+    quote='Продаваемая площадь квартир 12 340 м²'
+    got=check([field('12 340',quote,key=key,unit='м²')],'[стр. 2]\n'+quote)
+    assert not got['fields']
+    refused=got['unverified'][0]
+    assert refused['refusal_code']=='saleable_area'
+    assert refused['source_fact']=={'kind':'saleable_area','value':'12 340',
+        'unit':'м²','quote':quote,'page':2}
+    assert quote in got['notes'][0] and 'стр. 2' in got['notes'][0]
+    state=tc.start(got,{'text':'[стр. 2]\n'+quote},'source.pdf',presets={},current_class='')
+    card=tc.build(state,{}, {},spp_split={},presets={},defaults={})
+    assert not card['to_engine'] and card['refused'][0]['refusal_code']=='saleable_area'
+
+
+def test_generic_project_spp_cannot_be_assigned_to_the_residential_house():
+    quote='ПАРАМЕТРЫ ПРОЕКТА. СПП в ГНС 23 450 м²'
+    got=check([field('23 450',quote,key='residential_spp_sqm',unit='м²')],'[стр. 3]\n'+quote)
+    assert not got['fields']
+    assert got['unverified'][0]['refusal_code']=='unscoped_project_area'
+    assert got['unverified'][0]['source_fact']['page']==3
+    assert quote in got['notes'][0]
+
+
+def test_explicit_residential_house_spp_keeps_its_verified_source():
+    quote='СПП жилого дома целиком (квартиры и коммерция) 23 450 м²'
+    got=check([field('23 450',quote,key='residential_spp_sqm',unit='м²')],'[стр. 3]\n'+quote)
+    assert len(got['fields'])==1 and not got['unverified']
+
+
+def test_area_basis_notes_do_not_turn_a_missing_quote_into_a_verified_source_fact():
+    candidate=field('12 340','Продаваемая площадь квартир 12 340 м²',key='apartments_gns_sqm',unit='м²')
+    got=check([candidate],'[стр. 1]\nДругой документ без такой площади')
+    assert not got['fields'] and 'source_fact' not in got['unverified'][0]
+    assert not got['notes']
+
+
+@pytest.mark.parametrize('value,accepted',[('10 000',True),('8 000',False)])
+def test_gns_and_saleable_labels_in_one_quote_keep_their_own_source_amount(value,accepted):
+    quote='ГНС квартир 10 000 м²; продаваемая площадь квартир 8 000 м²'
+    got=check([field(value,quote,key='apartments_gns_sqm',unit='м²')],'[стр. 1]\n'+quote)
+    assert bool(got['fields'])==accepted
+    if not accepted:assert got['unverified'][0]['refusal_code']=='saleable_area'
+
+
+def test_implementing_a_project_does_not_rename_its_explicit_gns_to_saleable_area():
+    quote='ГНС квартир реализуемого проекта 10 000 м²'
+    got=check([field('10 000',quote,key='apartments_gns_sqm',unit='м²')],'[стр. 1]\n'+quote)
+    assert len(got['fields'])==1 and not got['unverified']
+
+
+@pytest.mark.parametrize('key,value,quote',[
+    ('residential_spp_sqm','20 000','СПП проекта 20 000 м²; СПП жилого дома 15 000 м²'),
+    ('apartments_gns_sqm','20 000','ПАРАМЕТРЫ ПРОЕКТА. СПП в ГНС 20 000 м²'),
+    ('apartments_gns_sqm','12 340','12 340 м² — продаваемая площадь квартир'),
+    ('residential_spp_sqm','20 000','СПП проекта 20 000 м² СПП жилого дома 15 000 м²'),
+    ('residential_spp_sqm','10 000','ГНС квартир 10 000 м²; СПП МКД 15 000 м²'),
+    ('apartments_gns_sqm','20 000','12 340 м² — ГНС квартир; 20 000 м² — СПП проекта'),
+])
+def test_area_basis_is_bound_to_the_selected_amount_not_a_neighbours_label(key,value,quote):
+    got=check([field(value,quote,key=key,unit='м²')],'[стр. 2]\n'+quote)
+    assert not got['fields']
+    refused=got['unverified'][0]
+    assert refused['refusal_code'] in {'saleable_area','unscoped_project_area','ambiguous_area_basis'}
+    assert refused['source_fact']['value']==value
+    assert refused['source_fact']['quote']==quote and refused['source_fact']['page']==2
+    assert quote in got['notes'][0]
+
+
+@pytest.mark.parametrize('key,value,quote',[
+    ('apartments_gns_sqm','12 340','ГНС квартир 12 340 м²'),
+    ('apartments_gns_sqm','12 340','Квартиры 12 340 м²'),
+    ('residential_spp_sqm','15 000','СПП МКД 15 000 м²'),
+    ('residential_spp_sqm','15 000','СПП проекта 20 000 м²; СПП жилого дома 15 000 м²'),
+    ('apartments_gns_sqm','12 340','12 340 м² — ГНС квартир'),
+    ('residential_spp_sqm','15 000','15 000 м² — СПП жилого дома'),
+    ('apartments_gns_sqm','12 340','12 340 м² — ГНС квартир; 20 000 м² — СПП проекта'),
+])
+def test_explicit_gns_and_house_labels_keep_their_own_prefix_or_postfix_amount(key,value,quote):
+    got=check([field(value,quote,key=key,unit='м²')],'[стр. 1]\n'+quote)
+    assert len(got['fields'])==1 and got['fields'][0]['source_checked']
+    assert not got['unverified']
+
+
+def test_conflicting_prefix_and_postfix_area_bases_are_not_silently_chosen():
+    quote='ГНС квартир 12 340 м² — продаваемая площадь квартир'
+    got=check([field('12 340',quote,key='apartments_gns_sqm',unit='м²')],'[стр. 1]\n'+quote)
+    assert not got['fields'] and got['unverified'][0]['refusal_code']=='ambiguous_area_basis'
+
+
+INLINE_BASIS_SEPARATORS=('—','–','-',':','=','({label})',',',', то есть','\n')
+
+
+def inline_basis_quote(before,after,separator,value='12 340'):
+    suffix=separator.format(label=after) if '{label}' in separator else separator+' '+after
+    return f'{before} {value} м² '+suffix
+
+
+@pytest.mark.parametrize('separator',INLINE_BASIS_SEPARATORS)
+@pytest.mark.parametrize('key,before,after',[
+    ('apartments_gns_sqm','ГНС квартир','продаваемая площадь квартир'),
+    ('apartments_gns_sqm','Продаваемая площадь квартир','ГНС квартир'),
+    ('residential_spp_sqm','СПП жилого дома','продаваемая площадь квартир'),
+    ('residential_spp_sqm','Продаваемая площадь квартир','СПП жилого дома'),
+    ('apartments_gns_sqm','ГНС квартир','СПП жилого дома'),
+    ('residential_spp_sqm','СПП жилого дома','ГНС квартир'),
+])
+def test_one_amount_conflicting_basis_matrix_never_becomes_an_engine_area(key,before,after,separator):
+    quote=inline_basis_quote(before,after,separator)
+    got=check([field('12 340',quote,key=key,unit='м²')],'[стр. 1]\n'+quote)
+    assert not got['fields']
+    refused=got['unverified'][0]
+    assert refused['refusal_code']=='ambiguous_area_basis'
+    assert refused['source_fact']=={'kind':'ambiguous_area_basis','value':'12 340',
+        'unit':'м²','quote':quote,'page':1}
+    state=tc.start(got,{'text':'[стр. 1]\n'+quote},'conflicting-area.pdf',presets={},current_class='')
+    card=tc.build(state,{}, {'apartments':{}},spp_split={},presets={},defaults={})
+    packet=tc.calc_overrides(card)
+    assert 'gns' not in packet.get('_tep',{}).get('apartments',{})
+
+
+@pytest.mark.parametrize('separator',INLINE_BASIS_SEPARATORS)
+@pytest.mark.parametrize('key,label',[
+    ('apartments_gns_sqm','ГНС квартир'),('residential_spp_sqm','СПП МКД'),
+])
+def test_one_amount_consistent_basis_matrix_keeps_its_verified_area(key,label,separator):
+    quote=inline_basis_quote(label,label,separator)
+    got=check([field('12 340',quote,key=key,unit='м²')],'[стр. 1]\n'+quote)
+    assert len(got['fields'])==1 and got['fields'][0]['source_checked']
+    assert not got['unverified']
+
+
+@pytest.mark.parametrize('separator',['; ',' | ',', ','\n'])
+@pytest.mark.parametrize('key,value',[
+    ('apartments_gns_sqm','12 340'),('residential_spp_sqm','15 000'),
+])
+def test_separated_neighbour_amounts_keep_their_own_nonconflicting_basis(key,value,separator):
+    quote='ГНС квартир 12 340 м²'+separator+'СПП жилого дома 15 000 м²'
+    got=check([field(value,quote,key=key,unit='м²')],'[стр. 1]\n'+quote)
+    assert len(got['fields'])==1 and got['fields'][0]['source_checked']
+    assert not got['unverified']
+
+
+@pytest.mark.parametrize('key,label',[
+    ('apartments_gns_sqm','ГНС квартир'),('residential_spp_sqm','СПП МКД'),
+])
+def test_broader_conflict_inspection_does_not_newly_admit_an_unmarked_positive_suffix(key,label):
+    quote='12 340 м², '+label
+    got=check([field('12 340',quote,key=key,unit='м²')],'[стр. 1]\n'+quote)
+    assert not got['fields'] and got['unverified'][0]['source_fact']['value']=='12 340'
+
+
 def test_conflicts_require_a_choice_and_are_not_order_dependent():
     fields = [field(400, "Цена 400 млн руб."), field(450, "Цена 450 млн руб.")]
     text = "[стр. 1]\nЦена 400 млн руб.\nЦена 450 млн руб."
