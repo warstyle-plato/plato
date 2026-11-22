@@ -181,11 +181,11 @@ def test_a_project_without_a_choice_has_no_block() -> None:
     assert "strategy_compare" not in result and core.strategy_compare_block(result) is None
 
 
-def test_the_block_stands_after_owner_economics_in_its_own_section(office) -> None:
+def test_the_block_stands_with_the_product_strategies_in_income(office) -> None:
     sections = office["bundle"]["consolidated"]["report"]["object_report"]["sections"]
     keys = [s["key"] for s in sections]
-    assert keys.index("comparison") == keys.index("owner") + 1
-    refs = [b.get("ref") for s in sections if s["key"] == "comparison" for b in s["blocks"]]
+    assert keys == [key for key, _ in core.REPORT_SECTIONS[core.REPORT_KIND_HOUSING]]
+    refs = [b.get("ref") for s in sections if s["key"] == "income" for b in s["blocks"] if b.get("ref")]
     assert refs == ["strategy_compare"]
 
 
@@ -346,7 +346,7 @@ SET = r"""([id, value]) => {
 
 READ = r"""() => {
   openTab('report', null);
-  const card = document.querySelector('#rsObj-comparison [data-strategy-compare-card]');
+  const card = document.querySelector('#rsObj-income [data-strategy-compare-card]');
   const table = card && card.querySelector('table.strategy-compare-table');
   const seen = el => !!el && el.offsetParent !== null;
   const prev = card && card.previousElementSibling;

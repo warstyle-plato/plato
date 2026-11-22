@@ -7,6 +7,7 @@
 """
 
 import subprocess
+from types import SimpleNamespace
 
 import document_intake as di
 import pdf_ocr
@@ -46,7 +47,10 @@ def _stub_ocr(monkeypatch, recognized: str, count: int = 4) -> list[int]:
     module = types.ModuleType("pymupdf")
     module.open = lambda stream=None, filetype=None: _Document(count)  # noqa: ARG005
     monkeypatch.setitem(sys.modules, "pymupdf", module)
-    monkeypatch.setattr(pdf_ocr.shutil, "which", lambda name: "/usr/bin/" + name)
+    # Other readers (including pypdf's binary configuration) share shutil.
+    # Keep this OCR stub local instead of replacing their binary lookup too.
+    monkeypatch.setattr(pdf_ocr, "shutil", SimpleNamespace(
+        which=lambda name: "/usr/bin/" + name))
 
     def fake_run(argv, input=None, capture_output=False, timeout=None):  # noqa: A002, ARG001
         seen.append(len(seen))
@@ -75,14 +79,15 @@ def test_the_recognizer_needs_both_halves(monkeypatch):
     # `import pymupdf`.
     import sys
 
-    monkeypatch.setattr(pdf_ocr.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(pdf_ocr, "shutil", SimpleNamespace(
+        which=lambda name: "/usr/bin/" + name))
     monkeypatch.setitem(sys.modules, "pymupdf", None)
     monkeypatch.setattr(pdf_ocr, "_rasterizer_ready", lambda: False)
     assert pdf_ocr.available() is False
     assert "pymupdf" in pdf_ocr.unavailable_reason()
 
     monkeypatch.setattr(pdf_ocr, "_rasterizer_ready", lambda: True)
-    monkeypatch.setattr(pdf_ocr.shutil, "which", lambda name: None)
+    monkeypatch.setattr(pdf_ocr, "shutil", SimpleNamespace(which=lambda name: None))
     assert pdf_ocr.available() is False
     assert "tesseract" in pdf_ocr.unavailable_reason()
 
@@ -144,7 +149,7 @@ def test_recognition_has_its_own_page_cap(monkeypatch):
 def test_a_missing_recognizer_still_refuses_with_a_reason(monkeypatch):
     # «Не смогли» и «нечем» — разные ответы. Бот живёт на Render, и наш
     # Dockerfile там не собирается.
-    monkeypatch.setattr(pdf_ocr.shutil, "which", lambda name: None)
+    monkeypatch.setattr(pdf_ocr, "shutil", SimpleNamespace(which=lambda name: None))
     document = di.extract_text(_scan_pdf(), "скан.pdf")
     assert document["recognized"] is False
     assert "tesseract" in document["reason"]

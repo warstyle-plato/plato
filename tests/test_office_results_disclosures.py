@@ -92,7 +92,7 @@ def test_zero_type_price_uses_disclosed_existing_model_fallback():
 
 def test_cost_chart_and_table_are_identical_and_total_is_not_charted_twice():
     _, _, r, _ = run()
-    s=next(s for s in r['report']['object_report']['sections'] if s['key']=='costs')
+    s=next(s for s in r['report']['object_report']['sections'] if s['key']=='expenses')
     b=s['blocks'][0]
     assert b['charts'][0]['rows']==b['years'][:-1]
     assert sum(p['value'] for p in b['charts'][0]['rows'])==pytest.approx(r['summary']['total_expenses'])
@@ -103,7 +103,7 @@ def test_pdf_exports_long_monthly_plans_with_labels():
     x,t,r,_=run(offices_direct_sale_months=72)
     pdf=core._build_developaid_pdf({'result':r,'inputs':x,'tep':t,'rates':[]})
     text='\n'.join(p.extract_text() for p in PdfReader(io.BytesIO(pdf)).pages)
-    for phrase in ['Состав денежной выручки','Последняя продажа','Остаток','Подземные места','Места на первых этажах','расчётный план продаж']:
+    for phrase in ['Структура выручки','Последняя продажа','Остаток','Подземные места','Места на первых этажах','расчётный план продаж']:
         assert phrase.lower() in text.lower()
 
 
@@ -168,10 +168,67 @@ def test_ddu_object_and_unit_cost_use_the_sold_area_after_floor_parking():
     raw=next(p for p in r['tep']['rows'] if p['key']=='offices')['saleable']
     assert product['quantity'] < raw
     sections={s['key']:s for s in r['report']['object_report']['sections']}
-    obj=next(b for b in sections['object']['blocks'] if b.get('title')=='Офисы')
+    obj=next(b for b in sections['site']['blocks'] if b.get('title')=='Офисы')
     rows={row['label']:row['value'] for row in obj['rows']}
     assert rows['Продаваемая площадь']==pytest.approx(product['quantity'])
-    cost=next(b for b in sections['costs']['blocks'] if b.get('title')=='Смета объекта — Офисы')
+    cost=next(b for group in sections['expenses']['blocks'] for b in group.get('blocks',[]) if b.get('title')=='Смета объекта — Офисы')
     rows={row['label']:row['value'] for row in cost['rows']}
     assert rows['на м² арендопригодной / продаваемой']==pytest.approx(
         rows['Итого смета объекта']/product['quantity']/1000)
+
+
+def test_tax_product_labels_and_teaser_returns_survive_regrouping():
+    _, _, r, _ = run('ddu')
+    sections = {s['key']: s for s in r['report']['object_report']['sections']}
+    block = next(b for b in sections['income']['blocks'] if b.get('title') == 'Налоговая база по реализованным продуктам')
+    product = next(p for p in r['report']['products'] if p['key'] == 'object_parking_offices')
+    row = next(row for row in block['rows'] if row['label'] == 'Маржа: ' + product['label'])
+    assert row['value'] == r['finance']['tax_margin_by_product']['object_parking_offices']
+    assert sum(row['label'] == 'Маржа: Общие затраты вне объектов' for row in block['rows']) <= 1
+    labels = {row['label'] for row in sections['finance']['brief']}
+    assert 'IRR проекта (до финансирования)' in labels and 'IRR собственника' in labels
+
+
+def test_nonres_phase_comparison_uses_its_own_area_labels_without_changing_values():
+    x, t, _, _ = run('ddu')
+    r = core._run_authoritative_model(x, t, [], {'enabled': True, 'phase_count': 2, 'phases': []})['consolidated']
+    table = core.phase_comparison_table(r)
+    labels = [row['label'] for block in table['blocks'] for row in block['rows']]
+    assert not any('МКД' in label or 'квартир' in label for label in labels)
+    assert 'Общепроектные статьи вне смет объектов' in labels
+    row = next(row for block in table['blocks'] for row in block['rows'] if row['label'] == 'Чистая прибыль модели')
+    assert row['total'] == r['summary']['net_profit']
+    base = next(row for row in table['divisors'] if row['label'] == 'Ставки общих статей — расчётная база')
+    assert base['values'] == [p['shared_rate_base_sqm'] for p in r['comparison']]
+
+
+def test_office_teaser_keeps_project_and_owner_irr_after_regrouping():
+    from pypdf import PdfReader
+    x, t, r, _ = run('income', offices_exit_mode='hold')
+    content = core.build_teaser_pdf({'mode': 'single', 'consolidated': r}, x, t, {})
+    pages = PdfReader(io.BytesIO(content)).pages
+    assert len(pages) == 2
+    text = '\n'.join(p.extract_text() for p in pages)
+    assert 'IRR проекта' in text and 'IRR собственника' in text
+    assert 'Удельная экономика' in pages[0].extract_text()
+
+
+def test_shared_pdf_line_renderer_gets_gaps_for_unknown_values():
+    from reportlab.graphics.shapes import Drawing
+    from reportlab.platypus import Paragraph
+    from reportlab.lib.styles import getSampleStyleSheet
+    captured = []
+    def line(rows, specs, unit, **kwargs):
+        captured.extend(specs)
+        for spec in specs:
+            assert spec['active'](rows[0])
+            assert not spec['active'](rows[1])
+            assert spec['active'](rows[2])
+        return Drawing(100, 100)
+    block = {'years': [{'month': '2027-01', 'sold': 0, 'left': 3},
+                       {'month': '2027-02', 'sold': None, 'left': None},
+                       {'month': '2027-03', 'sold': 3, 'left': 0}],
+             'charts': [{'title': 'План', 'unit': 'м²', 'fields': [['sold', 'Продано'], ['left', 'Остаток']]}]}
+    charts = core._object_pdf_charts(block, 400, Paragraph, getSampleStyleSheet()['BodyText'],
+                                    {'line': line})
+    assert charts and len(captured) == 2
