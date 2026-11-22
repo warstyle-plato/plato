@@ -34,6 +34,57 @@ def _flat(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
 
+def _area_basis(quote: str, number: re.Match, unit_end: int, whole_house_marks) -> str:
+    """Bind area labels to this amount, without borrowing a neighbour's label."""
+    previous, following = 0, len(quote)
+    for other in _NUMBER.finditer(quote):
+        unit = _UNIT.match(quote[other.end():])
+        if unit is None or _dimension(unit.group()) != "area":
+            continue
+        end = other.end()+unit.end()
+        if end <= number.start():
+            previous = max(previous,end)
+        elif other.start() >= unit_end:
+            following = min(following,other.start())
+    before = quote[previous:number.start()]
+    prefix = re.split(r"[;|]",before)[-1]
+    # A label immediately following the preceding amount's dash belongs to
+    # that amount. Without a separating clause its ownership is ambiguous.
+    if previous and not re.search(r"[;|]",before) and re.match(r"\s*[—–:=\-(]",prefix):
+        prefix = ""
+    after = quote[unit_end:following]
+    postfix = re.split(r"[;|]",after)[0]
+    if (not re.match(r"\s*[—–:=\-(]",postfix)
+            or (following < len(quote) and not re.search(r"[;|]",after))):
+        postfix = ""
+
+    def label_basis(label):
+        text = _flat(label)
+        if not text:
+            return ""
+        saleable = bool(re.search(
+            r"(?:продаваем[а-яё]*|реализуем[а-яё]*)\s+(?:[а-яё]+\s+){0,2}площад[а-яё]*"
+            r"|площад[а-яё]*\s+(?:продаваем[а-яё]*|реализуем[а-яё]*)",text))
+        gross = bool(re.search(r"\b(?:гнс|спп)\b",text))
+        project = bool(re.search(r"\b(?:гнс|спп|площад[а-яё]*)\s+(?:в\s+гнс\s+)?(?:всего\s+)?проект[а-яё]*",text))
+        house = any(mark in text for mark in whole_house_marks)
+        apartment = bool(re.search(r"\bквартир[а-яё]*",text))
+        if saleable:
+            return "saleable_area"
+        if project:
+            return "unscoped_project_area"
+        if house:
+            return "residential_house"
+        if apartment:
+            return "apartments_gns"
+        return "unscoped_project_area" if gross else ""
+
+    bases = {basis for label in (prefix,postfix) if (basis := label_basis(label))}
+    if len(bases) > 1:
+        return "ambiguous_area_basis"
+    return next(iter(bases),"unscoped_project_area")
+
+
 def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, Any]:
     import document_intake as di
 
@@ -90,26 +141,25 @@ def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, 
                             and math.isclose(number, value, rel_tol=1e-10, abs_tol=1e-8)):
                         matched = True
                         source_match = match
+                        source_unit_end = match.end()+suffix_match.end()
                         break
                 if not matched:
                     why = "число или его единица не совпадает с цитатой"
         if not why and key in {"apartments_gns_sqm", "residential_spp_sqm"}:
-            flat_quote = _flat(quote)
             kind = ""
-            prefix = quote[:source_match.start()].casefold()
-            saleable = list(re.finditer(
-                r"(?:продаваем[а-яё]*|реализуем[а-яё]*)\s+(?:[а-яё]+\s+){0,2}площад[а-яё]*"
-                r"|площад[а-яё]*\s+(?:продаваем[а-яё]*|реализуем[а-яё]*)", prefix))
-            gross = list(re.finditer(r"\b(?:гнс|спп)\b", prefix))
-            if saleable and (not gross or saleable[-1].start() > gross[-1].start()):
+            basis = _area_basis(quote,source_match,source_unit_end,di._WHOLE_HOUSE_MARKS)
+            if basis == "saleable_area":
                 kind = "saleable_area"
                 why = ("Это продаваемая площадь, а поле модели принимает ГНС. Перенос не выполнен; "
                        "исходное значение сохранено в примечаниях.")
-            elif key == "residential_spp_sqm" and not any(
-                    mark in flat_quote for mark in di._WHOLE_HOUSE_MARKS):
+            elif basis == "ambiguous_area_basis":
+                kind = basis
+                why = ("Подписи выбранной площади противоречат друг другу. Перенос не выполнен; "
+                       "исходное значение сохранено в примечаниях.")
+            elif basis != ("residential_house" if key == "residential_spp_sqm" else "apartments_gns"):
                 kind = "unscoped_project_area"
-                why = ("Цитата не подтверждает площадь жилого дома. СПП/ГНС проекта не перенесена "
-                       "в жилой дом; исходное значение сохранено в примечаниях.")
+                why = ("Подпись выбранного числа не подтверждает назначение площади для этого поля. "
+                       "Перенос не выполнен; исходное значение сохранено в примечаниях.")
             if kind:
                 from teaser_card import quote_page
                 page = quote_page(str(document.get("text") or ""), quote)

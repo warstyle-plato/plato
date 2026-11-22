@@ -110,6 +110,45 @@ def test_implementing_a_project_does_not_rename_its_explicit_gns_to_saleable_are
     assert len(got['fields'])==1 and not got['unverified']
 
 
+@pytest.mark.parametrize('key,value,quote',[
+    ('residential_spp_sqm','20 000','СПП проекта 20 000 м²; СПП жилого дома 15 000 м²'),
+    ('apartments_gns_sqm','20 000','ПАРАМЕТРЫ ПРОЕКТА. СПП в ГНС 20 000 м²'),
+    ('apartments_gns_sqm','12 340','12 340 м² — продаваемая площадь квартир'),
+    ('residential_spp_sqm','20 000','СПП проекта 20 000 м² СПП жилого дома 15 000 м²'),
+    ('residential_spp_sqm','10 000','ГНС квартир 10 000 м²; СПП МКД 15 000 м²'),
+    ('apartments_gns_sqm','20 000','12 340 м² — ГНС квартир; 20 000 м² — СПП проекта'),
+])
+def test_area_basis_is_bound_to_the_selected_amount_not_a_neighbours_label(key,value,quote):
+    got=check([field(value,quote,key=key,unit='м²')],'[стр. 2]\n'+quote)
+    assert not got['fields']
+    refused=got['unverified'][0]
+    assert refused['refusal_code'] in {'saleable_area','unscoped_project_area','ambiguous_area_basis'}
+    assert refused['source_fact']['value']==value
+    assert refused['source_fact']['quote']==quote and refused['source_fact']['page']==2
+    assert quote in got['notes'][0]
+
+
+@pytest.mark.parametrize('key,value,quote',[
+    ('apartments_gns_sqm','12 340','ГНС квартир 12 340 м²'),
+    ('apartments_gns_sqm','12 340','Квартиры 12 340 м²'),
+    ('residential_spp_sqm','15 000','СПП МКД 15 000 м²'),
+    ('residential_spp_sqm','15 000','СПП проекта 20 000 м²; СПП жилого дома 15 000 м²'),
+    ('apartments_gns_sqm','12 340','12 340 м² — ГНС квартир'),
+    ('residential_spp_sqm','15 000','15 000 м² — СПП жилого дома'),
+    ('apartments_gns_sqm','12 340','12 340 м² — ГНС квартир; 20 000 м² — СПП проекта'),
+])
+def test_explicit_gns_and_house_labels_keep_their_own_prefix_or_postfix_amount(key,value,quote):
+    got=check([field(value,quote,key=key,unit='м²')],'[стр. 1]\n'+quote)
+    assert len(got['fields'])==1 and got['fields'][0]['source_checked']
+    assert not got['unverified']
+
+
+def test_conflicting_prefix_and_postfix_area_bases_are_not_silently_chosen():
+    quote='ГНС квартир 12 340 м² — продаваемая площадь квартир'
+    got=check([field('12 340',quote,key='apartments_gns_sqm',unit='м²')],'[стр. 1]\n'+quote)
+    assert not got['fields'] and got['unverified'][0]['refusal_code']=='ambiguous_area_basis'
+
+
 def test_conflicts_require_a_choice_and_are_not_order_dependent():
     fields = [field(400, "Цена 400 млн руб."), field(450, "Цена 450 млн руб.")]
     text = "[стр. 1]\nЦена 400 млн руб.\nЦена 450 млн руб."
