@@ -59,6 +59,57 @@ def test_matching_facts_keep_the_source_and_server_normalization(candidate, text
     assert not got["unverified"]
 
 
+@pytest.mark.parametrize('key',['apartments_gns_sqm','residential_spp_sqm'])
+def test_saleable_area_is_retained_as_a_source_fact_and_never_becomes_gns(key):
+    quote='Продаваемая площадь квартир 12 340 м²'
+    got=check([field('12 340',quote,key=key,unit='м²')],'[стр. 2]\n'+quote)
+    assert not got['fields']
+    refused=got['unverified'][0]
+    assert refused['refusal_code']=='saleable_area'
+    assert refused['source_fact']=={'kind':'saleable_area','value':'12 340',
+        'unit':'м²','quote':quote,'page':2}
+    assert quote in got['notes'][0] and 'стр. 2' in got['notes'][0]
+    state=tc.start(got,{'text':'[стр. 2]\n'+quote},'source.pdf',presets={},current_class='')
+    card=tc.build(state,{}, {},spp_split={},presets={},defaults={})
+    assert not card['to_engine'] and card['refused'][0]['refusal_code']=='saleable_area'
+
+
+def test_generic_project_spp_cannot_be_assigned_to_the_residential_house():
+    quote='ПАРАМЕТРЫ ПРОЕКТА. СПП в ГНС 23 450 м²'
+    got=check([field('23 450',quote,key='residential_spp_sqm',unit='м²')],'[стр. 3]\n'+quote)
+    assert not got['fields']
+    assert got['unverified'][0]['refusal_code']=='unscoped_project_area'
+    assert got['unverified'][0]['source_fact']['page']==3
+    assert quote in got['notes'][0]
+
+
+def test_explicit_residential_house_spp_keeps_its_verified_source():
+    quote='СПП жилого дома целиком (квартиры и коммерция) 23 450 м²'
+    got=check([field('23 450',quote,key='residential_spp_sqm',unit='м²')],'[стр. 3]\n'+quote)
+    assert len(got['fields'])==1 and not got['unverified']
+
+
+def test_area_basis_notes_do_not_turn_a_missing_quote_into_a_verified_source_fact():
+    candidate=field('12 340','Продаваемая площадь квартир 12 340 м²',key='apartments_gns_sqm',unit='м²')
+    got=check([candidate],'[стр. 1]\nДругой документ без такой площади')
+    assert not got['fields'] and 'source_fact' not in got['unverified'][0]
+    assert not got['notes']
+
+
+@pytest.mark.parametrize('value,accepted',[('10 000',True),('8 000',False)])
+def test_gns_and_saleable_labels_in_one_quote_keep_their_own_source_amount(value,accepted):
+    quote='ГНС квартир 10 000 м²; продаваемая площадь квартир 8 000 м²'
+    got=check([field(value,quote,key='apartments_gns_sqm',unit='м²')],'[стр. 1]\n'+quote)
+    assert bool(got['fields'])==accepted
+    if not accepted:assert got['unverified'][0]['refusal_code']=='saleable_area'
+
+
+def test_implementing_a_project_does_not_rename_its_explicit_gns_to_saleable_area():
+    quote='ГНС квартир реализуемого проекта 10 000 м²'
+    got=check([field('10 000',quote,key='apartments_gns_sqm',unit='м²')],'[стр. 1]\n'+quote)
+    assert len(got['fields'])==1 and not got['unverified']
+
+
 def test_conflicts_require_a_choice_and_are_not_order_dependent():
     fields = [field(400, "Цена 400 млн руб."), field(450, "Цена 450 млн руб.")]
     text = "[стр. 1]\nЦена 400 млн руб.\nЦена 450 млн руб."

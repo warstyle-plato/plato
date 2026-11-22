@@ -39,6 +39,7 @@ def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, 
 
     body = _flat(document.get("text"))
     fields, refused = [], list(extraction.get("unverified") or [])
+    notes = list(extraction.get("notes") or [])
     grouped: dict[str, list[dict[str, Any]]] = {}
     for item in extraction.get("fields") or []:
         row = dict(item)
@@ -69,6 +70,7 @@ def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, 
                 # Read the source number WITH ITS OWN unit. A model-provided
                 # unit cannot turn the source's 400 RUB into 400 million RUB.
                 matched = False
+                source_match = None
                 for match in _NUMBER.finditer(quote):
                     suffix_match = _UNIT.match(quote[match.end():])
                     suffix = suffix_match.group() if suffix_match else ""
@@ -87,9 +89,38 @@ def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, 
                     if (not error and number is not None and math.isfinite(number)
                             and math.isclose(number, value, rel_tol=1e-10, abs_tol=1e-8)):
                         matched = True
+                        source_match = match
                         break
                 if not matched:
                     why = "число или его единица не совпадает с цитатой"
+        if not why and key in {"apartments_gns_sqm", "residential_spp_sqm"}:
+            flat_quote = _flat(quote)
+            kind = ""
+            prefix = quote[:source_match.start()].casefold()
+            saleable = list(re.finditer(
+                r"(?:продаваем[а-яё]*|реализуем[а-яё]*)\s+(?:[а-яё]+\s+){0,2}площад[а-яё]*"
+                r"|площад[а-яё]*\s+(?:продаваем[а-яё]*|реализуем[а-яё]*)", prefix))
+            gross = list(re.finditer(r"\b(?:гнс|спп)\b", prefix))
+            if saleable and (not gross or saleable[-1].start() > gross[-1].start()):
+                kind = "saleable_area"
+                why = ("Это продаваемая площадь, а поле модели принимает ГНС. Перенос не выполнен; "
+                       "исходное значение сохранено в примечаниях.")
+            elif key == "residential_spp_sqm" and not any(
+                    mark in flat_quote for mark in di._WHOLE_HOUSE_MARKS):
+                kind = "unscoped_project_area"
+                why = ("Цитата не подтверждает площадь жилого дома. СПП/ГНС проекта не перенесена "
+                       "в жилой дом; исходное значение сохранено в примечаниях.")
+            if kind:
+                from teaser_card import quote_page
+                page = quote_page(str(document.get("text") or ""), quote)
+                row["refusal_code"] = kind
+                row["source_fact"] = {"kind": kind, "value": row.get("value"),
+                    "unit": row.get("unit"), "quote": quote, "page": page}
+                row["page"] = page
+                note = (f"В источнике, стр. {page}" if page is not None else "В источнике")
+                note += f": «{quote}». {why}"
+                if note not in notes:
+                    notes.append(note)
         if why:
             refused.append({**row, "reason": why})
         else:
@@ -150,5 +181,5 @@ def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, 
         elif quote and _flat(quote) in body:
             item["source_quote"] = quote
         questions.append(item)
-    return {**extraction, "fields": fields, "conflicts": conflicts,
+    return {**extraction, "fields": fields, "conflicts": conflicts, "notes": notes,
             "questions": questions, "unverified": refused}
