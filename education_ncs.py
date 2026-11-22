@@ -10,7 +10,7 @@ from pathlib import Path
 
 @lru_cache(maxsize=1)
 def _data() -> dict:
-    return json.loads((Path(__file__).parent / "data/education_ncs_2026.json").read_text())
+    return json.loads((Path(__file__).parent / "reference_data/education_ncs_2026.json").read_text())
 
 
 def catalog() -> dict:
