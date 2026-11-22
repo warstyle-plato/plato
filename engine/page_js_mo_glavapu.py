@@ -161,6 +161,7 @@ function addMoVriBenefitRow(){
  if(moVriBenefitsDraft.length>=100){moVriReliefStatus('Допускается не больше 100 обязательств.');return}
  moVriBenefitsDraft.push({id:'obligation-'+Date.now()+'-'+Math.random().toString(36).slice(2),kind,
   ...(kind==='investment'?{object_type:'hotel_3',index_mode:'base',municipality_uplift:false}:{}),
+   ...(['kindergarten','school'].includes(kind)?{valuation_mode:'ncs'}:{}),
   ...(kind==='resettlement'?{district:inputs._mo_calc?.territory?.district||''}:{})});
  moVriReliefEdited(false);renderMoVriBenefitEditor();
 }
@@ -173,7 +174,7 @@ function setMoVriBenefitField(index,key,value){
  else if(key==='municipality_uplift')row[key]=value===true;
  else row[key]=value===''?null:value;
  moVriReliefEdited(false);
- if(['object_type','index_mode','municipality_uplift'].includes(key))renderMoVriBenefitEditor();
+  if(['object_type','index_mode','municipality_uplift','valuation_mode'].includes(key))renderMoVriBenefitEditor();
 }
 function renderMoVriBenefitEditor(){
  const host=moVriNode('moVriBenefitRows');if(!host)return;
@@ -186,8 +187,14 @@ function renderMoVriBenefitEditor(){
   const text=(key,label,placeholder='')=>'<div class="field"><label>'+esc(label)+'</label><input type="text" aria-label="'+esc(label)+'" value="'+esc(row[key])+'" placeholder="'+esc(placeholder)+'" oninput="setMoVriBenefitField('+i+',\''+key+'\',this.value)"></div>';
   let fields='',note='';
   if(['kindergarten','school'].includes(row.kind)){
-   fields=number('required_places','Нормативная потребность, мест','автоматически по РНГП')+number('planned_places','Проектная мощность, мест')+number('rub_per_place','Стоимость засчитываемого места, ₽')+number('eligible_places','Засчитываемые места по соглашению','профицит после проверки >10%')+text('valuation_basis','Источник стоимости места','при ручной ставке — акт или соглашение');
-   note='Проверяется строгое превышение потребности более чем на 10%. Предварительно оценивается разница проектной и нормативной мощности. Ставка из бюджета проекта — оценка; согласованную зачётную мощность можно указать отдельно.';
+   const mode=row.valuation_mode||(row.rub_per_place!=null&&row.rub_per_place!==''?'manual':'ncs');
+   fields=number('required_places','Нормативная потребность, мест','автоматически по РНГП')+number('planned_places','Проектная мощность, мест',mode==='ncs'?'полная мощность одного здания':'из проекта')+number('eligible_places','Засчитываемые места по соглашению','профицит после проверки >10%');
+   fields+='<div class="field"><label>Источник стоимости места</label><select aria-label="Источник стоимости места" onchange="setMoVriBenefitField('+i+',\'valuation_mode\',this.value)"><option value="ncs"'+(mode==='ncs'?' selected':'')+'>По НЦС-2026 — одно здание</option><option value="manual"'+(mode==='manual'?' selected':'')+'>Отдельная ставка по документу</option></select></div>';
+   if(mode==='ncs'){
+    const tables=MO_BENEFITS_CATALOG.education_ncs.tables.filter(t=>t.kind===row.kind);
+    fields+='<div class="field"><label>Тип объекта по НЦС</label><select aria-label="Тип объекта по НЦС" onchange="setMoVriBenefitField('+i+',\'ncs_table\',this.value)"><option value="">Выберите конструкцию и тип объекта</option>'+tables.map(t=>'<option value="'+esc(t.id)+'"'+(row.ncs_table===t.id?' selected':'')+'>'+esc(t.id+' · '+t.label)+'</option>').join('')+'</select></div>';
+   }else fields+=number('rub_per_place','Стоимость засчитываемого места, ₽','по отдельному расчёту или соглашению')+text('valuation_basis','Документ стоимости места','НЦС, сметный расчёт или соглашение');
+   note='Базовая оценка одного здания: ставка НЦС определяется по его полной мощности, затем умножается на засчитываемые места. Для нескольких зданий, индексации и особенностей проекта выберите отдельную ставку с источником. Цены НЦС на 01.01.2026 для Московской области, без НДС. Порог профицита — строго больше 10%.';
   }else if(row.kind==='resettlement'){
    fields=number('area_sqm','Расселяемая аварийная площадь, м²','укажите площадь')+text('district','Муниципалитет переселения','например, Мытищи')+number('rub_per_sqm','Стоимость метра, ₽/м²','КЦТ по муниципалитету')+text('valuation_basis','Источник ручной стоимости');
    note='Укажите аварийную площадь по обязательствам переселения. Цена КЦТ берётся по муниципалитету переселения. Со = Об × Цм — предварительная оценка по положению КРТ; стоимость для Ксу* подтверждается ДоКРТ.';
@@ -212,7 +219,7 @@ function renderMoVriBenefitEditor(){
 function renderMoVriBenefitBreakdown(benefits){
  const host=moVriNode('moVriBenefitBreakdown');if(!host)return;
  if(!benefits){host.innerHTML='';return}
- host.innerHTML='<table class="metric-table"><thead><tr><th>Основание</th><th>Расчёт и источник</th><th>Оценка уменьшения</th></tr></thead><tbody>'+(benefits.rows||[]).map(r=>'<tr><td>'+escapeHtml(r.label)+'</td><td>'+(r.required_places!=null?escapeHtml('Потребность: '+r.required_places+' мест; проект: '+r.planned_places+'; профицит: '+r.surplus_places+'; зачёт: '+r.eligible_places+'; превышение: '+(r.required_places>0?((r.planned_places/r.required_places-1)*100).toFixed(2)+'%':'при нулевой потребности'))+'<br>':'')+escapeHtml(r.formula||r.error||'Недостаточно данных')+(r.unit_rate_rub!=null?'<br>Ставка: '+escapeHtml(moVriMoney(r.unit_rate_rub)):'')+'<br>'+escapeHtml(r.valuation_basis||r.source||'')+'<br><small>'+escapeHtml((r.notes||[]).join(' '))+'</small></td><td>'+escapeHtml(r.amount_rub==null?'нужны данные':moVriMoney(r.amount_rub))+'</td></tr>').join('')+'</tbody><tfoot><tr><th>Итого потенциальная льгота</th><td>'+(benefits.complete?'Предварительная оценка':'Расчёт не завершён; известная часть '+escapeHtml(moVriMoney(benefits.known_subtotal_rub)))+'</td><td><b>'+escapeHtml(benefits.total_rub==null?'не определена':moVriMoney(benefits.total_rub))+'</b></td></tr></tfoot></table>';
+  host.innerHTML='<table class="metric-table"><thead><tr><th>Основание</th><th>Расчёт и источник</th><th>Оценка уменьшения</th></tr></thead><tbody>'+(benefits.rows||[]).map(r=>'<tr><td>'+escapeHtml(r.label)+'</td><td>'+(r.required_places!=null?escapeHtml('Потребность: '+r.required_places+' мест; проект: '+r.planned_places+'; профицит: '+r.surplus_places+'; зачёт: '+r.eligible_places+'; превышение: '+(r.required_places>0?((r.planned_places/r.required_places-1)*100).toFixed(2)+'%':'при нулевой потребности'))+'<br>':'')+escapeHtml(r.formula||r.error||'Недостаточно данных')+(r.unit_rate_rub!=null?'<br>Ставка: '+escapeHtml(moVriMoney(r.unit_rate_rub)):'')+'<br>'+escapeHtml(r.valuation_basis||r.source||'')+(r.ncs?'<br><a href="'+escapeHtml(MO_BENEFITS_CATALOG.education_ncs.source_url)+'" target="_blank" rel="noopener noreferrer">НЦС-2026 — скан сборника</a>':'')+'<br><small>'+escapeHtml((r.notes||[]).join(' '))+'</small></td><td>'+escapeHtml(r.amount_rub==null?'нужны данные':moVriMoney(r.amount_rub))+'</td></tr>').join('')+'</tbody><tfoot><tr><th>Итого потенциальная льгота</th><td>'+(benefits.complete?'Предварительная оценка':'Расчёт не завершён; известная часть '+escapeHtml(moVriMoney(benefits.known_subtotal_rub)))+'</td><td><b>'+escapeHtml(benefits.total_rub==null?'не определена':moVriMoney(benefits.total_rub))+'</b></td></tr></tfoot></table>';
 }
 
 const MO_VRI_COMPENSATION_SOURCE=__DEVELOPAID_MO_VRI_COMPENSATION_SOURCE__;
@@ -287,7 +294,7 @@ function moVriModelKey(){
  const basis=moVriSavedBasis();
  return JSON.stringify([classRegion(),inputs._project_uid||'',inputs.land_rights_cost_mln,
   inputs.mo_vri_compensation_mln,inputs.mo_vri_benefits,inputs.school_places,inputs.kindergarten_places,
-  inputs.school_cost_mln_per_place,inputs.kindergarten_cost_mln_per_place,basis&&basis.gross,basis&&basis.kind,
+  basis&&basis.gross,basis&&basis.kind,
   inputs.vri_transfer_offset_mln,inputs.vri_relief_mode,inputs.vri_relief_pct,inputs.vri_relief_mln,tep,
   typeof partialTepMode==='function'&&partialTepMode()]);
 }
