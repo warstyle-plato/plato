@@ -26,6 +26,8 @@ def catalog(view, configuration=BOUND):
             (2026, item(name='Synthetic work 3', position='2', scope='Корпус 2')),
             (2026, item(name='Synthetic work монтаж', position='3', done=20))]
     source, observed = source_snapshot(rows), view['schedule']['physical_progress']
+    # This fixture's archive must be known by both the Gantt and its catalogue.
+    observed.update(source_kind='gpr', snapshot_id=source['snapshot_id'])
     result = state(tasks=TASKS, configuration=copy.deepcopy(configuration),
                    source_sha256=observed['source_sha256'], snapshot_id=observed['snapshot_id'])
     result['review'] = plain(review.build(quantities._items(source), TASKS, configuration, CUT,
@@ -168,3 +170,34 @@ def test_unbind_keeps_other_works_and_a_foreign_source_shows_nothing(monkeypatch
         expect(page.locator('#gantt .g-row.lvl-task').first).to_be_attached()
         expect(page.locator('#gantt .gb-ks')).to_have_count(0)
         assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+def test_positions_require_the_gantt_archive_identity(monkeypatch, site, width):
+    activate(site)
+    value = plain(pace.schedule_view(PROJECT, DAY))
+    current, writes = catalog(value), []
+    with open_preview(monkeypatch, value, width) as (page, _, errors):
+        show(page, value)
+        open_works(page, current, writes)
+        expect(box(page, '3').locator('.gb-ks-toggle')).to_contain_text('подтверждено 1')
+        for kind in ('absent', 'other_source', 'missing_snapshot', 'empty_snapshot', 'foreign_snapshot'):
+            changed, state = copy.deepcopy(value), copy.deepcopy(current)
+            observed = changed['schedule']['physical_progress']
+            if kind == 'absent':
+                changed['schedule'].pop('physical_progress')
+            elif kind == 'other_source':
+                observed['source_kind'] = 'other'
+            elif kind == 'missing_snapshot':
+                observed.pop('snapshot_id', None)
+                state.pop('snapshot_id', None)
+            elif kind == 'empty_snapshot':
+                observed['snapshot_id'] = state['snapshot_id'] = ''
+            else:
+                observed['snapshot_id'] = 'foreign-archive'
+            show(page, changed)
+            page.evaluate('s=>renderPhysicalSchedule(s)', state)
+            page.evaluate('renderGantt(currentView)')
+            expect(page.locator('#gantt .g-row.lvl-task').first).to_be_attached()
+            expect(page.locator('#gantt .gb-ks')).to_have_count(0)
+        assert not writes and not errors

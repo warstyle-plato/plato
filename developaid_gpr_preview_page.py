@@ -196,7 +196,7 @@ function ksState(){
  if(!s||s.source_kind!=='gpr'||!s.review)return null;
  // Only positions of the very GPR version and archive the Gantt is drawn from.
  const observed=v?.schedule?.physical_progress,plan=v?.schedule?.approved_plan?.source_sha256||observed?.source_sha256;
- if(!plan||plan!==s.source_sha256||observed&&observed.source_kind==='gpr'&&!physicalSourceMatches(observed,s))return null;
+ if(!plan||plan!==s.source_sha256||observed?.source_kind!=='gpr'||typeof observed.snapshot_id!=='string'||!observed.snapshot_id||!physicalSourceMatches(observed,s))return null;
  return s;
 }
 function ksIndex(s){
