@@ -2838,6 +2838,12 @@ def _handle_message(message: dict[str, Any]) -> None:
             _dialog_stop(chat_id)
         _ORIGINAL_HANDLE_MESSAGE(message)
         return
+    # A new source owns a new intake even while an older conversation is open.
+    # The native handler checks access, claims the operation and acknowledges it
+    # before download/PDF/OCR; conversation text handlers must not consume it.
+    if message.get("document") or message.get("photo") or re.fullmatch(r"https://\S+", text):
+        _ORIGINAL_HANDLE_MESSAGE(message)
+        return
     # A saved document question owns its answer before older Platon/model
     # conversations. In particular a numeric valuation must not call the LLM.
     if text and (core._telegram_dialog_get(chat_id) or {}).get("step") in {

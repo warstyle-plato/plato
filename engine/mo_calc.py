@@ -1551,15 +1551,24 @@ def _core_post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, A
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
+    import document_processing
+    document_budget = document_processing.deadline() is not None
     try:
+        if document_budget:
+            return json.loads(document_processing.post_bytes(request,timeout).decode('utf-8'))
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
+    except (document_processing.Cancelled,document_processing.Expired):
+        raise
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
             detail = str((json.loads(exc.read().decode("utf-8")) or {}).get("detail") or "")
         except Exception:
             detail = ""
+        finally:
+            if document_budget:
+                exc.close()
         raise HTTPException(
             status_code=502,
             detail=detail or f"Ядро расчёта ответило ошибкой {exc.code}.",
