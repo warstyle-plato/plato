@@ -890,7 +890,11 @@ def _month_dative(index: int) -> str:
 # ключ — номер плюс площадь, а не номер плюс дом.
 _BOOKINGS_HEAD = re.compile(r"текущих\s*брон[а-яё]*", re.I)
 _BOOKINGS_STOP = re.compile(r"наполнение\s*эскроу|зарегистрированн|количество\s*ЦО|встречи\s*:"
-                            r"|брокер\s*тур\w*\s*:|ДДУ\s*на\s*регистрации", re.I)
+                            r"|брокер\s*тур\w*\s*:|ДДУ\s*на\s*регистрации"
+                            r"|текущих\s+устных\s+брон|план\s+встреч", re.I)
+_REGISTERING_HEAD = re.compile(r"(?:сделк[аи]|ДДУ)\s*на\s*регистрации\s*[-–—:]?\s*(\d+)", re.I)
+_REGISTERING_STOP = re.compile(r"текущих\s*(?:устных\s+)?брон|план\s+встреч|наполнение\s*эскроу"
+                               r"|зарегистрированн|количество\s*ЦО|встречи\s*:|брокер\s*тур\w*\s*:", re.I)
 _BOOKED = re.compile(r"квартир\w*\s*№?\s*(\d{1,4})", re.I)
 _TOWER = re.compile(r"башн\w*\s+[^\s,.;]+", re.I)
 # Менеджер брони — в скобках у самой брони: «АГЕНТСКАЯ (Помазанова Александра)».
@@ -946,14 +950,13 @@ def _deal_day(piece: str) -> str:
         return ""
 
 
-def booked_lots(text: str) -> list[dict[str, Any]] | None:
-    """Брони из списка под «Текущих броней». Нет раздела — ``None``: это «не
-    сказано», а не «броней нет»."""
-    head = _BOOKINGS_HEAD.search(text or "")
+def _listed_lots(text: str, heading, ending) -> list[dict[str, Any]] | None:
+    """Read only the named section; a neighbouring list never supplies its lots."""
+    head = heading.search(text or "")
     if not head:
         return None
     tail = text[head.end():]
-    stop = _BOOKINGS_STOP.search(tail)
+    stop = ending.search(tail)
     if stop:
         tail = tail[:stop.start()]
     found = list(_BOOKED.finditer(tail))
@@ -970,6 +973,22 @@ def booked_lots(text: str) -> list[dict[str, Any]] | None:
                     "channel": booking_channel(piece),
                     "deal_day": _deal_day(piece)})
     return out
+
+
+def booked_lots(text: str) -> list[dict[str, Any]] | None:
+    """Confirmed booking list; an absent section is unknown, not an empty list."""
+    return _listed_lots(text, _BOOKINGS_HEAD, _BOOKINGS_STOP)
+
+
+def registering_lots(text: str) -> list[dict[str, Any]] | None:
+    """Explicit lots sent for registration; this does not establish a registered DDU."""
+    head = _REGISTERING_HEAD.search(text or "")
+    if not head:
+        return None
+    if int(head[1]) == 0:
+        return []
+    lots = _listed_lots(text, _REGISTERING_HEAD, _REGISTERING_STOP)
+    return lots if lots is not None and len(lots) == int(head[1]) else None
 
 
 def _lot_key(lot: dict[str, Any]) -> tuple[str, str]:
@@ -1009,11 +1028,13 @@ def booking_outcomes(read: dict[str, Any] | None, contracts: list[dict[str, Any]
     отсутствие договора в старой выгрузке ещё не значит, что его нет.
     """
     lists: dict[str, list[dict[str, Any]]] = {}
+    registrations: dict[str, list[dict[str, Any]]] = {}
     for message in (read or {}).get("messages") or []:
         day = str(message.get("day") or "")
         lots = booked_lots(message.get("text") or "")
         if day and lots is not None:
             lists[day] = lots          # в дне — последний отчёт
+            registrations[day] = registering_lots(message.get("text") or "") or []
     days = sorted(day for day in lists if day <= last)
     if not days:
         return None
@@ -1034,6 +1055,10 @@ def booking_outcomes(read: dict[str, Any] | None, contracts: list[dict[str, Any]
         deal = _deal_for(track, contracts)
         if deal:
             item.update(outcome="deal", signed=deal["signed"])
+        elif any(_lot_key(lot) == _lot_key(track) for lot in registrations.get(gone, [])):
+            # The same report explicitly explains why the booking left its
+            # list. This is registration in progress, never a completed sale.
+            item.update(outcome="registering", registration_report_day=gone)
         elif uploaded and str(uploaded)[:10] < gone:
             item["outcome"] = "unknown"
         else:
@@ -1046,7 +1071,7 @@ def booking_outcomes(read: dict[str, Any] | None, contracts: list[dict[str, Any]
 
     return {"since": days[0], "latest": latest,
             "period": sorted(period, key=lambda item: item["gone"]),
-            "total": {key: count(gone_out, key) for key in ("deal", "dropped", "unknown")},
+            "total": {key: count(gone_out, key) for key in ("deal", "dropped", "unknown", "registering")},
             "held": sorted(held, key=lambda item: item["first"])}
 
 
