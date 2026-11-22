@@ -60,6 +60,28 @@ def test_sections_do_not_borrow_lots_from_oral_bookings_or_the_neighbouring_list
     assert salesroom.registering_lots('Текущих броней: 1\n- '+FIRST) is None
 
 
+def test_missing_tower_in_both_lists_does_not_identify_a_registration():
+    unnamed = FIRST.replace('башня Север, ', '')
+    previous = text([], [unnamed, OTHER])
+    read = salesroom.append_message(None, '2026-11-19', 'Дежурный', previous)
+    read = salesroom.append_message(read, '2026-11-20', 'Дежурный', text([unnamed], [OTHER]))
+    assert salesroom.registering_lots(text([unnamed], [OTHER])) is None
+    assert [q['kind'] for q in sales_questions.questions(read, None, None, '2026-11-20')] == ['dropped']
+
+
+def test_duplicate_registration_lines_do_not_satisfy_the_declared_count():
+    current = text([FIRST, FIRST], [OTHER], registration_count=2)
+    assert salesroom.registering_lots(current) is None
+    assert [q['kind'] for q in sales_questions.questions(history(current), None, None, '2026-11-20')] == ['dropped']
+
+
+def test_registration_section_after_bookings_is_not_a_held_booking():
+    current = ('Текущих броней: 1\n- '+OTHER+'\nСделки на регистрации: 1\n- '+FIRST)
+    result = salesroom.booking_outcomes(history(current), [], None, '2026-11-19', '2026-11-20')
+    assert [lot['apartment'] for lot in result['held']] == ['48']
+    assert result['period'][0]['outcome'] == 'registering'
+
+
 def test_a_later_contract_takes_priority_over_the_reported_registration():
     read = history(text([FIRST], [OTHER]))
     deal = {'unit': 'корп 1 кв.31', 'area': 91.2, 'signed': '2026-11-20'}

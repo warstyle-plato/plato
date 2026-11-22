@@ -890,7 +890,7 @@ def _month_dative(index: int) -> str:
 # ключ — номер плюс площадь, а не номер плюс дом.
 _BOOKINGS_HEAD = re.compile(r"текущих\s*брон[а-яё]*", re.I)
 _BOOKINGS_STOP = re.compile(r"наполнение\s*эскроу|зарегистрированн|количество\s*ЦО|встречи\s*:"
-                            r"|брокер\s*тур\w*\s*:|ДДУ\s*на\s*регистрации"
+                            r"|брокер\s*тур\w*\s*:|(?:сделк[аи]|ДДУ)\s*на\s*регистрации"
                             r"|текущих\s+устных\s+брон|план\s+встреч", re.I)
 _REGISTERING_HEAD = re.compile(r"(?:сделк[аи]|ДДУ)\s*на\s*регистрации\s*[-–—:]?\s*(\d+)", re.I)
 _REGISTERING_STOP = re.compile(r"текущих\s*(?:устных\s+)?брон|план\s+встреч|наполнение\s*эскроу"
@@ -988,7 +988,11 @@ def registering_lots(text: str) -> list[dict[str, Any]] | None:
     if int(head[1]) == 0:
         return []
     lots = _listed_lots(text, _REGISTERING_HEAD, _REGISTERING_STOP)
-    return lots if lots is not None and len(lots) == int(head[1]) else None
+    if lots is None or len(lots) != int(head[1]):
+        return None
+    # An unnamed tower or a repeated line does not identify the declared lots.
+    keys = {_lot_key(lot) for lot in lots}
+    return lots if len(keys) == len(lots) and all(lot.get('tower') for lot in lots) else None
 
 
 def _lot_key(lot: dict[str, Any]) -> tuple[str, str]:
