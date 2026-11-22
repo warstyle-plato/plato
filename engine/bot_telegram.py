@@ -3735,16 +3735,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         _telegram_handle_manual_document(chat_id, {**photo, "file_name": "тизер.jpg"})
         return
     if re.fullmatch(r"https://\S+", text):
-        import document_source
-        try:
-            loaded = document_source.read_url(text)
-            document = ({"text": loaded["text"], "pages": 1, "pages_read": 1,
-                         "filename": loaded["filename"], "recognized": False, "reason": ""}
-                        if "text" in loaded else document_intake.extract_text(loaded["data"], loaded["filename"]))
-            document["source"] = loaded["source"]
-            _telegram_handle_intake_document(chat_id, b"", loaded["filename"], document_override=document)
-        except document_source.DocumentSourceError as exc:
-            _telegram_send_message(chat_id, "Не удалось прочитать ссылку: " + html.escape(str(exc)))
+        _telegram_handle_intake_url(chat_id, text)
         return
     document = message.get("document")
     if isinstance(document, dict):
