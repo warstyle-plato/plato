@@ -102,11 +102,14 @@ def funding_cash_summary(funding: dict[str, Any], model: dict[str, Any], money: 
                       or funding.get("reconciliation"))
     if reconciliation:
         calculation = funding_reconciliation.calculation_values(reconciliation)
+        disclosure = funding_reconciliation.chapter_disclosure_notes(funding, money)
         return {"amount": calculation.get("calculated_additional"), "scope": "calculated_total",
                 "label": "Расчётная потребность в допфинансировании",
                 "partial": bool(calculation.get("partial")),
-                "note": funding_reconciliation.calculation_note(reconciliation)
-                        + " Утверждённый бюджет уже включает АХР."}
+                "note": " ".join(part for part in (
+                    disclosure.get("need_bridge"),
+                    funding_reconciliation.calculation_note(reconciliation),
+                    "Утверждённый бюджет уже включает АХР.", disclosure.get("admin_budget")) if part)}
     if not funding.get("known"):
         return {"amount": None, "scope": "calculated_total",
                 "label": "Расчётная потребность в допфинансировании",
