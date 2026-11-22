@@ -232,6 +232,7 @@ PAGE_LEVELS: tuple[tuple[str, str], ...] = (
     ("rules", "Своды правил"),
     ("moscow", "Москва"),
     ("mo", "Московская область"),
+    ("cost_norms", "Нормативы цены строительства"),
     ("product", "Правовая рамка сервиса"),
 )
 IMPACT_LABELS = {

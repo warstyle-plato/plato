@@ -22,10 +22,10 @@ EDITION = {'sha256': 'a'*64, 'title': 'Расчёт', 'date': '2026-01-01', 'sta
 CUT = '2026-11-19'
 
 
-def statement():
+def statement(heading='КС-2 № {}'):
     return fact.acts({'physical_items': [{'position': '1', 'name': 'Монтаж', 'unit': 'м2',
         'plan_quantity': 100, 'completed_quantity': 15, 'reported_completed_quantity': 15,
-        'periods': [{'label': f'КС-2 № {n}', 'quantity': n, 'amount': 100*n,
+        'periods': [{'label': heading.format(n), 'quantity': n, 'amount': 100*n,
                      'work_amount': 100*n, 'material_amount': 0,
                      'date_start': f'2026-0{n}-01', 'date_end': f'2026-0{n}-28'} for n in range(1, 6)]}]})
 
@@ -41,8 +41,9 @@ def build(found, performed=None):
     return fact.build([EDITION], EDITION['sha256'], found, CUT, performed)
 
 
-def test_missing_ks2_one_and_five_do_not_exclude_statement_execution_or_change_percentages():
-    found = statement()
+@pytest.mark.parametrize('heading', ['КС-2 № {}', 'КС2-{}'])
+def test_missing_ks2_one_and_five_do_not_exclude_statement_execution_or_change_percentages(heading):
+    found = statement(heading)
     before = copy.deepcopy(found)
     no_ks2, partial = build(found), build(found, uploaded(2, 3, 4))
     assert partial['source'] == 'ks6a' and partial['total'] == no_ks2['total'] == 1500
@@ -59,18 +60,20 @@ def test_missing_ks2_one_and_five_do_not_exclude_statement_execution_or_change_p
     assert found == before
 
 
-def test_without_any_ks2_all_named_periods_request_confirmation_without_losing_fact():
-    got = build(statement())
+@pytest.mark.parametrize('heading', ['КС-2 № {}', 'КС2-{}'])
+def test_without_any_ks2_all_named_periods_request_confirmation_without_losing_fact(heading):
+    got = build(statement(heading))
     assert got['total'] == 1500 and got['note'] == ''
     assert got['confirmation']['missing_acts'] == ['1', '2', '3', '4', '5']
     assert got['confirmation']['state'] == 'pending'
 
 
-def test_matching_complete_ks2_set_confirms_the_statement_without_changing_quantities():
+@pytest.mark.parametrize('heading', ['КС-2 № {}', 'КС2-{}'])
+def test_matching_complete_ks2_set_confirms_the_statement_without_changing_quantities(heading):
     performed = uploaded(1, 2, 3, 4, 5)
     for part in performed['positions'][0]['parts']:
         part.update(quantity=int(part['act']), amount=100*int(part['act']))
-    got = build(statement(), performed)
+    got = build(statement(heading), performed)
     assert got['confirmation']['state'] == 'confirmed'
     assert not got['confirmation']['upload_required']
     assert got['total'] == 1500
@@ -91,8 +94,9 @@ def test_ks2_never_substitutes_for_an_absent_or_unreadable_statement():
         assert got['lines'] == []
 
 
-def test_undated_statement_is_not_given_invented_dates():
-    found = statement()
+@pytest.mark.parametrize('heading', ['КС-2 № {}', 'КС2-{}'])
+def test_undated_statement_is_not_given_invented_dates(heading):
+    found = statement(heading)
     periods = [{**row, 'start': None, 'end': None} for row in found['acts']]
     found.update(acts=[], works=0, items=[], unread=[{
         'number': '1', 'name': 'Монтаж', 'unit': 'м2', 'periods': periods,
@@ -105,10 +109,21 @@ def test_undated_statement_is_not_given_invented_dates():
 def test_confirmation_keeps_full_numbers_and_ignores_future_periods():
     found = statement()
     found['acts'][0]['label'] = 'КС-2 № 01/2026'
+    found['acts'][-1]['label'] = 'КС2-5'
     found['acts'][-1]['end'] = '2026-12-01'
     done = uploaded(1, 2, 3, 4)
     got = build(found, done)
     assert got['confirmation']['missing_acts'] == ['1/2026']
+
+
+@pytest.mark.parametrize('label', ['КС2-2026-11-05', 'Примечание КС2-5', 'КС2-5/2026',
+    'КС2-5 от 19.11.2026', 'КС2-5, КС2-6', 'Период № 5', '2026-11-05'])
+def test_confirmation_does_not_extract_compact_numbers_from_dates_or_mentions(label):
+    found = {'acts': [{'label': label, 'quantity': 1, 'end': '2026-11-18'}]}
+    before = copy.deepcopy(found)
+    got = fact.confirmation(uploaded(2), found, CUT)
+    assert got['missing_acts'] == [] and not got['upload_required']
+    assert found == before
 
 
 @pytest.mark.parametrize('width', [390, 1440])

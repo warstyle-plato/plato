@@ -2626,6 +2626,7 @@ def _bookings_line(block: dict[str, Any] | None, kind: str) -> str:
     deals = [item for item in period if item["outcome"] == "deal"]
     dropped = [item for item in period if item["outcome"] == "dropped"]
     unknown = [item for item in period if item["outcome"] == "unknown"]
+    registering = [item for item in period if item["outcome"] == "registering"]
     if period:
         parts = []
         if deals:
@@ -2637,6 +2638,8 @@ def _bookings_line(block: dict[str, Any] | None, kind: str) -> str:
                          f"без сделки ({names})")
         if unknown:
             parts.append(f"по {len(unknown)} договора в загруженной контрактации пока нет")
+        if registering:
+            parts.append(f"{len(registering)} передано на регистрацию по отчёту отдела продаж")
         text = (f"Брони за {PERIODS[kind]}: из списка ушли {len(period)} — "
                 + ", ".join(parts) + ".")
     else:
@@ -4418,6 +4421,9 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     raw_reconciliation = (limit.get("reconciliation") or
                           (limit.get("own_money") or {}).get("reconciliation") or {}).get(
                               "observation_scope") == "raw_saved_sources"
+    from developaid_funding_reconciliation import chapter_disclosure_notes, display_rows as reconciliation_display_rows
+
+    chapter_notes = chapter_disclosure_notes(limit, _rub) if raw_reconciliation else {}
     sections = ((limit.get("budget_composition") or {}).get("sections") or []) if need else []
     add("Утверждённый бюджет", _rub(need["approved"]) if need else None,
         "Без налогов." if raw_reconciliation else (("по разделам финмодели " + ", ".join(item["code"] for item in sections)
@@ -4436,7 +4442,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     if limit.get("known"):
         canonical = (own or {}).get("reconciliation")
         add("Лимит банка", _rub(canonical["bank_limit_total"] if canonical else limit.get("bank_limit")),
-            "Полный лимит, включая оплаты." if raw_reconciliation else "; ".join(filter(None, [
+            chapter_notes.get("bank_limits", "Полный лимит, включая оплаты.") if raw_reconciliation else "; ".join(filter(None, [
                 "смета банка: в неё засчитываются все оплаты, кредитом и своими деньгами"
                 if own else "",
                 _by_chapter_words(limit.get("limit_by_chapter")) or "по смете РСС",
@@ -4473,11 +4479,21 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 # diagnostic canonical row remains in the Funding block below.
                 if row["key"] in {"paid_at_cut", "available_bank_limit"}:
                     note = row["note"]
+                    if row["key"] == "available_bank_limit" and chapter_notes.get("available_limits"):
+                        from developaid_funding_reconciliation import calculation_note
+
+                        note = chapter_notes["available_limits"] + " " + calculation_note(reconciliation)
                     if row["value"] is None and not reconciliation.get("calculation"):
                         note = " ".join(filter(None, (note, _payment_total_gap_note(reconciliation))))
                     add(row["label"], row.get("prefix", "") + _rub(row["value"]) if row["value"] is not None else None, note)
                 elif row["key"] == "calculated_additional":
-                    add_need(row["label"], row["note"], reconciliation=reconciliation)
+                    note = row["note"]
+                    if chapter_notes.get("need_bridge"):
+                        generated = next(item["note"] for item in reconciliation_display_rows(reconciliation)
+                                         if item["key"] == "calculated_additional")
+                        if note == generated:
+                            note = ""
+                    add_need(row["label"], note, reconciliation=reconciliation)
         else:
             add("Оплачено с начала проекта", _rub(own["paid"]),
                 f"из них кредитом {_rub(own['borrowed'])}, своими деньгами {_rub(own['own_paid'])}")

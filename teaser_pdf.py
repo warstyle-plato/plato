@@ -692,7 +692,7 @@ def _object_brief(section: dict[str, Any], width: float, st: _Styles, fm: _Forma
                   skip_verdict: bool = False) -> list[Any]:
     """Раздел объектной вёрстки: заголовок движка и его краткие строки."""
     out: list[Any] = [_section(str(section.get("title") or ""), width, st)]
-    verdict = section.get("verdict") if section.get("key") == "decision" else None
+    verdict = section.get("verdict") if section.get("key") in ("decision", "summary") else None
     if verdict:
         out.append(Paragraph(f"<b>{_esc(verdict.get('title'))}</b> {_esc(verdict.get('text'))}",
                              st.note))
@@ -808,7 +808,23 @@ def _page_one(model: dict[str, Any], map_png: bytes | None, width: float, st: _S
         out.append(_kv(_vri_rows(model, fm), w, st, label_share=0.48))
         return out
 
-    if objects:
+    if "summary" in objects:
+        left = [_section("Расположение", left_w, st)]
+        left += _map_block(map_png, left_w, st, site, map_caption)
+        left += site_block(left_w)
+        verdict = objects["summary"].get("verdict") or {}
+        if verdict:
+            left.append(_section("Инвестиционное решение", left_w, st))
+            left.append(Paragraph(f"<b>{_esc(verdict.get('title'))}</b> {_esc(verdict.get('text'))}", st.note))
+        right = _object_brief(objects["site"], right_w, st, fm)
+        right.append(_section("Экономика проекта", right_w, st))
+        pnl = next((b for b in objects["summary"].get("blocks") or []
+                    if b.get("title") == "Экономика проекта"), {})
+        rows = [(str(r.get("label") or ""), *_object_value(r, fm)) for r in pnl.get("rows") or []]
+        right.append(_kv(rows, right_w, st, label_share=0.56))
+        right.append(_section("Удельная экономика", right_w, st))
+        right.append(_unit_economics_grid(model, right_w, st, fm))
+    elif objects:
         # Проект без жилья — его вёрстка: «Решение» первым, затем «Объект и
         # участок» (объект, карта, участок). Финансирование — на втором листе,
         # своим разделом.
@@ -1011,8 +1027,8 @@ def _page_two_object(model: dict[str, Any], story: list[Any], width: float, col_
     objects = {str(sec.get("key")): sec for sec in model.get("object_sections") or []}
     columns_data = []
     # Office order follows the full report; hotel keeps its established frame.
-    columns_order = (("income", "strategy", "costs"), ("finance", "owner", "comparison"),
-                     ("sensitivity", "calendar", "assumptions")) if "assumptions" in objects else OBJECT_PAGE_TWO_COLUMNS
+    columns_order = (("phases", "expenses", "income"), ("finance",),
+                     ("sensitivity", "calendar")) if "summary" in objects else OBJECT_PAGE_TWO_COLUMNS
     for keys in columns_order:
         column: list[Any] = []
         for key in keys:

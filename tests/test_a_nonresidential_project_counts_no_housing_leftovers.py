@@ -157,11 +157,10 @@ def test_the_pdf_shows_one_underground_parking() -> None:
     with pymupdf.open(stream=data, filetype="pdf") as doc:
         text = "\n".join(page.get_text() for page in doc)
     flat = " ".join(text.split())
-    assert "Осталось от жилья" in flat
-    assert "в расчёт не входит" in flat
+    assert "Осталось от жилья" not in flat
     assert "435" not in flat.replace(" ", ""), "итог мест включает места МКД"
-    assert "5215" not in flat.replace(" ", "").split("Осталосьотжилья")[0], \
-        "метры паркинга МКД стоят в ТЭП до строки об остатке"
+    assert "5215" not in flat.replace(" ", ""), \
+        "метры паркинга МКД попали в отчёт"
     # Цены и темп продуктов МКД — не предпосылки нежилого расчёта.
     for label in ("Стартовая цена квартир", "Цена подземного машино-места",
                   "Доля продаж до РВЭ"):
