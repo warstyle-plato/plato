@@ -1,4 +1,4 @@
-"""Short manager view of the GPR block for the test page «ГПР — новый вид».
+"""Short manager view of the GPR tab: ``schedule.brief`` of the Monitor's own view.
 
 The brief arranges the result of ``developaid_monitor_pace.schedule_view``; it
 does not calculate readiness, stage membership or a finish estimate of its own.
@@ -25,6 +25,7 @@ from typing import Any
 LAG_PP = 10
 ATTENTION_LIMIT = 5
 EXPECTED_UNKNOWN = "Оценка окончания работ не определена."
+FAILED = "Короткая сводка блока ГПР не собрана; подробный график ниже показан полностью"
 LAG_RULE = (f"Работа отстаёт, если к дате среза по плану должно быть выполнено на {LAG_PP} "
             "процентных пунктов больше, чем показывает последнее датированное выполнение. "
             "Работа без показания выполнения не считается ни отстающей, ни выполненной.")
@@ -108,7 +109,8 @@ def _expected(view: dict) -> tuple[dict[str, Any], dict[str, str]]:
     summary, value = current(schedule, view.get("cut") or schedule.get("cut"))
     if not summary:
         return {"state": "unknown", "date": None, "label": "Ожидаемое окончание", "text": EXPECTED_UNKNOWN,
-                "conditional": False, "plan_text": "", "delta_text": "", "scope_text": ""}, {}
+                "conditional": False, "plan_text": "", "delta_text": "", "scope_text": "",
+                "as_of_text": ""}, {}
     forecast = ((value or {}).get("project") or {}).get("forecast") or {}
     corpora = {} if (value or {}).get("state") == "unavailable" else {
         c.get("name"): (c.get("forecast") or {}).get("finish") for c in (value or {}).get("corpora") or []}
@@ -122,7 +124,8 @@ def _expected(view: dict) -> tuple[dict[str, Any], dict[str, str]]:
             "conditional": bool(forecast.get("conditional")),
             "plan_text": summary.get("plan_text") or "",
             "delta_text": summary.get("delta_text") if summary.get("delta_days") is not None else "",
-            "scope_text": summary.get("scope_text") or ""}, {k: v for k, v in corpora.items() if v}
+            "scope_text": summary.get("scope_text") or "",
+            "as_of_text": summary.get("as_of_text") or ""}, {k: v for k, v in corpora.items() if v}
 
 
 def _count(works: list[dict]) -> dict[str, int]:

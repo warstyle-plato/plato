@@ -1,17 +1,16 @@
 """Test page «ГПР — новый вид»: the brief arranges the Monitor view, the page shows it."""
-import contextlib
 import copy
-import http.server
 import json
-import threading
 
 import pytest
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import expect
 
 import developaid_gpr_brief as brief
 import developaid_monitor_pace as pace
-from browser import chromium_or_skip
-from developaid_gpr_preview_page import PAGE
+import developaid_gpr_preview_page as preview_page
+import test_monitor_cumulative_controls as monitor_page
+from developaid_monitor_page import MONITOR_PAGE
+from test_gpr_why_page import serve
 from test_monitor_cumulative_api import KEY, api, post
 from test_schedule_readiness import DAY, PROJECT, activate, site
 
@@ -156,153 +155,120 @@ def test_a_missing_invalid_or_future_date_cannot_supply_a_dated_fact(date):
     assert item['fact'] is None and item['fact_date'] is None and item['state'] == 'no_reading'
 
 
-@pytest.mark.parametrize('key, session', [('', ''), ('wrong', ''), ('', 'claimed-demo'), ('market-key', '')])
-def test_denied_preview_responses_are_nostore_before_touching_any_schedule(api, monkeypatch, key, session):
-    client, _ = api
-    monkeypatch.setattr(pace, 'schedule_view', lambda *_: pytest.fail('auth must precede source reads'))
-    denied = post(client, 'gpr-brief', key=key, session=session, project=PROJECT, cut=DAY)
-    assert denied.status_code == 403 and denied.headers['cache-control'] == 'private, no-store'
-    assert 'counts' not in denied.text
+
+def plain(value):
+    return json.loads(json.dumps(value, default=str))
 
 
-def test_brief_and_page_routes_keep_monitor_access(api, site):
+def test_the_monitor_view_carries_the_brief_of_its_own_schedule(api, site, monkeypatch):
     client, _ = api
-    good = post(client, 'gpr-brief', project=PROJECT, cut=DAY)
-    assert good.status_code == 200 and good.headers['cache-control'] == 'private, no-store'
-    assert good.json() == json.loads(json.dumps(brief.build(pace.schedule_view(PROJECT, DAY)), default=str))
-    denied = post(client, 'gpr-brief', key='wrong-key', project=PROJECT, cut=DAY)
-    assert denied.status_code == 403 and 'counts' not in denied.text
-    assert denied.headers['cache-control'] == 'private, no-store'
-    missing = post(client, 'gpr-brief', project='Нет такого', cut=DAY).json()
-    assert missing['empty'] and missing['empty_reason'] == 'Утверждённый график работ не загружен.'
-    assert missing['notes'][0] == missing['empty_reason'] and missing['counts']['total'] == 0
-    bad_cut = post(client, 'gpr-brief', project=PROJECT, cut='не дата')
-    assert bad_cut.status_code in (400, 422) and bad_cut.headers['cache-control'] == 'private, no-store'
+    shown = post(client, 'gpr-view', project=PROJECT, cut=DAY).json()
+    assert shown['schedule']['brief']['counts']['total'] > 0
+    again = pace.schedule_view(PROJECT, DAY)
+    own = again['schedule'].pop('brief')
+    # Arranged from this very schedule: rebuilding it from the view gives the same brief.
+    assert plain(own) == plain(brief.build(again)) == shown['schedule']['brief']
+    denied = post(client, 'gpr-view', key='wrong-key', project=PROJECT, cut=DAY)
+    assert denied.status_code == 403 and 'brief' not in denied.text
+    # A failing brief is named on the page and does not take the Monitor's schedule down.
+    monkeypatch.setattr(brief, 'build', lambda view: 1 / 0)
+    broken = pace.schedule_view(PROJECT, DAY)
+    assert broken['schedule']['rows'] and broken['schedule']['brief'] == {
+        'error': brief.FAILED + ' (ZeroDivisionError).'}
     page = client.get('/gpr-preview')
     assert page.status_code == 200 and 'ГПР — новый вид' in page.text and '__VERSION__' not in page.text
+    assert '/* gpr-new-view */' in page.text and '/* gpr-new-view */' not in client.get('/monitor').text
 
 
-@contextlib.contextmanager
-def preview(width, data, key=KEY):
-    html = PAGE.replace('__VERSION__', 'test').encode()
+def open_preview(monkeypatch, value, width):
+    monkeypatch.setattr(monitor_page, 'MONITOR_PAGE', preview_page.page(MONITOR_PAGE))
+    serve(monkeypatch, value)
+    return monitor_page.browser_page(width)
 
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/html; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(html)
 
-        def log_message(self, *_):
-            pass
+def show(page, value):
+    page.wait_for_function('currentView!==null&&!$("refresh").disabled')
+    page.evaluate('(v)=>{document.activeElement?.blur();$("project").value=v.project||$("project").value;'
+                  '$("cut").value=v.cut;currentView=v;renderDash(v);renderGantt(v)}', value)
 
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    calls = []
 
-    def answer(route):
-        body = json.loads(route.request.post_data or '{}')
-        calls.append((route.request.url.rsplit('/', 1)[-1], body))
-        if body.get('key') != KEY:
-            return route.fulfill(status=403, json={'detail': 'Нужен ключ администратора.'})
-        if route.request.url.endswith('/report/projects'):
-            return route.fulfill(json={'projects': [{'project': 'Другой'}, {'project': PROJECT}]})
-        return route.fulfill(json=data)
-
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(executable_path=str(chromium_or_skip()), headless=True, args=['--no-sandbox'])
-            page = browser.new_page(viewport={'width': width, 'height': 900})
-            page.set_default_timeout(5000)
-            if key:
-                page.add_init_script(f"localStorage.setItem('plato_projects_key',{json.dumps(key)});"
-                                     f"localStorage.setItem('monitor_project',{json.dumps(PROJECT)})")
-            page.route('**/monitor/report/projects', answer)
-            page.route('**/monitor/gpr-brief', answer)
-            errors = []
-            page.on('pageerror', lambda e: errors.append(str(e)))
-            page.goto(f'http://127.0.0.1:{server.server_port}/gpr-preview#cut={DAY}')
-            yield page, calls, errors
-            browser.close()
-    finally:
-        server.shutdown()
-        server.server_close()
+def monitor_panel_ids(page):
+    return set(page.evaluate("[...document.querySelectorAll('#monitorPanel [id]')].map(e=>e.id)"))
 
 
 @pytest.mark.parametrize('width', [390, 1440])
-def test_rendered_preview_shows_deadlines_attention_and_an_opening_matrix(site, width):
-    data = json.loads(json.dumps(brief.build(view())))
-    with preview(width, data) as (page, calls, errors):
-        expect(page.locator('#deadlines')).to_contain_text('План ввода')
-        expect(page.locator('#deadlines')).to_contain_text('01.12.2026')
-        expect(page.locator('#expected b')).to_have_text('Не определена')
-        expect(page.locator('#deadlines')).to_contain_text('1 из 4')
-        expect(page.locator('#factDates')).to_contain_text('на 12.11.2026')
-        corpus = page.locator('.corpora tbody tr').first
-        expect(corpus).to_contain_text('Корпус 1')
-        expect(corpus.locator('td').nth(4)).to_have_text('1')
-        if width <= 700:
-            assert 'Без показания' in corpus.locator('td').nth(4).evaluate("e=>getComputedStyle(e,'::before').content")
-        assert calls[-1] == ('gpr-brief', {'key': KEY, 'session': '', 'project': PROJECT, 'cut': DAY})
-        attention = page.locator('#attention li')
-        expect(attention).to_have_count(1)
-        expect(attention).to_contain_text('Монолит')
-        expect(attention).to_contain_text('выполнено 20%, по плану 80%')
-        lines = page.locator('#matrix tr.lines').first
-        expect(lines).to_be_hidden()
-        page.locator('#matrix td.stage', has_text='Каркас').click()
-        expect(lines).to_be_visible()
-        expect(page.locator('#matrix')).to_contain_text('нет показания' if width > 700 else 'Каркас')
-        if width <= 700:
-            # One corpus at a time on the phone; the switcher shows the other one.
-            expect(page.locator('#matrix thead th')).to_have_count(2)
-            page.locator('#objectSwitch [data-object="Корпус 2"]').click()
-            expect(page.locator('#matrix thead th').nth(1)).to_have_text('Корпус 2')
-        else:
-            expect(page.locator('#matrix thead th')).to_have_count(3)
-        page.locator('#onlyBehind').check()
-        if width <= 700:
-            # Filtering concerns the selected corpus, which has no lagging work.
-            expect(page.locator('#matrix .stage-row')).to_have_count(0)
-            expect(page.locator('#matrix')).to_contain_text('Отстающих разделов нет.')
-            page.locator('#objectSwitch [data-object="Корпус 1"]').click()
-        expect(page.locator('#matrix .stage-row')).to_have_count(1)
-        expect(page.locator('#matrix .chip.on_plan')).to_have_count(0)
-        # The opened stage stays open through the filter and the corpus switch.
-        expect(page.locator('#matrix tr.lines').first).to_be_visible()
-        page.locator('#matrix td.stage', has_text='Каркас').click()
-        expect(page.locator('#matrix tr.lines').first).to_be_hidden()
-        expect(page.locator('#method')).not_to_have_attribute('open', '')
-        page.locator('#method summary').click()
-        expect(page.locator('#method')).to_contain_text('Работ вне матрицы: 1.')
-        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
-        # The corpus table fits the screen itself instead of hiding behind its own scroll.
-        assert page.evaluate("[...document.querySelectorAll('.scroll')].every(e=>e.scrollWidth<=e.clientWidth)")
-        assert not errors
-
-
-def test_rendered_preview_shows_real_readiness_and_asks_for_a_key(site):
+def test_new_tab_keeps_every_block_of_the_current_gpr_tab(monkeypatch, site, width):
     activate(site)
-    data = json.loads(json.dumps(brief.build(pace.schedule_view(PROJECT, DAY)), default=str))
-    assert data['expected_finish']['date']
-    with preview(1440, data) as (page, _, errors):
-        shown = data['expected_finish']['date']
-        expect(page.locator('#expected b')).to_have_text(shown[8:10] + '.' + shown[5:7] + '.' + shown[:4])
-        expect(page.locator('#expected span')).to_have_text(data['expected_finish']['label'])
-        expect(page.locator('#deadlines')).to_contain_text('Готовность проекта (оценочная)')
-        expect(page.locator('#deadlines')).to_contain_text('70%')
+    value = plain(pace.schedule_view(PROJECT, DAY))
+    serve(monkeypatch, value)
+    with monitor_page.browser_page(width) as (page, _, errors):
+        show(page, value)
+        current = monitor_panel_ids(page)
         assert not errors
-    with preview(390, data, key='') as (page, calls, errors):
-        expect(page.locator('#msg')).to_contain_text('войдите в текущий Монитор')
-        assert calls == [] and page.locator('#deadlines').count() == 0 and not errors
+    with open_preview(monkeypatch, value, width) as (page, _, errors):
+        show(page, value)
+        # Mechanical comparison: nothing of the current tab is left behind.
+        assert current - monitor_panel_ids(page) == set()
+        for block in ('ganttCard', 'gprCalendar', 'gprUndated', 'ksSharedBox', 'dependencyTimelineCard',
+                      'forecastCard', 'corpusGprCard', 'peopleCard', 'scenarioCard', 'detailCard',
+                      'gprAutomaticAnalysis', 'readinessSummary', 'readinessEditor'):
+            assert block in current, block
+        assert not errors
 
 
-def test_rendered_preview_names_the_reason_when_no_schedule_is_loaded(api):
-    client, _ = api
-    data = post(client, 'gpr-brief', project='Нет такого', cut=DAY).json()
-    with preview(390, data) as (page, _, errors):
-        expect(page.locator('#deadlines')).to_contain_text('Утверждённый график работ не загружен.')
-        assert page.locator('#matrix').count() == 0 and not errors
+@pytest.mark.parametrize('width', [390, 1440])
+def test_new_tab_shows_the_brief_above_the_monitor_gantt_and_opens_a_work(monkeypatch, site, width):
+    activate(site)
+    value = plain(pace.schedule_view(PROJECT, DAY))
+    b = value['schedule']['brief']
+    with open_preview(monkeypatch, value, width) as (page, _, errors):
+        show(page, value)
+        expect(page.locator('#gbTest')).to_contain_text('Тестовый вид вкладки «ГПР: план и факт»')
+        shown = b['expected_finish']['date']
+        expect(page.locator('#expected b')).to_have_text(shown[8:10] + '.' + shown[5:7] + '.' + shown[:4])
+        expect(page.locator('#deadlines')).to_contain_text(f"{b['counts']['behind']} из {b['counts']['total']}")
+        expect(page.locator('#corpora .gb-corpora tbody tr')).to_have_count(len(b['corpora']))
+        # The old headline and fact matrix are folded away, not repeated next to the new blocks.
+        expect(page.locator('#readinessSummary .canonical-work-forecast')).to_be_hidden()
+        expect(page.locator('#gprFactMatrix')).to_be_hidden()
+        expect(page.locator('#gbReadiness')).to_be_attached()
+        assert page.locator('#gbReadiness #readinessSummary').count() == 1
+        # The Gantt is part of the tab and open; it stays below the summary.
+        expect(page.locator('#gprCalendar')).to_have_attribute('open', '')
+        expect(page.locator('#gantt .g-row').first).to_be_visible()
+        top = lambda sel: page.locator(sel).first.evaluate('e=>e.getBoundingClientRect().top+scrollY')
+        assert top('#deadlines') < top('#corpora') < top('#matrix') < top('#gprCalendar')
+        stage = b['matrix']['stages'][0]
+        work = next(w for line in stage['lines'] for ws in line['by_object'].values() for w in ws if w['id'])
+        page.locator('#matrix td.gb-stage', has_text=stage['stage']).first.click()
+        if width <= 700 and len(b['matrix']['objects']) > 1:
+            page.locator(f'#objectSwitch [data-object="{work["object"]}"]').click()
+        page.locator(f'#matrix [data-work="{work["id"]}"][data-object="{work["object"]}"]').first.click()
+        expect(page.locator('#detailCard')).to_be_visible()
+        expect(page.locator('#detailTitle')).to_have_text(work['name'])
+        expect(page.locator('#gantt .g-row.selected')).to_have_count(1)
+        # Closing the Gantt by hand is respected by the next redraw.
+        page.locator('#detailClose').click()
+        page.locator('#gprCalendar > summary').click()
+        page.evaluate('renderGantt(currentView)')
+        expect(page.locator('#gprCalendar')).not_to_have_attribute('open', '')
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        assert page.evaluate("[...document.querySelectorAll('#gprBrief .gb-scroll')].every(e=>e.scrollWidth<=e.clientWidth)")
+        assert not errors
+
+
+def test_new_tab_names_a_missing_or_failed_brief(monkeypatch, site):
+    value = plain(pace.schedule_view(PROJECT, DAY))
+    value['schedule']['brief'] = {'error': brief.FAILED + ' (ZeroDivisionError).'}
+    with open_preview(monkeypatch, value, 390) as (page, _, errors):
+        show(page, value)
+        expect(page.locator('#deadlines')).to_contain_text(brief.FAILED)
+        expect(page.locator('#corpora')).to_be_hidden()
+        expect(page.locator('#gantt .g-row').first).to_be_attached()
+        empty = dict(value, schedule=dict(value['schedule'], brief=plain(brief.build({'schedule': {}}))))
+        show(page, dict(empty, cut='2026-11-13'))
+        expect(page.locator('#deadlines')).to_contain_text('В графике работ нет ни одной работы.')
+        assert not errors
 
 
 def test_expected_finish_is_the_monitor_single_estimate_for_project_and_corpora(site, monkeypatch):
