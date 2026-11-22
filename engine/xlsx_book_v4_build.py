@@ -1215,7 +1215,9 @@ def _build_project_workbook(
             _benefit_rows = _mo_vri["benefits"].get("rows", [])
             sources_xml, _ = _v4_set_cell(sources_xml, "I7", text=(
                 "Предварительная оценка уменьшения ВРИ по 1310-ПП; право требует соглашения. "
-                + "; ".join(f"{r['label']}: {r['formula']} = {r['amount_rub']:,.2f} ₽. "
+                + "; ".join(f"{r['label']}: {r['formula']} = "
+                            + (f"{r['amount_rub']:,.2f} ₽. " if r['amount_rub'] is not None
+                               else r.get("error", "Оценка не завершена") + ". ")
                             + str(r.get("valuation_basis", "")) + ". " + " ".join(r.get("notes", []))
                             for r in _benefit_rows)))
     calculation_id = _calculation_fingerprint(calculation_source_inputs, calculation_source_tep, phasing)
