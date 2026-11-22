@@ -5,7 +5,11 @@ import hashlib
 import io
 import socket
 import ssl
+import shutil
+import subprocess
+import threading
 import time
+import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
 
 import pytest
@@ -337,6 +341,194 @@ def test_real_transport_connects_only_to_the_checked_ip_but_uses_hostname_for_tl
     assert context.check_hostname is True
     assert ("connect", ("93.184.216.34", 443)) in calls
     assert ("tls", "files.example") in calls
+
+
+def test_pinned_tls_recomputes_remaining_after_tcp_and_handshake(monkeypatch):
+    now=[0.0];monkeypatch.setattr(ds.time,'monotonic',lambda:now[0])
+    timeouts=[];closed=[]
+    class Socket:
+        def settimeout(self,value):timeouts.append(value)
+        def connect(self,address):now[0]+=0.30
+        def close(self):closed.append(True)
+    raw=Socket();context=ds.trust_context()
+    def handshake(sock,**kwargs):
+        assert timeouts[-1]==pytest.approx(0.10)
+        now[0]+=0.04
+        return sock
+    monkeypatch.setattr(context,'wrap_socket',handshake)
+    monkeypatch.setattr(ds,'trust_context',lambda:context)
+    monkeypatch.setattr(ds.socket,'socket',lambda *args:raw)
+    endpoint=(socket.AF_INET,socket.SOCK_STREAM,socket.IPPROTO_TCP,'',('93.184.216.34',443))
+    connection=ds._PinnedHTTPS('files.example',(endpoint,),timeout=0.40)
+    connection.connect()
+    assert timeouts==pytest.approx([0.40,0.10,0.06])
+    connection.close()
+    assert closed==[True]
+
+
+def test_pinned_tls_context_setup_cannot_restart_the_deadline(monkeypatch):
+    now=[0.0];monkeypatch.setattr(ds.time,'monotonic',lambda:now[0])
+    context=ds.trust_context()
+    def setup():
+        now[0]=0.50
+        return context
+    monkeypatch.setattr(ds,'trust_context',setup)
+    monkeypatch.setattr(ds.socket,'socket',lambda *args:pytest.fail('Expired setup allocated a socket'))
+    endpoint=(socket.AF_INET,socket.SOCK_STREAM,socket.IPPROTO_TCP,'',('93.184.216.34',443))
+    connection=ds._PinnedHTTPS('files.example',(endpoint,),timeout=0.40)
+    with pytest.raises(ds.DocumentSourceError) as expired:
+        connection.connect()
+    assert expired.value.code=='source_timeout' and connection._deadline==0.40
+
+
+@pytest.mark.parametrize('phase',['before_tcp','after_tcp','after_tls','expired_retry'])
+def test_pinned_tls_expiry_closes_unassigned_socket_and_stops_retries(monkeypatch,phase):
+    now=[0.0];monkeypatch.setattr(ds.time,'monotonic',lambda:now[0])
+    raws=[];wrapped=[];handshakes=[]
+    class Wrapped:
+        closed=False
+        def settimeout(self,value):pass
+        def close(self):self.closed=True
+    class Raw(Wrapped):
+        def connect(self,address):
+            if phase in {'after_tcp','expired_retry'}:now[0]=0.50
+            if phase=='expired_retry':raise OSError('synthetic TCP failure')
+    def allocate(*args):
+        value=Raw();raws.append(value);return value
+    context=ds.trust_context()
+    def handshake(raw,**kwargs):
+        handshakes.append(True)
+        value=Wrapped();wrapped.append(value)
+        now[0]=0.50
+        return value
+    monkeypatch.setattr(context,'wrap_socket',handshake)
+    monkeypatch.setattr(ds,'trust_context',lambda:context)
+    monkeypatch.setattr(ds.socket,'socket',allocate)
+    endpoint=(socket.AF_INET,socket.SOCK_STREAM,socket.IPPROTO_TCP,'',('93.184.216.34',443))
+    connection=ds._PinnedHTTPS('files.example',(endpoint,endpoint),timeout=0.40)
+    if phase=='before_tcp':now[0]=0.50
+    with pytest.raises(ds.DocumentSourceError) as expired:
+        connection.connect()
+    assert expired.value.code=='source_timeout' and connection.sock is None
+    assert len(raws)==(0 if phase=='before_tcp' else 1)
+    assert all(value.closed for value in raws+wrapped)
+    assert bool(handshakes)==(phase=='after_tls')
+
+
+def test_pinned_tls_endpoint_retry_inherits_absolute_deadline(monkeypatch):
+    now=[0.0];monkeypatch.setattr(ds.time,'monotonic',lambda:now[0])
+    raws=[];timeouts=[]
+    class Socket:
+        closed=False
+        def settimeout(self,value):timeouts.append(value)
+        def connect(self,address):
+            now[0]+=0.30 if len(raws)==1 else 0.02
+            if len(raws)==1:raise OSError('synthetic first endpoint failure')
+        def close(self):self.closed=True
+    def allocate(*args):
+        value=Socket();raws.append(value);return value
+    context=ds.trust_context()
+    monkeypatch.setattr(context,'wrap_socket',lambda raw,**kwargs:raw)
+    monkeypatch.setattr(ds,'trust_context',lambda:context)
+    monkeypatch.setattr(ds.socket,'socket',allocate)
+    endpoint=(socket.AF_INET,socket.SOCK_STREAM,socket.IPPROTO_TCP,'',('93.184.216.34',443))
+    connection=ds._PinnedHTTPS('files.example',(endpoint,endpoint),timeout=0.40)
+    connection.connect()
+    assert timeouts==pytest.approx([0.40,0.10,0.08,0.08])
+    assert raws[0].closed
+    connection.close()
+    assert all(value.closed for value in raws)
+
+
+def test_pinned_tls_does_not_swallow_non_network_failure_or_leak_raw_socket(monkeypatch):
+    raw=type('Socket',(),{'settimeout':lambda *a:None,'connect':lambda *a:None,
+                         'close':lambda self:setattr(self,'closed',True)})()
+    context=ds.trust_context()
+    def failure(*args,**kwargs):raise RuntimeError('synthetic handshake failure')
+    monkeypatch.setattr(context,'wrap_socket',failure)
+    monkeypatch.setattr(ds,'trust_context',lambda:context)
+    allocations=[]
+    monkeypatch.setattr(ds.socket,'socket',lambda *args:allocations.append(raw) or raw)
+    endpoint=(socket.AF_INET,socket.SOCK_STREAM,socket.IPPROTO_TCP,'',('93.184.216.34',443))
+    connection=ds._PinnedHTTPS('files.example',(endpoint,endpoint),timeout=1)
+    with pytest.raises(RuntimeError,match='synthetic handshake failure'):
+        connection.connect()
+    assert raw.closed and connection.sock is None and allocations==[raw]
+
+
+@pytest.fixture
+def local_tls_endpoint(tmp_path):
+    if not shutil.which('openssl'):
+        pytest.skip('openssl is required for the real verified TLS check')
+    cert=tmp_path/'test-localhost.pem';key=tmp_path/'test-localhost.key'
+    subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1',
+        '-subj','/CN=localhost','-addext','subjectAltName=DNS:localhost,IP:127.0.0.1',
+        '-keyout',str(key),'-out',str(cert)],check=True,capture_output=True,timeout=10)
+    context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(str(cert),str(key))
+    listener=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    listener.bind(('127.0.0.1',0));listener.listen(1);listener.settimeout(5)
+    errors=[]
+    def serve():
+        raw=wrapped=None
+        try:
+            raw,_=listener.accept();raw.settimeout(5)
+            wrapped=context.wrap_socket(raw,server_side=True)
+            headers=b''
+            while b'\r\n\r\n' not in headers:
+                chunk=wrapped.recv(4096)
+                if not chunk:break
+                headers+=chunk
+            head,_,pending=headers.partition(b'\r\n\r\n')
+            length=next((int(line.split(b':',1)[1]) for line in head.split(b'\r\n')
+                         if line.lower().startswith(b'content-length:')),0)
+            while len(pending)<length:
+                chunk=wrapped.recv(length-len(pending))
+                if not chunk:break
+                pending+=chunk
+            body=b'{"tls":true}'
+            wrapped.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: '+str(len(body)).encode()+b'\r\n\r\n'+body)
+        except (ssl.SSLError,OSError) as exc:
+            errors.append(type(exc).__name__)
+        finally:
+            if wrapped is not None:wrapped.close()
+            if raw is not None:raw.close()
+            listener.close()
+    thread=threading.Thread(target=serve,daemon=True);thread.start()
+    try:
+        yield cert,listener.getsockname()[1],errors
+    finally:
+        listener.close();thread.join(timeout=6)
+        assert not thread.is_alive()
+
+
+@pytest.mark.parametrize('trusted',[True,False])
+def test_native_document_post_uses_real_verified_tls_and_closes_sockets(
+        local_tls_endpoint,monkeypatch,trusted):
+    import document_processing as processing
+    cert,port,errors=local_tls_endpoint
+    context=ds.trust_context()
+    if trusted:context.load_verify_locations(cafile=str(cert))
+    assert context.verify_mode==ssl.CERT_REQUIRED and context.check_hostname
+    monkeypatch.setattr(ds,'trust_context',lambda:context)
+    raw_sockets=[];tls_sockets=[];caller=threading.get_ident()
+    allocate=socket.socket;wrap=context.wrap_socket
+    def tracked_socket(*args,**kwargs):
+        sock=allocate(*args,**kwargs)
+        if threading.get_ident()==caller:raw_sockets.append(sock)
+        return sock
+    def tracked_wrap(*args,**kwargs):
+        sock=wrap(*args,**kwargs);tls_sockets.append(sock);return sock
+    monkeypatch.setattr(ds.socket,'socket',tracked_socket)
+    monkeypatch.setattr(context,'wrap_socket',tracked_wrap)
+    request=urllib.request.Request('https://localhost:'+str(port)+'/',data=b'{}')
+    with processing.operation(seconds=5):
+        if trusted:
+            assert processing.post_bytes(request,180)==b'{"tls":true}'
+        else:
+            with pytest.raises(ssl.SSLCertVerificationError):
+                processing.post_bytes(request,180)
+    assert raw_sockets and all(sock.fileno()==-1 for sock in raw_sockets+tls_sockets)
 
 
 def test_dns_wait_has_a_deadline_and_cancels_queued_work(monkeypatch):
