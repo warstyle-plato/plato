@@ -46,7 +46,7 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         expect(first).to_contain_text('Сумма превышена на 977\u00a0700 ₽')
         expect(first).to_contain_text('01.11.2026')
         expect(first.locator('.contract-attention .contract-risk')).to_have_text(
-            ['Проверить сумму превышения', 'Проверить замечания'])
+            ['Проверить сумму превышения', 'Срок прошёл', 'Проверить замечания'])
         expect(page.get_by_role("dialog")).to_be_hidden()
         # A phone card stacks six signed cells; a table row stays short.
         assert first.evaluate('(r)=>r.getBoundingClientRect().height') <= (420 if width <= 640 else 110 if width < 900 else 80)
@@ -235,10 +235,10 @@ def test_passed_contract_deadline_stays_in_attention_count_filter_and_next_step(
         expect(passed.locator('.term')).to_have_text('01.11.2026')
         expect(passed.locator('.term .attention')).to_have_count(1)
         expect(passed.locator('.contract-schedule')).to_have_text('Проверить документы')
-        expect(passed.locator('.contract-attention')).to_have_text('—')
+        expect(passed.locator('.contract-attention')).to_have_text('Срок прошёл')
         more = opened(page, CONTRACT)
         expect(more.locator('.contract-next')).to_have_text(
-            'Данные заполнены')
+            'Проверить исполнение: срок прошёл')
         expect(more).to_contain_text('Срок прошёл; проверьте исполнение')
         for shown in (passed, more):
             expect(shown).not_to_contain_text('Договор не исполнен')

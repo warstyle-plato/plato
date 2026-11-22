@@ -18,7 +18,7 @@ def full_control(state='behind'):
 def rendered(row):
     return page_blocks.run_json('const row=' + json.dumps(row) + ';const before=JSON.stringify(row);',
         'console.log(JSON.stringify({graph:contractScheduleBrief(row),term:contractTermBrief(row),'
-        'attention:contractAttentionBrief(row),unchanged:before===JSON.stringify(row)}));',page=MONITOR_PAGE)
+        'attention:contractAttentionBrief(row),next:contractNextStep(row),unchanged:before===JSON.stringify(row)}));',page=MONITOR_PAGE)
 
 
 def test_partial_match_displays_a_verification_action_without_technical_counts_or_false_delay():
@@ -34,6 +34,9 @@ def test_partial_match_displays_a_verification_action_without_technical_counts_o
         assert number not in result['graph']
     assert 'отста' not in result['graph'] and 'Сверить с КС-6а' not in result['attention']
     assert 'Прогноз' not in result['term']
+    assert 'Срок прошёл' in result['attention']
+    assert 'Проверить исполнение: срок прошёл' in result['next']
+    assert 'Проверить связь с КС-6а' in result['next']
     assert result['unchanged']
 
 
@@ -43,6 +46,8 @@ def test_physically_complete_work_with_lower_final_sum_has_no_live_delay():
     result=rendered(row)
     assert 'Работы завершены' in result['graph']
     assert 'Сверить сумму договора' in result['attention']
+    assert 'Срок прошёл' not in result['attention']
+    assert 'Проверить исполнение: срок прошёл' not in result['next']
     assert '255' not in result['graph'] and 'Проверить срок' not in result['attention']
     assert result['unchanged']
 
@@ -51,12 +56,12 @@ def test_genuinely_incomplete_fully_covered_work_keeps_its_schedule_warning():
     result=rendered({'schedule_control':full_control(),'deadline':'2026-03-01',
                      'deadline_passed':True,'amount':1000,'completed':500,'remaining':500})
     assert 'Есть отставание' in result['graph'] and 'risk-bad' in result['graph']
-    assert 'Проверить срок работ' in result['attention']
+    assert 'Срок прошёл' in result['attention']
     assert result['unchanged']
 
 
 @pytest.mark.parametrize('width',[390,1440])
-def test_native_register_shows_only_the_verification_action_for_partial_results(width):
+def test_native_register_keeps_verification_and_past_deadline_for_partial_results(width):
     from playwright.sync_api import expect
     from tests.test_monitor_cumulative_controls import browser_page, CONTRACT
     with browser_page(width) as (page,responses,errors):
@@ -65,8 +70,10 @@ def test_native_register_shows_only_the_verification_action_for_partial_results(
         s.update(incomplete=True,whole_contract_finish=None)
         s['coverage'].update(calculated=44,source_works=140,partial=True)
         row['schedule_control']=s
+        row.update(deadline='2026-03-01',deadline_passed=True)
         page.locator('#contractsTab').click()
         graph=page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-schedule')
         expect(graph).to_have_text('Сверить с КС-6а')
         assert len(graph.inner_text())<30
+        expect(page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-attention')).to_contain_text('Срок прошёл')
         assert not errors
