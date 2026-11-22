@@ -183,7 +183,7 @@ def test_the_card_says_why_there_is_no_percent_and_what_is_left_out():
             box.innerHTML = contractControlHtml({json.dumps(_control(LEFT_OUT), ensure_ascii=False)});
             document.body.append(box); return box.innerText}}""")
         assert errors == []
-    assert ("готовность сопоставленных работ 0 %, выполнение плана не посчитано: по плану на эту дату ещё ничего не должно "
+    assert ("готовность работ в расчёте 0 %, выполнение плана не посчитано: по плану на эту дату ещё ничего не должно "
             "быть выполнено") in shown
     # Отклонение без плана — не 0 %: процент не считается вовсе.
     assert "(0 %)" not in shown and "(+0 %)" not in shown
