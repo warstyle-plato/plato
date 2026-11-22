@@ -3083,6 +3083,7 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
     summary = consolidated.get("summary") or {}
     finance = consolidated.get("finance") or {}
     totals_fin = ((consolidated.get("phase_financing") or {}).get("totals") or {})
+    no_housing = str(summary.get("project_kind") or "") in PROJECT_KINDS_WITHOUT_HOUSING
     products = [p for p in ((consolidated.get("report") or {}).get("products") or [])
                 if isinstance(p, dict)]
     order = [str(p.get("key")) for p in products]
@@ -3183,7 +3184,7 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
     # строками в начале расходов, до CAPEX: это расходы, и после итоговой
     # прибыли им не место (владелец, 28.09.2026: «ничего не сворачивать»).
     inputs0 = (c[0].get("shared_rate_inputs_th") or {}) if c else {}
-    rates = [row(label + " — цена м² МКД очереди", "th",
+    rates = [row(label + (" — на м² базы общих статей очереди" if no_housing else " — цена м² МКД очереди"), "th",
                  [(x.get("shared_rates_th") or {}).get(key) for x in c], None,
                  rate_input=inputs0.get(key))
              for key, label in (("ird", "ИРД и согласования"), ("design", "Проектирование П+РД"),
@@ -3228,7 +3229,7 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
                                     [None for _ in c], None, role="sub"))
         mkd_values = [f(x.get("capex")) - sum(capex_obj(x, k) for k in built) for x in c]
         mkd_total = f(summary.get("capex")) - sum(r["total"] for r in osz_rows if r["role"] == "part")
-        capex_rows = [row("МКД и общепроектные статьи", "money", mkd_values, mkd_total,
+        capex_rows = [row("Общепроектные статьи вне смет объектов" if no_housing else "МКД и общепроектные статьи", "money", mkd_values, mkd_total,
                           role="part", group="capex_mkd"), *osz_rows]
         parts = [r for r in osz_rows if r["role"] == "part"]
         if len(parts) > 1:
@@ -3259,13 +3260,13 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
          revenue_group(mkd, "Итого МКД", "mkd") + revenue_group(osz, "Итого ОСЗ", "osz")
          + [row("Выручка всего", "money", rev_all, f(summary.get("revenue")),
                 role="total", group="all"),
-            th("Цена реализации на м² продаваемой", "revenue_per_saleable_th",
+            th("Доходы модели на м² монетизируемой площади" if no_housing else "Цена реализации на м² продаваемой", "revenue_per_saleable_th",
                f(summary.get("revenue")), sale),
             # Чисто квартирная цена — общий знаменатель с Excel-книгой: в ней
             # та же строка, и числа обязаны совпадать один в один.
-            row("в т.ч. квартиры — на м² их продаваемой", "th",
+            *([] if no_housing else [row("в т.ч. квартиры — на м² их продаваемой", "th",
                 [f(x.get("apartment_price_th")) for x in c],
-                f(summary.get("average_apartment_price_th")) or None, role="sub"),
+                f(summary.get("average_apartment_price_th")) or None, role="sub")]),
         ]),
         ("costs", "Затраты", [
             *rates,
@@ -3303,7 +3304,7 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
             money("Общепроектная нагрузка — cash", "cash_shared_cost", None),
             money("Аллоцированные общие расходы", "allocated_shared_cost", None),
             money("Аналитическая прибыль после аллокации", "allocated_net_profit", None),
-            money("Чистая прибыль — cash", "net_profit", f(summary.get("net_profit"))),
+            money("Чистая прибыль модели" if no_housing else "Чистая прибыль — cash", "net_profit", f(summary.get("net_profit"))),
             row("Маржинальность", "pct", [f(x.get("margin")) for x in c], f(summary.get("margin"))),
             th("Чистая прибыль на м² продаваемой", "net_profit_per_saleable_th",
                f(summary.get("net_profit")), sale)]),
@@ -3320,6 +3321,9 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
         {"label": f"на м² {TOTAL_AREA.genitive} — {TOTAL_AREA.lower()} (наземная и подземная)",
          "unit": "м²",
          "values": [f(x.get("construction_volume_sqm")) for x in c], "total": total_area}]
+    if no_housing:
+        divisors.append({"label": "Ставки общих статей — расчётная база", "unit": "м²",
+                         "values": [x.get("shared_rate_base_sqm") for x in c], "total": None})
     return {"columns": [str(x.get("name") or "") for x in c],
             "has_debt": bool(debt),
             "divisors": divisors,

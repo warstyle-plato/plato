@@ -82,3 +82,26 @@ def test_total_expenses_uses_report_expense_structure():
         }
     }
     assert pdf_v2._total_expenses(result) == 25.5
+
+
+def test_office_and_hotel_cover_keep_the_object_area_rows(monkeypatch):
+    import main as wrapper
+    from pypdf import PdfReader
+    from reportlab.graphics.shapes import Drawing
+    core = wrapper.core
+    # Exercise the real cover's map branch without calling a map service.
+    monkeypatch.setattr(pdf_v2.base, '_parcel_drawing', lambda *a, **k: Drawing(240, 100))
+    for key, kind in [('site', core.REPORT_KIND_OBJECT), ('object', core.REPORT_KIND_HOTEL)]:
+        brief = [
+            {'label': 'Наземная площадь', 'value': 30000, 'unit': 'sqm'},
+            {'label': 'Общая площадь объекта', 'value': 35000, 'unit': 'sqm'},
+            {'label': 'Площадь продукта', 'value': 24000, 'unit': 'sqm'},
+        ]
+        payload = {'inputs': {}, 'result': {'summary': {'construction_volume_sqm': 35000},
+            'report': {'layout': {'kind': kind, 'object_frame': True},
+                       'object_report': {'sections': [{'key': key, 'brief': brief}]}}}}
+        out = io.BytesIO()
+        SimpleDocTemplate(out).build(pdf_v2.base._front_page_flowables(payload, core))
+        text = '\n'.join(p.extract_text() for p in PdfReader(io.BytesIO(out.getvalue())).pages)
+        assert 'Общая площадь объекта' in text and 'Площадь продукта' in text, key
+        assert '35 000' in text.replace('\xa0', ' ') and '24 000' in text.replace('\xa0', ' ')
