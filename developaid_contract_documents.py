@@ -36,7 +36,7 @@ import re
 from math import fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 10
+READER_VERSION = 11
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -45,7 +45,11 @@ _GENITIVE = {'января': 1, 'февраля': 2, 'марта': 3, 'апре�
              'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12}
 # A date in figures (16.03.2026) or in words («16» марта 2026 г.).
 _WHEN = (r'(?:\d\d\.\d\d\.\d{4}|[«"“]?\d{1,2}[»"”]?\s+(?:' + '|'.join(_GENITIVE) + r')\s+\d{4})')
-_CONTRACT = re.compile(r'Договор\w*\s+подряда\s+№\s*(.+?)\s+(?:от\s+(' + _WHEN + r')|на\s+выполнение)', re.I)
+_CONTRACT_HEADER = r'Договор\w*\s+подряда\s+№'
+# An undated running header must not borrow a later annex's dated reference.
+# Keep searching for a complete reference instead of joining two headings.
+_CONTRACT = re.compile(_CONTRACT_HEADER + r'\s*((?:(?!' + _CONTRACT_HEADER +
+                       r').)+?)\s+(?:от\s+(' + _WHEN + r')|на\s+выполнение)', re.I)
 _AGREEMENT = re.compile(r'Дополнительн\w+\s+соглашени\w+\s+№\s*(\d+)(?:\s+от\s+(' + _WHEN + r'))?', re.I)
 # The date line under the title («г. Москва «16» марта 2026 г.») follows it closely.
 _DATELINE = 400
@@ -73,6 +77,10 @@ _ACT_FORM = (re.compile(r'АКТ\s+О\s+ПРИ[ЕЁ]МКЕ\s+ВЫПОЛНЕНН�
 _ACT_ROW = 14.0
 _ACT_BELOW = 30.0
 _ACT_COLUMN = 25.0
+
+
+class ContractHeaderAmbiguity(ValueError):
+    """Skipped running headings disagree with the source's dated reference."""
 
 
 def _space(text):
@@ -126,6 +134,26 @@ def _dated(text, start):
     return _date(match[0]) if match else None
 
 
+def _check_skipped_contract_headers(text, contract):
+    """Only an undated header skipped by the boundary may repeat this reference."""
+    previous = list(re.finditer(_CONTRACT_HEADER, text[:contract.start()], re.I))
+    if not previous:
+        return
+    from developaid_monitor_contracts import _contract_number as identity_number
+    for index, header in enumerate(previous):
+        if _CONTRACT.match(text, header.start()):
+            continue  # A complete earlier reference was not skipped by this fix.
+        end = previous[index+1].start() if index+1 < len(previous) else contract.start()
+        fragment = text[header.end():end]
+        number = re.split(r'\bПриложение\s*№|\b(?:Генподрядчик|Подрядчик)\s*[:_]',
+                          fragment, maxsplit=1, flags=re.I)[0]
+        number = re.sub(r'\s+к\s*$', '', number, flags=re.I).strip()
+        if number and identity_number(_contract_number(number), reference=True) != \
+                identity_number(_contract_number(contract[1]), reference=True):
+            raise ContractHeaderAmbiguity('Реквизиты договора в заголовках документа неоднозначны: номера различаются. '
+                                          'Проверьте исходный PDF и загрузите документ одного договора.')
+
+
 def identity(text):
     """Contract and agreement named on the first page; absent parts stay None.
 
@@ -136,6 +164,8 @@ def identity(text):
     agreement = _AGREEMENT.search(text)
     after = agreement.end() if agreement else 0
     contract = _CONTRACT.search(text, after) or _CONTRACT.search(text)
+    if contract:
+        _check_skipped_contract_headers(text, contract)
     contract_date = _date(contract[2]) if contract and contract[2] else contract and _dated(text, contract.end())
     agreement_date = None
     if agreement:

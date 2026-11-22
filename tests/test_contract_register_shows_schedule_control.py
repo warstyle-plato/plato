@@ -34,7 +34,8 @@ def _register():
 
 def assert_behind_with_scope(observed):
     assert {key: observed[key] for key in BEHIND} == BEHIND
-    assert set(observed) == set(BEHIND) | {'coverage', 'forecast_scope', 'whole_contract_finish', 'data_gaps'}
+    assert set(observed) == set(BEHIND) | {'coverage', 'forecast_scope', 'whole_contract_finish', 'data_gaps', 'confirmation'}
+    assert observed['confirmation']['upload_required'] is True
     coverage = observed['coverage']
     assert (coverage['calculated'], coverage['source_works'], coverage['source_rows'], coverage['unknown']) == (3, 4, 6, 1)
     assert coverage['source_known'] and coverage['partial']
@@ -114,7 +115,7 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         # The same native result is presented once, in the modal work table.
         more = opened(page, CONTRACT)
         expect(more.locator('#contractCardSummary')).to_contain_text('55 %')
-        expect(more.locator('#contractCardSummary')).to_contain_text('Готовность сопоставленных работ: 50 %')
+        expect(more.locator('#contractCardSummary')).to_contain_text('Готовность к полному объёму работ: 50 %')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('06.02.2026')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Не определён')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Оценка сопоставленных работ')

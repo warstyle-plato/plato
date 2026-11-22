@@ -1,7 +1,7 @@
 """Plan and fact of the contract's works in natural volumes, three percentages, lag, overdue and forecast.
 
 The plan is the edition in force on the cut (`developaid_contract_plan`), the
-fact is the acts КС-2 (or the KS-6a) priced by the estimate
+fact is the KS-6a priced by the estimate; КС-2 supplies confirmation and reconciliation
 (`developaid_contract_fact`); both lie on the same ГПР lines. Methodology of
 12.11.2026 (docs/contract_schedule_control.md):
 
@@ -169,6 +169,7 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
     result = {"cut": cut, "assumption": ASSUMPTION, "weights": WEIGHTS, "note": "", "total": None, "lines": [],
               "behind": [], "ahead": [], "done": [], "overdue": [], "forecast": None, "left_out": _left_out(fact),
               "source": fact.get("source"), "source_note": fact.get("source_note") or "",
+              "confirmation": fact.get("confirmation"),
               "preliminary": bool(fact.get("preliminary")), "data_gaps": _data_gaps(fact)}
     current = next((e for e in planned.get("editions") or [] if e.get("in_force")), None)
     if current is None:
@@ -197,8 +198,12 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
         work_amount = line.get('work_amount', line['amount'])
         work_fact = got.get('work_fact', got['fact'] if 'work_amount' not in line else None)
         volume = _volume(line, due, got["volumes"], work_fact)
-        unknown = not volume and (work_amount is None or work_fact is None)
-        if volume:
+        if got.get('quantity_incomplete'):
+            volume = _volume(line, due, [], 0.0)
+            if volume:
+                volume.update(fact=None, behind=None, deviation=None)
+        unknown = bool(got.get('quantity_incomplete')) or not volume and (work_amount is None or work_fact is None)
+        if volume and not unknown:
             ready, tol = volume["fact"] / volume["quantity"], _SHARE
         elif unknown:
             ready, tol = 0.0, _SHARE
@@ -219,7 +224,8 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
                "plan_done": _ratio(ready, due) if not unknown and due > tol else None,
                "percent": _ratio(ready, due) - 1 if not unknown and due > tol else None,
                "state": state, "lag_days": lag, "ahead_days": ahead,
-               "overdue_days": (day - finish).days if state != "done" and day > finish else 0,
+               "overdue_days": None if unknown else (day - finish).days if state != "done" and day > finish else 0,
+               **({'reason': ' '.join(got.get('reasons') or [])} if unknown else {}),
                "behind_amount": (0.0 if finished else max(work_amount * (due-ready), 0.0)
                                  if work_amount is not None and not unknown else None),
                "volume": volume,
@@ -245,7 +251,9 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
     result["overdue"] = [r["code"] for r in sorted((r for r in rows if r["overdue_days"]),
                                                    key=lambda r: -r["overdue_days"])]
     if any(r['work_amount'] is None or r['readiness'] is None for r in rows):
-        result['note'] = 'Готовность сопоставленных работ не рассчитана: стоимость или объём работ не отделены от материалов.'
+        result['note'] = ('Готовность сопоставленных работ не рассчитана: для части работ КС-6а не подтверждены даты или объёмы.'
+                          if fact.get('quantity_incomplete') else
+                          'Готовность сопоставленных работ не рассчитана: стоимость или объём работ не отделены от материалов.')
         result['data_gaps'].append(result['note'])
         return result
     spans = [_span(line, start) for line in work_lines]
@@ -300,9 +308,6 @@ def _left_out(fact):
 def _data_gaps(fact):
     gaps = ([f'Позиций КС с неподтверждённым разделением работ и материалов: {len(fact["component_gaps"])}.']
             if fact.get('component_gaps') else [])
-    if fact.get('missing_acts'):
-        gaps.append('В карточке нет актов КС-2 № ' + ', '.join(fact['missing_acts']) +
-                    ', которые указаны в сводной. Их выполнение в расчёт не вошло.')
     if fact.get('unread'):
         gaps.append(f'Работ КС-6а без подтверждённой истории выполнения: {len(fact["unread"])}.')
     outside = sum(v.get('count', 0) for v in (fact.get('outside') or {}).values())

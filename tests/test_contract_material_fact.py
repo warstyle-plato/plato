@@ -33,7 +33,9 @@ def build(performed, *, start=None, status='confirmed'):
                  'estimates': [{'scope': 'full', 'positions': [POSITION], 'links': {'positions': [link]}}],
                  'schedule': {'lines': [{'code': '1', 'name': 'Стена', 'start': '2026-01-01',
                                           'finish': '2026-04-01', 'parent': None}]}}]
-    return fact.build(editions, 'b'*64, None, '2026-03-15', performed)
+    # The same separately printed work/material quantities are in the KS-6a.
+    statement = {'acts': fact.from_acts(performed), 'unread': [], 'works': 1, 'items': []}
+    return fact.build(editions, 'b'*64, statement, '2026-03-15', performed)
 
 
 def test_separate_quantities_survive_accumulation_and_use_separate_prices():

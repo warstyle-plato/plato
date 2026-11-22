@@ -1463,6 +1463,8 @@ _PAYMENTS_COLUMNS = {
     "amount": 9,
     "source": 10,
     "counterparty": 11,
+    "allocation_contract": 12,
+    "allocation_purpose": 13,
 }
 
 # Источник платежа: собственные средства процентов не несут (решение владельца
@@ -1532,6 +1534,45 @@ def payment_issue_context(row: dict[str, Any]) -> dict[str, Any]:
             "amount_cell": copy.deepcopy(observed)}
 
 
+def unused_payment_lookup(row) -> bool:
+    """Only the empty native template with a numeric H lookup zero.
+
+    A real J zero, incomplete payment or L:N allocation is never discarded.
+    A is the prefilled sequence, not a payment amount or identity.
+    """
+    cell = lambda index: row[index] if index < len(row) else None
+    article = cell(_PAYMENTS_COLUMNS['article_name'])
+    return (type(article) in (int, float) and article == 0
+            and all(cell(index) in (None, '') for index in _PAYMENTS_COLUMNS.values()
+                    if index != _PAYMENTS_COLUMNS['article_name']))
+
+
+def _payment_contract_allocation(row, headers, source_row):
+    """Read the additional contract level without changing the bank payment.
+
+    D dates the B/C contract. The extra L/M contract has no declared date
+    column in this native format, so its legal date remains unknown.
+    """
+    roles = {'contractor': (11, {'контрагент', 'субподрядчик'}),
+             'contract': (12, {'договор', 'номер договора', '№ договора'}),
+             'purpose': (13, {'аванс/выполнение/гу'})}
+    get = lambda index: row[index] if index < len(row) else None
+    if not any(get(index) not in (None, '') for index, _ in roles.values()):
+        return None
+    result = {'contract_date': None, 'header_roles': {}, 'source_cells': {
+        'contractor': f'L{source_row}', 'contract': f'M{source_row}',
+        'purpose': f'N{source_row}', 'amount': f'J{source_row}'}}
+    for name, (index, labels) in roles.items():
+        observed = {re.sub(r'\s*/\s*', '/', _normalized(h[index])) for h in headers
+                    if index < len(h) and isinstance(h[index], str) and h[index].strip()
+                    and _normalized(h[index]) not in {'выбор', 'данные платежного поручения'}}
+        known = len(observed) == 1 and observed <= labels
+        result['header_roles'][name] = 'observed' if known else 'unknown'
+        value = get(index)
+        result[name] = ('' if value is None else str(value).strip()) if known else ''
+    return result
+
+
 def _read_payment_rows(path: str | Path) -> list[dict[str, Any]]:
     """One cached source reading for both public payment projections.
 
@@ -1540,8 +1581,10 @@ def _read_payment_rows(path: str | Path) -> list[dict[str, Any]]:
     before the caller chooses its projection.
     """
     rows: list[dict[str, Any]] = []
+    headers = []
     for index, row in enumerate(_sheet(path, _PAYMENTS_SHEET, max_col=max(_PAYMENTS_COLUMNS.values()) + 1), 1):
         if index < _PAYMENTS_FIRST_ROW:
+            headers.append(row)
             continue
 
         def cell(field: str) -> Any:
@@ -1553,10 +1596,7 @@ def _read_payment_rows(path: str | Path) -> list[dict[str, Any]]:
         # The work-name lookup is prefilled below the payment list. Its
         # numeric zero, with every payment field empty, is an unused template
         # row. A zero in the amount column is still a payment observation.
-        article = cell("article_name")
-        if (type(article) in (int, float) and article == 0
-                and all(cell(field) in (None, "") for field in _PAYMENTS_COLUMNS
-                        if field != "article_name")):
+        if unused_payment_lookup(row):
             continue
         source = str(cell("source") or "").strip()
         item = {
@@ -1573,13 +1613,15 @@ def _read_payment_rows(path: str | Path) -> list[dict[str, Any]]:
             "source": source,
             "own_funds": _OWN_FUNDS_MARKER in _normalized(source),
             "source_row": index,
+            "_contract_allocation": _payment_contract_allocation(row, headers, index),
         }
         rows.append(item)
     return rows
 
 
 def read_payments(path: str | Path, *, include_incomplete: bool = False,
-                  include_cell_metadata: bool = False) -> dict[str, Any]:
+                  include_cell_metadata: bool = False,
+                  include_contract_allocation: bool = False) -> dict[str, Any]:
     """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств.
 
     Both projections read the same cached source rows. Strict financial
@@ -1590,6 +1632,9 @@ def read_payments(path: str | Path, *, include_incomplete: bool = False,
     """
     rows: list[dict[str, Any]] = []
     for item in _read_payment_rows(path):
+        allocation = item.pop('_contract_allocation', None)
+        if include_contract_allocation and allocation is not None:
+            item['contract_allocation'] = allocation
         observed = item.pop("_amount_cell", None)
         if include_cell_metadata and observed is not None:
             item["amount_cell"] = observed

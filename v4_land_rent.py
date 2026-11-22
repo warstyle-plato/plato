@@ -224,13 +224,16 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                       "width": str(width), "customWidth": "1"})
     data = ET.SubElement(root, _tag("sheetData"))
     rows: dict[int, ET.Element] = {}
+    addresses: dict[int, set[str]] = {}
 
     def put(n: int, coord: str, value: Any = None, **kw: Any) -> None:
         if n not in rows:
             rows[n] = ET.SubElement(data, _tag("row"), {"r": str(n)})
-        if any(c.get("r") == coord for c in rows[n]):
+            addresses[n] = set()
+        if coord in addresses[n]:
             raise ValueError(f"Аренда ЗУ: адрес {coord} задан дважды")
         _cell(rows[n], coord, value, **kw)
+        addresses[n].add(coord)
 
     mode = str(inputs.get("land_rent_mode") or "unspecified")
     preset = None
