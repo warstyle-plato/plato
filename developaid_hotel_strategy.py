@@ -563,21 +563,71 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
     capex_ffe = monthly_sum({m: float(v) for m, v in (plan.get("capex_ffe") or {}).items() if v})
     capex_land = monthly_sum({m: float(v) for m, v in (plan.get("capex_land") or {}).items() if v})
     capex_vat_exempt = monthly_sum({m: float(v) for m, v in (plan.get("capex_vat_exempt") or {}).items() if v})
+    # The caller excludes construction land rent from CAPEX and its exempt
+    # subset, supplying accrual, payment and eligible gross VAT base separately.
+    land_rent = monthly_sum({mm: float(value) for mm, value in
+                            (plan.get("land_rent_operating") or {}).items() if value})
+    land_rent_cash = monthly_sum({mm: float(value) for mm, value in
+                                 (plan.get("land_rent_operating_cash") or {}).items() if value})
+    land_rent_valuation = monthly_sum({mm: float(value) for mm, value in
+                                      (plan.get("land_rent_valuation") or {}).items() if value})
+    construction_rent = monthly_sum({mm: float(value) for mm, value in
+                                     (plan.get("land_rent_construction_incurred") or {}).items() if value})
+    construction_rent_cash = monthly_sum({mm: float(value) for mm, value in
+                                          (plan.get("land_rent_construction_cash") or {}).items() if value})
+    construction_vat_base = monthly_sum({mm: float(value) for mm, value in
+                                         (plan.get("land_rent_construction_input_vat_base") or {}).items() if value})
     vat_share = vat_rate / (1.0 + vat_rate) if vat_rate > 0 else 0.0
+    construction_vat_refund = {add_months(mm, 3): value * vat_share
+                               for mm, value in construction_vat_base.items() if value * vat_share}
     warnings: list[str] = []
+    construction_supplied = any(name in plan for name in (
+        "land_rent_construction_incurred", "land_rent_construction_cash"))
+    construction_complete = (not construction_supplied or
+                              (isinstance(plan.get("land_rent_construction_incurred"), dict) and
+                               plan.get("land_rent_construction_complete", True) is True))
+    construction_cash_complete = (not construction_supplied or
+                                   (isinstance(plan.get("land_rent_construction_cash"), dict) and
+                                    plan.get("land_rent_construction_cash_complete", True) is True))
+    if not construction_complete:
+        warnings.append("Строительная аренда земли рассчитана не полностью.")
+    if not construction_cash_complete:
+        warnings.append("Денежный график строительной аренды земли рассчитан не полностью.")
+    rent_supplied = any(name in plan for name in (
+        "land_rent_operating", "land_rent_operating_cash", "land_rent_valuation"))
+    rent_accrual_complete = (not rent_supplied or
+                             (isinstance(plan.get("land_rent_operating"), dict) and
+                              plan.get("land_rent_operating_complete", True) is True))
+    rent_cash_complete = (not rent_supplied or
+                          (isinstance(plan.get("land_rent_operating_cash"), dict) and
+                           plan.get("land_rent_operating_cash_complete", True) is True))
+    rent_valuation_complete = (not rent_supplied or
+                               (isinstance(plan.get("land_rent_valuation"), dict) and
+                                plan.get("land_rent_valuation_complete", True) is True))
+    if not rent_accrual_complete:
+        warnings.append("Начисленный расход по операционной аренде земли рассчитан не полностью.")
+    if not rent_cash_complete:
+        warnings.append("Денежный график операционной аренды земли рассчитан не полностью.")
+    if not rent_valuation_complete:
+        warnings.append("Аренда земли для оценки стоимости выхода рассчитана не полностью.")
+        warnings.extend(str(reason) for reason in plan.get("land_rent_valuation_missing") or [])
 
     ops = operations_from_params(
         params, price_date=_as_date(plan.get("start"), commissioning),
         revenue_multiplier=float(plan.get("revenue_multiplier", 1.0) or 1.0))
-    horizon_end = plan_horizon_end(plan)
+    horizon_end = month_key(plan_horizon_end(plan))
     # Ряды начинаются с начала проекта, как месячные строки движка: NPV
     # дисконтирует от первого месяца ряда, и ряд, начатый с первой затраты,
     # дал бы другое число при тех же деньгах.
     start = plan.get("start")
-    first = min([commissioning, *capex, *([_as_date(start, commissioning)] if start else [])])
+    first = month_key(min([commissioning, *capex, *land_rent_cash,
+                           *construction_rent, *construction_rent_cash,
+                           *([_as_date(start, commissioning)] if start else [])]))
     months: list[date] = []
     month = first
-    while month <= horizon_end:
+    cash_horizon_end = max([horizon_end, *land_rent_cash, *construction_rent_cash,
+                            *construction_vat_refund])
+    while month <= cash_horizon_end:
         months.append(month)
         month = add_months(month, 1)
     if any(m > horizon_end for m in capex):
@@ -587,11 +637,13 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
 
     # --- стоимость имущества --------------------------------------------
     capex = {mm: v for mm, v in capex.items() if mm <= horizon_end}
-    capex_total = sum(capex.values())
+    # Construction rent retains its existing property-cost classification on
+    # accrual. A deferred payment is a seller liability, not a later asset.
+    capex_total = sum(capex.values()) + sum(construction_rent.values())
     land_total = sum(capex_land.values())
     ffe_total = sum(capex_ffe.values())
-    vat_bearing = max(0.0, capex_total - land_total - sum(capex_vat_exempt.values()))
-    capex_vat = vat_bearing * vat_share
+    vat_bearing = max(0.0, sum(capex.values()) - land_total - sum(capex_vat_exempt.values()))
+    capex_vat = (vat_bearing + sum(construction_vat_base.values())) * vat_share
     capex_net = capex_total - capex_vat
     ffe_net = ffe_total * (1.0 - vat_share)
     building_net = max(0.0, capex_net - ffe_net - land_total)
@@ -608,6 +660,16 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         vat = max(0.0, value - capex_land.get(mm, 0.0) - capex_vat_exempt.get(mm, 0.0)) * vat_share
         if vat:
             m["vat_refund"][min(add_months(mm, 3), horizon_end)] += vat
+    for mm, value in construction_rent_cash.items():
+        capex[mm] = capex.get(mm, 0.0) + value
+        m["capex"][mm] += value
+    for mm, value in construction_vat_refund.items():
+        # The canonical eligible base is recognized on accrual. Preserve its
+        # existing refund lag even when the receivable survives asset exit.
+        m["vat_refund"][mm] += value
+        m["land_rent_construction_vat_refund"][mm] = value
+    for mm, value in construction_vat_base.items():
+        m["land_rent_construction_input_vat"][mm] = value * vat_share
 
     # --- эксплуатация ---------------------------------------------------
     # Срок расчёта и ещё 12 месяцев после него — одним правилом: EBITDA
@@ -618,7 +680,7 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
     book_at_end = (building_net, ffe_net)
     forward_ebitda = 0.0
     forward = [add_months(horizon_end, k) for k in range(1, 13)]
-    for month in [*months, *forward]:
+    for month in [*(mm for mm in months if mm <= horizon_end), *forward]:
         if month < commissioning:
             continue
         months_open = month_index(commissioning, month) + 1
@@ -633,7 +695,9 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         ffe_book -= dep_ffe
         revenue = row["department_revenue"] + row["vat_relief"]
         opex = (row["department_revenue"] - row["gop"] + row["base_fee"]
-                + row["incentive_fee"] + row["ffe_reserve"])
+                + row["incentive_fee"] + row["ffe_reserve"]
+                + (land_rent_valuation.get(month, 0.0) if month > horizon_end
+                   else land_rent.get(month, 0.0)))
         ebitda = revenue - opex - property_tax - insurance
         if month > horizon_end:
             forward_ebitda += ebitda
@@ -647,10 +711,23 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         m["depreciation"][month] = dep_building + dep_ffe
         m["revenue"][month] = revenue
         m["opex"][month] = opex
+        m["land_rent_operating"][month] = land_rent.get(month, 0.0)
+        m["land_rent_operating_cash"][month] = land_rent_cash.get(month, 0.0)
         m["ebitda"][month] = ebitda
         if month == horizon_end:
             book_at_end = (building_book, ffe_book)
     building_book, ffe_book = book_at_end
+    for month in months:
+        m["land_rent_construction_incurred"][month] = construction_rent.get(month, 0.0)
+        m["land_rent_construction_cash"][month] = construction_rent_cash.get(month, 0.0)
+        # Prepaid operating land rent stays outside property cost and the
+        # operating service expense remains dated by its accrual period.
+        m["land_rent_operating_cash"][month] = land_rent_cash.get(month, 0.0)
+        m["opex_cash"][month] = (m["opex"][month] - m["land_rent_operating"][month]
+                                  + m["land_rent_operating_cash"][month])
+        m["operating_cash_before_tax"][month] = (
+            m["ebitda"][month] + m["land_rent_operating"][month]
+            - m["land_rent_operating_cash"][month])
 
     # --- выход ----------------------------------------------------------
     exit_mode = str(params.get("exit_mode") or FIELD_BY_KEY["exit_mode"].default)
@@ -780,7 +857,7 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
             repay_vat = 0.0
         allowed = False
         if balance > 0 and month >= commissioning:
-            cash = m["ebitda"][month] - interest
+            cash = m["operating_cash_before_tax"][month] - interest
             if month == horizon_end or (maturity is not None and month >= maturity):
                 repay = balance  # срок или конец расчёта: остаток платит выход или капитал
                 allowed = True
@@ -803,7 +880,7 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         # планового платежа, как только погашение разрешено. Остаток
         # выплачивается в месяц погашения; конец срока закрывает всё.
         locked = commissioning <= month < horizon_end
-        free = (m["ebitda"][month] - m["loan_interest_paid"][month] - m["loan_fee"][month]
+        free = (m["operating_cash_before_tax"][month] - m["loan_interest_paid"][month] - m["loan_fee"][month]
                 - tax) if locked else 0.0
         sweep = 0.0
         if locked and allowed and balance > repay:
@@ -850,7 +927,11 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         rate = _num(params, "gordon_rate_pct") / 100.0
         end = months.index(horizon_end)
         last = months[max(0, end - 11):end + 1]
-        flow = sum(m["ebitda"][mm] + m["vat_refund"][mm] - m["capex"][mm]
+        # Paying a pre-opening land obligation (or collecting its input VAT)
+        # is seller cash, not recurring income of the stabilized property.
+        flow = sum(m["ebitda"][mm] + m["vat_refund"][mm]
+                   - m["land_rent_construction_vat_refund"][mm]
+                   - m["capex"][mm] + m["land_rent_construction_cash"][mm]
                    - m["profit_tax"][mm] - shield.get(mm, 0.0) for mm in last)
         if rate <= growth:
             warnings.append("Гордон: ставка r не выше темпа роста g — стоимость не считается.")
@@ -868,7 +949,7 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         # (с минусом): НДС эксплуатации — транзит (см. шапку модуля).
         vat_paid = -m["vat_refund"][month]
         m["vat_paid"][month] = vat_paid
-        operating = (m["ebitda"][month] + m["exit_revenue"][month]
+        operating = (m["operating_cash_before_tax"][month] + m["exit_revenue"][month]
                      + m["residual_value"][month] - m["exit_cost"][month] - vat_paid)
         m["cash_to_equity"][month] = (
             operating - m["loan_interest_paid"][month] - m["loan_fee"][month]
@@ -884,7 +965,7 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         project_cf.append(m["project_cf"][month])
         equity_cf.append(m["equity_cf"][month])
 
-    annual = annual_table(months, m)
+    annual = annual_table(months, m, asset_horizon_end=horizon_end)
     dscr_by_year = [row["dscr"] for row in annual if row.get("dscr") is not None]
     if dscr_target > 0:
         low = [row["year"] for row in annual
@@ -927,7 +1008,10 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         "ebitda_margin": total("ebitda") / revenue_total if revenue_total else 0.0,
         "yield_on_cost": (stabilized.get("ebitda") or 0.0) / capex_net if capex_net else 0.0,
         "forward_ebitda": forward_ebitda,
-        "exit_value": exit_value, "exit_month": horizon_end,
+        "forward_ebitda_complete": rent_valuation_complete,
+        "exit_value": exit_value, "exit_month": plan_horizon_end(plan),
+        "exit_value_complete": rent_accrual_complete if gordon else rent_valuation_complete,
+        "ebitda_complete": rent_accrual_complete,
         "exit_mode": exit_mode, "valuation": valuation,
         "equity_peak": equity_peak,
         "equity_share": equity_peak / capex_total if capex_total else 0.0,
@@ -949,7 +1033,10 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         "discount_rate": discount_rate,
     }
     totals = {name: total(name) for name in (
-        *OPERATING_SERIES, "revenue", "opex", "property_tax", "insurance", "ebitda",
+        *OPERATING_SERIES, "revenue", "opex", "opex_cash", "land_rent_operating", "land_rent_operating_cash",
+        "land_rent_construction_incurred", "land_rent_construction_cash",
+        "land_rent_construction_input_vat", "land_rent_construction_vat_refund",
+        "property_tax", "insurance", "ebitda",
         "depreciation", "exit_revenue", "exit_cost", "residual_value", "vat_paid",
         "vat_refund", "loan_draw", "loan_fee", "loan_repayment", "profit_tax",
         "cash_to_equity", "tax_margin")}
@@ -959,7 +1046,8 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         "strategy": "hotel",
         "months": months,
         "commissioning": plan["commissioning"],
-        "horizon_end": horizon_end,
+        "horizon_end": plan_horizon_end(plan),
+        "cash_horizon_end": cash_horizon_end,
         "monthly": {name: {mm: value for mm, value in series.items() if value}
                     for name, series in m.items()},
         "annual": annual,
@@ -968,6 +1056,13 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         "project_cf": project_cf,
         "equity_cf": equity_cf,
         "tax_detail": tax_detail,
+        "land_rent_construction_complete": construction_complete,
+        "land_rent_construction_cash_complete": construction_cash_complete,
+        "land_rent_construction_input_vat_base": dict(construction_vat_base),
+        "land_rent_operating_complete": rent_accrual_complete,
+        "land_rent_operating_cash_complete": rent_cash_complete,
+        "land_rent_valuation_complete": rent_valuation_complete,
+        "land_rent_valuation": dict(land_rent_valuation),
         "warnings": warnings,
         "params": params,
     }
@@ -1020,6 +1115,7 @@ ANNUAL_ROWS: tuple[tuple[str, str], ...] = (
     ("ffe_reserve", "Резерв FF&E"),
     ("property_tax", "Налог на имущество"),
     ("insurance", "Страхование"),
+    ("land_rent_operating", "Аренда земли: начислено за эксплуатацию"),
     ("ebitda", "EBITDA"),
     ("depreciation", "Амортизация"),
     ("interest", "Проценты по кредиту"),
@@ -1032,8 +1128,15 @@ ANNUAL_ROWS: tuple[tuple[str, str], ...] = (
 )
 
 
-def annual_table(months: list[date], m: dict[str, dict[date, float]]) -> list[dict[str, Any]]:
-    """Годовой USALI по календарным годам — свод тех же месяцев."""
+def annual_table(months: list[date], m: dict[str, dict[date, float]], *,
+                 asset_horizon_end: date | None = None) -> list[dict[str, Any]]:
+    """USALI and seller cash by calendar year, with a separate asset horizon.
+
+    Older callers without a cash tail retain their last-month convention.
+    Hotel flows pass the asset horizon explicitly: a deferred seller payment
+    does not turn the terminal loan repayment into regular annual service.
+    """
+    asset_end = month_key(asset_horizon_end) if asset_horizon_end is not None else (months[-1] if months else None)
     years: dict[int, list[date]] = defaultdict(list)
     for mm in months:
         years[mm.year].append(mm)
@@ -1044,7 +1147,8 @@ def annual_table(months: list[date], m: dict[str, dict[date, float]]) -> list[di
                      "other_revenue", "department_revenue", "vat_relief", "revenue",
                      "rooms_expense", "fnb_expense", "other_expense", "ag", "sm", "pom",
                      "utilities", "gop", "base_fee", "incentive_fee", "ffe_reserve",
-                     "property_tax", "insurance", "ebitda", "depreciation", "profit_tax",
+                     "property_tax", "insurance", "land_rent_operating", "land_rent_operating_cash",
+                     "opex_cash", "operating_cash_before_tax", "ebitda", "depreciation", "profit_tax",
                      "fcff", "equity_cf", "loan_draw", "loan_repayment", "exit_revenue",
                      "residual_value", "capex"):
             row[name] = float(sum(m[name].get(mm, 0.0) for mm in span))
@@ -1053,15 +1157,15 @@ def annual_table(months: list[date], m: dict[str, dict[date, float]]) -> list[di
                                     + m["loan_interest_paid"].get(mm, 0.0) for mm in span))
         paid = float(sum(m["loan_interest_paid"].get(mm, 0.0) for mm in span))
         # Тело в DSCR — плановое: возмещённый НДС стройки, досрочное
-        # погашение удержанными деньгами и остаток, гасимый выходом в последний
-        # месяц расчёта, обслуживанием года не считаются.
-        last = span[-1]
+        # погашение удержанными деньгами и остаток, гасимый в конце владения,
+        # обслуживанием года не считаются. Денежный хвост может быть позже,
+        # в том же календарном году либо в следующих годах.
         scheduled = (row["loan_repayment"]
                      - float(sum(m["loan_vat_prepayment"].get(mm, 0.0)
                                  + m["loan_cash_sweep"].get(mm, 0.0) for mm in span))
-                     - (m["loan_repayment"].get(last, 0.0)
-                        - m["loan_vat_prepayment"].get(last, 0.0)
-                        if last == months[-1] else 0.0))
+                     - (m["loan_repayment"].get(asset_end, 0.0)
+                        - m["loan_vat_prepayment"].get(asset_end, 0.0)
+                        if asset_end in span else 0.0))
         row["debt_service"] = paid + max(0.0, scheduled)
         row["dscr"] = (row["ebitda"] / row["debt_service"]
                        if row["debt_service"] > 1.0 and row["rooms_available"] > 0 else None)

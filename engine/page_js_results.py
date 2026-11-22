@@ -25,15 +25,55 @@ function landRentResultRow(r){
  // Keep small known amounts visible instead of rounding them to zero billions.
  const shown=Math.abs(amount)>=1e9?money(amount):escapeHtml(landRentMoney(amount));
  if(sum.known)return row('Аренда земли участка',shown);
- const reason=String(sum.reason||'Расчёт не назвал, каких данных для неё не хватает.');
  // Ноль при неопределённой сумме — не «аренда бесплатна», а отсутствие данных.
  return row('Аренда земли участка',amount>0
-  ?shown+note('Это известная часть суммы, она ещё уточнится. '+reason)
-  :'Не определена.'+note(reason));
+  ?shown+note('Учтённая часть суммы.')
+  :'Не определена.');
+}
+
+function openLandRentFromResult(){
+ openTab('vri');
+ const root=document.getElementById('landRentEditor');
+ if(!root)return;
+ root.open=true;
+ landRentOpenConditions(root);
+ root.scrollIntoView({block:'start'});
+}
+
+function renderLandRentResultNotice(result){
+ const rent=result?.land_rent||{},summary=result?.summary||{},sum=summary.land_rent_sum;
+ const needed=summary.preliminary&&rent.status!=='not_applicable'
+  &&((rent.status&&rent.financial_complete!==true)||(sum&&sum.known===false));
+ let box=document.getElementById('landRentResultNotice');
+ if(!needed){if(box)box.remove();return}
+ const anchor=document.getElementById('reportKpi');
+ if(!anchor)return;
+ if(!box){box=document.createElement('p');box.id='landRentResultNotice';box.className='note';anchor.before(box)}
+ const link=document.createElement('button');link.type='button';link.className='btn';
+ link.textContent='Проверить аренду';link.onclick=openLandRentFromResult;
+ box.replaceChildren(document.createTextNode('Расчёт с допущениями по аренде. '),link);
+}
+
+function renderCalculationQualification(result){
+ const state=result?.summary?.intake_qualification;
+ let box=document.getElementById('documentQualificationNotice');
+ if(!state?.reason){if(box)box.remove();return}
+ if(!box){
+  box=document.createElement('section');box.id='documentQualificationNotice';box.className='card';
+  box.setAttribute('role','status');box.style.cssText='padding:14px;border-left:4px solid #b87511;overflow-wrap:anywhere';
+  const anchor=document.querySelector('.tabs')||document.getElementById('inputs');
+  if(!anchor)return;
+  anchor.parentNode.insertBefore(box,anchor);
+ }
+ const title=document.createElement('b');title.textContent='Предварительный расчёт по известным затратам';
+ const text=document.createElement('p');text.textContent=state.reason;
+ box.replaceChildren(title,text);
 }
 
 function renderResult(){
  if(!lastResult)return;const r=lastResult,f=r.finance;
+ hideCalcLocked();
+ renderCalculationQualification(r);
  renderObjectParkingNote();
  // Подпись под ставкой благоустройства зовётся и формой, и результатом:
  // написанная объяснять молчание, она молчала бы ровно до первого расчёта.
@@ -41,7 +81,7 @@ function renderResult(){
  // имеет, а чужая связь ломает стенды, перечисляющие куски руками.
  renderLandscapingRateNote();
  renderLandRentSummary();
- hideCalcLocked();
+ renderLandRentResultNotice(r);
  if(typeof feedbackCalcs!=='undefined'){feedbackCalcs+=1;feedbackMaybeAsk()}
 
  // Числа берутся из результата, а не из формы: форма не знает ни о льготе по
@@ -57,17 +97,16 @@ function renderResult(){
  const modelDefault=modelDefaultInfo(r);
  const note=text=>`<i style="display:block;font-weight:400;font-size:11px;opacity:.75">`
   +`${text}</i>`;
- // Полная оговорка стоит один раз, у прибыли; маржинальность и NPV — та же
- // величина в другом виде, и повторять им фразу целиком значит превратить её
- // в фон, который перестают читать.
- const rentQualifier=(r.summary||{}).preliminary_reason||'';
- const rentNote=rentQualifier?note(escapeHtml(rentQualifier)):'';
- const conditionalNote=rentNote+(modelDefault
+ // Rental assumptions have one link to their calculator. Document and
+ // model-default qualifications still accompany the affected figures.
+ const documentQualifier=(r.summary||{}).intake_qualification||{};
+ const documentNote=documentQualifier.reason?note(escapeHtml(documentQualifier.reason)):'';
+ const conditionalNote=documentNote+(modelDefault
   ?note(`условная: в модели дефолт`
    +`${modelDefault.name?' на '+escapeHtml(modelDefault.name):''}`
    +`${modelDefault.when?' в '+modelDefault.when:''}`)
   :'');
- const conditionalShort=rentQualifier?note('предварительно: уточняется аренда земли'):modelDefault?note('при том же допущении'):'';
+ const conditionalShort=documentQualifier.reason?note('предварительно: есть неуточнённые условия документа'):modelDefault?note('при том же допущении'):'';
 
  // Какой поток стоит за NPV, решает движок (`report.layout.npv_basis`).
  const npvHint=reportLayout(r).npv_basis==='hotel'?'npv_hotel':'npv';
@@ -114,6 +153,17 @@ function renderResult(){
  const layout=reportLayout(r);
  if(!layout.project_finance)reportKpis.splice(-3,3);
  (layout.nonres_tiles||[]).forEach(t=>reportKpis.push([t.label,nonresCell(t),t.hint]));
+ const disclosure=r.report.office_results||{};
+ if(disclosure.valuation){
+  reportKpis[0]=['Денежная выручка — без оценки',money(disclosure.cash_revenue)];
+  reportKpis.splice(1,0,['Оценка удержания — без сделки',money(disclosure.valuation)]);
+  reportKpis.forEach(k=>{if(['EBITDA','Чистая прибыль','Маржинальность'].includes(k[0]))k[0]+=' (с оценкой удержания)'});
+ }
+ if((disclosure.valuation_missing||[]).length){
+  reportKpis[0]=['Денежная выручка — без оценки',money(disclosure.cash_revenue)];
+  reportKpis.splice(1,0,['Оценка удержания','Нет данных — '+disclosure.valuation_missing.map(p=>p.reason).join('; ')]);
+  reportKpis.forEach(k=>{if(['EBITDA','Чистая прибыль','Маржинальность'].includes(k[0]))k[0]+=' (без нерассчитанной оценки)'});
+ }
  // Значок «i» стоит у самого числа, до оговорки под ним: подсказка — о
  // том, как число посчитано (`report_kpi_hints`), оговорка — о допущении.
  reportKpi.innerHTML=reportKpis.map(x=>

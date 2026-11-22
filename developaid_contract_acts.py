@@ -169,7 +169,13 @@ def accumulated(records: list[dict], cut: str) -> dict:
                 "section": p.get("section"), "group": p.get("group"), "parts": []})
             found["parts"].append({"act": act.get("number"), "name": p.get("name") or "", "day": day,
                                    "preliminary": bool(preliminary),
-                                   "quantity": p["quantity"], "amount": p["amount"]["total"]})
+                                   "quantity": p["quantity"], "amount": p["amount"]["total"],
+                                   "basis": p.get("quantity_basis") or "work",
+                                   "quantity_material": p.get("quantity_material"),
+                                   "unit_price": dict(p.get("unit_price") or {}),
+                                   "amount_components": dict(p.get("amount") or {}),
+                                   "source": {"sha256": record.get("sha256"), "page": p.get("page"),
+                                              "row": p.get("row")}})
     warnings = []
     for key in [k for k in positions if k[0] and not k[4]]:
         # A position read without its section joins the one section of the card with the same position.

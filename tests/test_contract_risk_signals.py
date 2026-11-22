@@ -165,7 +165,8 @@ def test_unknown_zero_and_full_monetary_completion_keep_distinct_deadline_eviden
         unknown_row, unknown_more = named(page, 'UNKNOWN')
         done = '[data-label="Выполнено по накопительным"]'
         expect(unknown_more.locator('.contract-money-forecast')).to_contain_text(unknown_forecast["reason"])
-        assert unknown_row.locator('.term .contract-risk').get_attribute('title') == unknown_forecast["reason"]
+        expect(unknown_row.locator('.term')).to_contain_text('01.09.2026')
+        expect(unknown_row.locator('.contract-schedule')).to_have_text('Проверить документы')
         expect(unknown_more.locator(done)).not_to_contain_text('%')
         expect(unknown_row.locator('.contract-money')).not_to_contain_text('%')
         assert 'Срок прошёл на 66 дн.' not in unknown_row.inner_text() + unknown_more.inner_text()
@@ -178,7 +179,8 @@ def test_unknown_zero_and_full_monetary_completion_keep_distinct_deadline_eviden
         done_row, done_more = named(page, 'DONE')
         expect(done_more.locator(done)).to_contain_text('100% суммы договора')
         expect(done_row.locator('.contract-money')).to_contain_text('100%')
-        expect(done_row.locator('.term')).to_contain_text('Выполнено')
+        expect(done_row.locator('.term')).to_have_text('01.09.2026')
+        expect(done_row).not_to_contain_text('Работы завершены')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=f'/tmp/plato1030-risk-evidence-{width}.png', full_page=True)
         assert not errors
@@ -260,8 +262,9 @@ def test_real_page_shows_signal_strip_risk_filter_and_unworked_advance(project, 
         expect(strip.locator('button').nth(1)).to_contain_text('1')
         expect(strip.locator('button').nth(3)).to_contain_text('200')
         late, late_more = named(page, 'LATE')
-        expect(late.locator('.term')).to_contain_text('Не успевает к сроку')
-        expect(late.locator('.term')).to_contain_text('по темпу: 24.02.2027')
+        expect(late.locator('.term')).to_have_text('30.11.2026')
+        expect(late.locator('.contract-schedule')).to_have_text('Проверить документы')
+        expect(late).not_to_contain_text('по темпу: 24.02.2027')
         expect(late_more).to_contain_text('Прогноз окончания: 24.02.2027')
         expect(late_more).to_contain_text('риск неотработки аванса')
         expect(named(page, 'OK')[1]).to_contain_text('Оплачено не больше выполненного')
@@ -276,7 +279,7 @@ def test_real_page_shows_signal_strip_risk_filter_and_unworked_advance(project, 
         assert not errors
 
 
-def test_management_summary_reads_the_same_register_signals(project):
+def test_management_summary_keeps_only_the_register_risk_summary(project):
     import developaid_management_report as report
     base = {"contractor": "Builder A", "contract_date": dt.datetime(2026, 1, 1), "source": "Собственные средства"}
     book(project, [contract("LATE", deadline=dt.datetime(2026, 11, 30)),
@@ -294,10 +297,12 @@ def test_management_summary_reads_the_same_register_signals(project):
     payload["findings"] = report.findings(payload)
     main, = [f for f in payload["findings"] if f.get("topic") == "Договоры"]
     assert "не успевают к сроку: 1" in main["text"] and "200" in main["text"]
-    html = report.render_html(payload)
-    assert "Договоры под угрозой срыва срока" in html and "24.02.2027" in html and "Задержка 86 дн." in html
-    text = report.render_text(payload)
-    assert "LATE" in text and "прогноз 24.02.2027" in text
+    # Contract details stay in Monitor; the executive summary keeps only the
+    # aggregate warning in «Главное» (owner, 16.11.2026).
+    for rendered in (report.render_html(payload), report.render_text(payload)):
+        assert main["text"] in rendered
+        for detail in ("LATE", "24.02.2027", "Задержка 86 дн.", "contract-performance"):
+            assert detail not in rendered
 
 
 def test_management_summary_names_a_missing_archive(project):

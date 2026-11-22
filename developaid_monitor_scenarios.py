@@ -405,7 +405,7 @@ def run(project: str, cut: Any, kind: str, wbs: str = "", days: int = 0,
     coverage = _forecast_coverage(view, cut_date)
     drivers = _forecast_drivers(view, pm, current_seeds, current_rnv)
 
-    finance = dashboard._finance_baseline(project)
+    finance = dashboard._finance_for_cut(project, cut_date)
     if not finance.get("known"):
         raise ValueError(finance.get("reason") or "не загружен финансовый baseline")
     rss = monitor._latest(project, "estimate", ".xlsx", monitor._iso(cut_date))

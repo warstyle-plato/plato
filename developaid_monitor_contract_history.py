@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import Callable
 
 import developaid_monitor_ledgers as ledgers
+import developaid_contract_stage_profile as stage_profile
 
 MAX_RECENT_SNAPSHOTS = 12
 WINDOW_DAYS = 90
@@ -65,10 +66,12 @@ def _scope(row, reference=None):
     from developaid_monitor_contracts import _norm
     items = ledgers.aggregation_members(row.get('physical_items') or [])
     if reference is not None:
+        from developaid_monitor_statement_sources import statement_source_keys
+        keys = statement_source_keys(reference)
         key = _source_key(reference.get('source'))
         if not key[0]:
             return None
-        selected = [item for item in items if _source_key(item.get('source')) == key]
+        selected = [item for item in items if _source_key(item.get('source')) in keys]
         # A single source can omit file labels in an older saved projection.
         if not selected and len(row.get('reported_performance_sources') or []) == 1:
             selected = items
@@ -445,6 +448,7 @@ def observation_forecast(row: dict, cut: str) -> dict:
     return result
 
 
+@stage_profile.stage('history_enrich')
 def enrich(project: str, cut: str, register: dict, *, build_register: Callable[[str], dict]) -> dict:
     """Attach canonical observations and deltas without mutating source registers.
 

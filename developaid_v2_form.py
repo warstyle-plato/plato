@@ -120,6 +120,21 @@ def _phasing_block(core: Any) -> dict[str, Any]:
     }
 
 
+def _land_rent_block() -> dict[str, Any]:
+    """The scalar editor and the preserved per-object map have explicit owners."""
+    return {
+        "key": "land_rent", "title": "Аренда земли", "kind": "land_rent",
+        "hint": "Срок после ввода до сценарной регистрации жилья можно изменить, включая 0 месяцев. Ввод и финансирование от него не меняются.",
+        "fields": [
+            {"key": "land_rent_registration_months", "label": "После ввода до регистрации первых квартир",
+             "unit": "мес.", "type": "number", "min": 0, "max": 120, "step": 1, "options": []},
+            {"key": "land_rent_exposure_exit_dates", "label": "Индивидуальные даты выхода объектов из аренды",
+             "unit": "", "type": "preserved", "owner": "landRentExposureHtml", "options": [],
+             "description": "Эти даты сохраняются вместе с проектом. Изменить их по каждому объекту можно в полной версии расчёта."},
+        ],
+    }
+
+
 def territory_input_keys(core: Any) -> list[str]:
     """Поля, принадлежащие участку, — списком со страницы движка.
 
@@ -223,6 +238,7 @@ def form_description(core: Any) -> dict[str, Any]:
             "kind": "inputs",
             "fields": [_field(list(item), core) for item in fields],
         })
+    blocks.append(_land_rent_block())
     blocks.append(_phasing_block(core))
     return {
         "blocks": blocks,

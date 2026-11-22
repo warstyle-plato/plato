@@ -1,11 +1,11 @@
-"""A proved commencement date does not prove project eligibility; the deduction is a user-entered sum."""
+"""A preliminary valuation or an entered sum does not prove project eligibility."""
 import json
 
 import pytest
 
 import normatives_registry as registry
 
-WARNING = "Уменьшение Ксу* в расчёте — по сумме компенсации, которую вписал пользователь"
+WARNING = "Предварительная оценка Ксу* по обязательствам 1310-ПП или ручная сумма соглашения"
 COMMENCEMENT = "Настоящее постановление вступает в силу на следующий день после дня его официального опубликования."
 
 
@@ -62,6 +62,12 @@ def test_reader_and_admin_see_how_the_deduction_is_counted_before_opening_and_th
                 card = tab.locator(".ncard").filter(has=tab.get_by_role("heading", name=name, exact=True))
                 expect(card.locator(".nhead .gist")).to_contain_text(WARNING)
                 expect(card.locator(".nhead .gist")).to_be_visible()
+            old = tab.locator(".ncard").filter(has=tab.get_by_role("heading", name="1745-ПП — плата за смену ВРИ в области", exact=True))
+            old.locator(":scope > summary").click()
+            amendment_link = old.locator(".amend").get_by_role("link", name="Официальный текст поправки: 1310-ПП", exact=False)
+            expect(amendment_link).to_be_visible()
+            expect(amendment_link).to_have_attribute("href", cards()["mo-1310-vri-ksu"]["source_url"])
+            expect(old.locator(".amend")).to_contain_text("Текущий консолидированный Порядок целиком не подтверждён")
             card = tab.locator(".ncard").filter(has=tab.get_by_role("heading", name="1310-ПП — уменьшение платы за ВРИ (Ксу*)", exact=True))
             card.locator(":scope > summary").click()
             proof = card.locator("details.history").filter(has_text=COMMENCEMENT)

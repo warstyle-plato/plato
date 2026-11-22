@@ -89,16 +89,49 @@ def _state_write(name: str, payload: dict[str, Any]) -> str:
         path = _state_file(name)
         # Пишем через временный файл: соседний воркер не должен прочитать
         # половину записи.
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)
-        cutoff = time.time() - _STATE_TTL_SECONDS
-        for stale in _STATE_DIR.glob("*.json"):
+        import tempfile
+        import fcntl
+        import stat
+        fd, name = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=_STATE_DIR)
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as out:
+                json.dump(payload, out, ensure_ascii=False)
+                out.flush()
+                os.fsync(out.fileno())
+            # Publication and retention share one brief filesystem claim:
+            # cleanup must not stat an old inode, then unlink a fresh replace.
+            claim = os.open(_STATE_DIR / ".state-fs.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             try:
-                if stale.stat().st_mtime < cutoff:
-                    stale.unlink()
-            except OSError:
-                pass
+                info = os.fstat(claim)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077:
+                    raise OSError("state filesystem claim unavailable")
+                deadline = time.monotonic() + 5.0
+                while True:
+                    try:
+                        fcntl.flock(claim, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise OSError("state filesystem is busy") from None
+                        time.sleep(0.01)
+                os.replace(tmp, path)
+                cutoff = time.time() - _STATE_TTL_SECONDS
+                for stale in _STATE_DIR.glob("*.json"):
+                    try:
+                        if stale.stat().st_mtime < cutoff:
+                            stale.unlink()
+                    except OSError:
+                        pass
+                directory = os.open(_STATE_DIR, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            finally:
+                os.close(claim)
+        finally:
+            tmp.unlink(missing_ok=True)
     except Exception as exc:
         # Диск — подстраховка, а не единственный источник: продолжаем, а
         # причину отдаём тому, кому она важна (истории Платона).
@@ -1192,6 +1225,7 @@ def _apply_proposal(chat_id: int) -> dict[str, Any]:
                 manual_tep=session_data.get("manual_tep"),
                 calc_overrides=overrides,
                 mode="edit",
+                application_proof=core._telegram_confirmed_patch_proof(session_data, overrides, real_patch),
             )
         except Exception as exc:
             core._TELEGRAM_RUNTIME["last_error"] = "Платон/применение: " + str(exc)
@@ -2799,6 +2833,17 @@ def _handle_message(message: dict[str, Any]) -> None:
     if command in {"/vritep", "/vri", "/ври"}:
         _start_vritep(chat_id)
         return
+    if command == "/cancel":
+        if _dialog_active(chat_id):
+            _dialog_stop(chat_id)
+        _ORIGINAL_HANDLE_MESSAGE(message)
+        return
+    # A saved document question owns its answer before older Platon/model
+    # conversations. In particular a numeric valuation must not call the LLM.
+    if text and (core._telegram_dialog_get(chat_id) or {}).get("step") in {
+            "await_intake_answer", "intake_document_reading", "intake_document_failed"}:
+        _ORIGINAL_HANDLE_MESSAGE(message)
+        return
     # Ответ на анкету идёт раньше разбора адресов и вопросов: «дорого и
     # непонятно» — это комментарий, а не кадастровый номер.
     if text and not command and _feedback_pending_text(chat_id, text):
@@ -2902,6 +2947,11 @@ core._telegram_handle_update = _handle_update
 def _start_usage_digest() -> None:
     """Сводка сама приходит раз в сутки — иначе «отслеживать» означает не
     забывать спрашивать."""
+    # ASGI fixtures end while these daemon loops keep reading the modules'
+    # current roots. A later test must not receive another fixture's outbox
+    # poll or announcement write. Delivery itself is tested explicitly.
+    if "pytest" in sys.modules:
+        return
     threading.Thread(target=_usage_digest_loop, name="usage-digest", daemon=True).start()
     # Сводка руководству ждёт 9:00 — пятнадцатиминутный круг сводки для неё
     # слишком редкий, у неё свой.

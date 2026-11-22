@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 MANUAL_TTK_KEY = "parking_inside_ttk"
@@ -71,6 +72,38 @@ def _same_district(a: str, b: str) -> bool:
 
 def _ttk_label(value: bool) -> str:
     return "внутри ТТК" if value else "за ТТК"
+
+
+def source_inputs(inputs: dict[str, Any] | None) -> dict[str, Any]:
+    """Только документные факты, которые читает `site_position`.
+
+    Книга отбрасывает служебные поля, но район, ТТК и квартал меняют МПТ.
+    Переносим их с исходным происхождением: ручные поля остаются ручными,
+    приоритет источников и неизвестность ТТК по-прежнему решает один читатель.
+    Остальное содержимое разбора/импорта и другие служебные поля не нужны.
+    """
+    territory = ("district", "inside_ttc", "inside_ttc_known", "cadastral_quarter")
+    schemas = {
+        "_cadastral_analysis": (("recognized", "requested"), {"territory": territory}),
+        "_glavapu_import": ((), {"territory": territory,
+                                "normalized": ("district", "cadastral_quarter")}),
+    }
+    result: dict[str, Any] = {}
+    for key, (root_keys, sections) in schemas.items():
+        source = (inputs or {}).get(key)
+        if not isinstance(source, dict):
+            if source:
+                result[key] = deepcopy(source)
+            continue
+        selected = {name: deepcopy(source[name]) for name in root_keys if name in source}
+        for section, names in sections.items():
+            if section in source:
+                value = source[section]
+                selected[section] = ({name: deepcopy(value[name]) for name in names if name in value}
+                                     if isinstance(value, dict) else deepcopy(value))
+        if selected:
+            result[key] = selected
+    return result
 
 
 def site_position(inputs: dict[str, Any] | None) -> dict[str, Any]:

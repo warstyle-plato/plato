@@ -37,10 +37,10 @@ _CODE = re.compile(r'[0-9]+(?:\.[0-9]+)*\Z')
 _SCALES = {'руб.': 1, 'тыс. руб.': 1000, 'млн руб.': 1000000}
 _ROLE_LABELS = {
     'bank_limit': {'смета', 'смета лимит банка', 'сметная стоимость',
-        'сметная стоимость с ндс', 'утвержденная сметная стоимость',
+        'сметная стоимость с ндс', 'общая сметная стоимость', 'утвержденная сметная стоимость',
         'утвержденная сметная стоимость с ндс', 'лимит банка', 'банковский лимит'},
     'payment_code': {'код', 'код рсс', 'код статьи', 'код статьи рсс', 'код по рсс',
-        'код позиции сметы', 'код сметы'},
+        'код позиции сметы', 'код сметы', 'код из сср'},
     'payment_date': {'дата оплаты', 'дата платежа', 'дата платежного поручения',
         'дата п п'},
     'payment_amount': {'сумма', 'сумма оплаты', 'сумма платежа', 'сумма с ндс',
@@ -48,8 +48,8 @@ _ROLE_LABELS = {
 }
 _ROLE_WORD = re.compile(r'(?<![а-яa-z])(?:код[а-я]*|дат[а-я]*|смет[а-я]*|лимит[а-я]*|'
                         r'опла[а-я]*|сумм[а-я]*|платеж[а-я]*)(?![а-яa-z])')
-_UNIT_SUFFIX = re.compile(r'(?:[,;:]?\s*\(?\s*(?:(?:тыс|млн)\.?\s*)?'
-                          r'(?:руб\.?|рублей|р\.|₽)\s*\)?[.,;:]*)$')
+_UNIT_SUFFIX = re.compile(r'(?:[,;:]?\s*\(?\s*(?:в\s+)?(?:(?:тыс|млн)\.?\s*)?'
+                          r'(?:руб\.?|рублей|рублях|р\.|₽)\s*\)?[.,;:]*)$')
 _EXTENT_REASONS = frozenset({
     'extent_read_limit', 'coordinate_missing', 'coordinate_invalid', 'coordinate_outside_excel',
     'payload_size_limit', 'entity_or_unknown_node', 'xml_resource_limit',
@@ -886,6 +886,8 @@ def _role(sheet, column, role):
         if not isinstance(cell.value, str) or len(cell.value) > 32768:
             continue
         text = cell.value.lower().replace('ё', 'е').replace('\xa0', ' ').replace('\u202f', ' ').strip()
+        if text == 'данные платежного поручения':
+            continue  # Native input instruction, not a conflicting field label.
         text = _UNIT_SUFFIX.sub('', text)
         text = re.sub(r'[\s,;:()[\].—–/\\-]+', ' ', text).strip()
         if text in _ROLE_LABELS[role]:
@@ -902,7 +904,7 @@ def _cell(cell, coordinate):
     return {'cell': coordinate, **ahr._raw(cell)}
 
 
-def _finance(raw):
+def _finance(raw, meta=None):
     from openpyxl.utils import get_column_letter
     with _book(raw) as book:
         sheet = _sheet(book, 'cf_1_new')
@@ -917,7 +919,8 @@ def _finance(raw):
                 break
         if columns is None:
             raise SourceProblem('finance_columns_missing')
-        units = _header(sheet, header)
+        import developaid_finance_units as finance_units
+        units = finance_units.resolve(_header(sheet, header), meta, hashlib.sha256(raw).hexdigest())
         items, codes = [], set()
         for index, cells in enumerate(sheet.iter_rows(min_row=header+1,
                 max_col=max(2, *columns.values())+1), header+1):
@@ -1021,6 +1024,7 @@ def _rss_copy(project, cut):
 
 
 def _bank(raw, cut):
+    import developaid_actuals as actuals
     with _book(raw) as book:
         estimate = _sheet(book, ESTIMATE)
         units = _header(estimate, 9)
@@ -1048,8 +1052,10 @@ def _bank(raw, cut):
         issues, anchors, counts = [], {ch: [] for ch in CHAPTERS}, {'nonempty': 0, 'future': 0, 'outside': 0, 'selected': 0, 'incomplete': 0}
         proof_rows = []
         scope_unknown = False
-        for index, cells in enumerate(payments.iter_rows(min_row=10, max_col=12), 10):
+        for index, cells in enumerate(payments.iter_rows(min_row=10, max_col=14), 10):
             if not any(c.value not in (None, '') for c in cells):
+                continue
+            if actuals.unused_payment_lookup(tuple(cell.value for cell in cells)):
                 continue
             counts['nonempty'] += 1
             day = _day(cells[8].value)
@@ -1138,7 +1144,7 @@ def capture(project, cut, *, runtime):
     eligibility = ('source_date_unknown' if version is None else
                    'source_after_cut' if version > day else 'eligible_version')
     try:
-        result['finance'] = {**_finance(fm), 'source_temporal_state': eligibility,
+        result['finance'] = {**_finance(fm, meta), 'source_temporal_state': eligibility,
             'amounts_at_cut': None, 'historical_financial_acceptance': False}
         result['bank'] = _bank(rss, day) if rss is not None else {'state': 'source_missing_at_cut'}
     except _WorksheetSizeProblem as exc:

@@ -61,6 +61,7 @@ import collections
 import copy
 import datetime
 import hashlib
+import math
 import os
 import pickle
 import re
@@ -136,6 +137,19 @@ def _money(value: Any) -> float:
         return float(text)
     except ValueError:
         return 0.0
+
+
+def money_value(value: Any) -> float | None:
+    """A saved monetary value; absence or an invalid value is not zero."""
+    import math
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(str(value).replace("\xa0", "").replace("\u202f", "").replace(" ", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
 
 
 def _code(value: Any) -> str:
@@ -295,8 +309,9 @@ def _remember(key: tuple, blob: bytes) -> None:
         total -= len(dropped)
 
 
-def _cached_read(fn):
+def _cached_read(fn, *, cache_name: str | None = None):
     import functools
+    name = cache_name or fn.__name__
 
     @functools.wraps(fn)
     def wrapper(path, *args, **kwargs):
@@ -304,13 +319,13 @@ def _cached_read(fn):
             stat = os.stat(path)
         except (TypeError, OSError):
             return fn(path, *args, **kwargs)
-        key = (fn.__name__, str(path), stat.st_mtime_ns, stat.st_size,
+        key = (name, str(path), stat.st_mtime_ns, stat.st_size,
                args, tuple(sorted(kwargs.items())))
         blob = _READ_CACHE.get(key)
         if blob is not None:
             _READ_CACHE.move_to_end(key)
             return pickle.loads(blob)
-        place = (_disk_cache_path(fn.__name__, Path(path), stat, args, kwargs)
+        place = (_disk_cache_path(name, Path(path), stat, args, kwargs)
                  if _disk_allowed(Path(path)) else None)
         blob = _disk_load(place) if place is not None else None
         if blob is not None:
@@ -338,7 +353,7 @@ def read_estimate(path: str | Path) -> dict[str, Any]:
     """
     rows: list[dict[str, Any]] = []
     total: dict[str, float] = {}
-    for row in _sheet(path, _ESTIMATE_SHEET):
+    for source_row, row in enumerate(_sheet(path, _ESTIMATE_SHEET), 1):
         def cell(field: str) -> Any:
             index = _ESTIMATE_COLUMNS[field]
             return row[index] if index < len(row) else None
@@ -357,6 +372,13 @@ def read_estimate(path: str | Path) -> dict[str, Any]:
             "code": code,
             "article": str(article or "").strip(),
             "depth": code.count(".") + 1,
+            # Legacy callers retain numeric fields. Funding reads saved values
+            # before _money can turn missing/invalid cells into zeros.
+            "money_values": {field: money_value(cell(field))
+                             for field in ("estimate", "contracted", "paid", "completed")},
+            "source": {"sheet": _ESTIMATE_SHEET, "row": source_row,
+                       "columns": {field: _ESTIMATE_COLUMNS[field] + 1
+                                   for field in ("estimate", "contracted", "paid", "completed")}},
             **{field: _money(cell(field))
                for field in ("estimate", "contracted", "paid", "completed")},
         })
@@ -777,8 +799,12 @@ def _sync_land_overlay(updated: dict, original: dict, actuals: dict, cut, notes:
         if extra_land:
             land["additional_land_costs"] = extra_land
         cash = dict(articles.get("land_rent") or {})
-        land.update(applied_total=sum(cash.values()), cash_total=sum(cash.values()),
-                    monthly={m.isoformat(): v for m, v in sorted(cash.items())})
+        if "construction_monthly_by_object" in land:
+            import developaid_land_rent
+            developaid_land_rent.sync_construction_cash(land,{m.isoformat():v for m,v in cash.items()})
+        else:
+            land.update(applied_total=sum(cash.values()), cash_total=sum(cash.values()),
+                        monthly={m.isoformat(): v for m, v in sorted(cash.items())})
 
         def qualify(code: str, reason: str) -> None:
             land["financial_complete"] = False
@@ -808,7 +834,13 @@ def _sync_land_overlay(updated: dict, original: dict, actuals: dict, cut, notes:
         plans = copy.deepcopy(original["nonres_plans"])
         for key, plan in plans.items():
             plan["capex"] = _months(articles.get(key, plan.get("capex") or {}))
+            if "land_rent_construction_cash" in plan:
+                import developaid_land_rent
+                plan.update({name:_months(value) if isinstance(value,dict) else value
+                             for name,value in developaid_land_rent.construction_plan(land,key).items()})
             for month, value in plan["capex"].items():
+                updated["debt_capex"][month] = max(0.0, updated["debt_capex"].get(month, 0.0) - value)
+            for month, value in (plan.get("land_rent_construction_cash") or {}).items():
                 updated["debt_capex"][month] = max(0.0, updated["debt_capex"].get(month, 0.0) - value)
         if original.get("common_on_object_loans"):
             shares = original.get("common_capex_shares") or {}
@@ -828,9 +860,16 @@ def _sync_land_overlay(updated: dict, original: dict, actuals: dict, cut, notes:
     if original.get("hotel_plan"):
         hotel = dict(original["hotel_plan"])
         hotel["capex"] = dict(updated.get("capex") or {})
+        if "land_rent_construction_cash" in hotel:
+            import developaid_land_rent
+            hotel.update({name:_months(value) if isinstance(value,dict) else value
+                          for name,value in developaid_land_rent.construction_plan(land,"hotel").items()})
+            for month,value in hotel["land_rent_construction_cash"].items():
+                hotel["capex"][month] = hotel["capex"].get(month,0.0)-value
         for target, metadata in (("capex_land", "land_articles"), ("capex_vat_exempt", "vat_exempt_articles")):
             if metadata in hotel:
-                hotel[target] = {m: sum(articles.get(k, {}).get(m, 0.0) for k in hotel[metadata])
+                hotel[target] = {m: sum(articles.get(k, {}).get(m, 0.0) for k in hotel[metadata]
+                                       if not (k=="land_rent" and "land_rent_construction_cash" in hotel))
                                  for m in hotel["capex"]}
         updated["hotel_plan"] = hotel
 
@@ -1424,6 +1463,8 @@ _PAYMENTS_COLUMNS = {
     "amount": 9,
     "source": 10,
     "counterparty": 11,
+    "allocation_contract": 12,
+    "allocation_purpose": 13,
 }
 
 # Источник платежа: собственные средства процентов не несут (решение владельца
@@ -1445,35 +1486,117 @@ def borrowed(source: Any) -> bool:
     return "заем" in str(source or "").lower().replace("ё", "е")
 
 
-def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict[str, Any]:
-    """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств.
+def _payment_amount_cell(value: Any, source_row: int) -> dict[str, Any]:
+    """Describe only the saved value already read with data_only=True."""
+    state, raw, truncated = "saved_value", value, False
+    if value is None:
+        state = "missing_saved_value"
+    elif isinstance(value, str):
+        state = "empty_saved_string" if value == "" else state
+        raw, truncated = value[:256], len(value) > 256
+    elif isinstance(value, (datetime.datetime, datetime.date)):
+        raw = value.isoformat()
+    elif type(value) is float and not math.isfinite(value):
+        state = "non_finite_saved_value"
+        raw = "NaN" if math.isnan(value) else "Infinity" if value > 0 else "-Infinity"
+    elif type(value) is int and value.bit_length() > 840:
+        raw, truncated = "[integer representation omitted]", True
+    elif type(value) not in {bool, int, float}:
+        state, raw = "unsupported_saved_type", None
+    return {"coordinate": "J"+str(source_row), "raw_type": type(value).__name__,
+            "state": state, "raw_value": raw, "truncated": truncated}
 
-    The contract-risk reader retains incomplete rows to report unknown totals;
-    ordinary financial readers keep the existing nonzero-payment behaviour.
+
+def payment_issue_context(row: dict[str, Any]) -> dict[str, Any]:
+    """Bounded provenance for one incomplete payment, without another read."""
+    context, truncated = {}, []
+    for field in ("contractor", "contract", "contract_date", "object", "purpose",
+                  "estimate_code", "date", "source"):
+        value = row.get(field)
+        if isinstance(value, (datetime.datetime, datetime.date)):
+            value = value.isoformat()
+        if isinstance(value, str):
+            if len(value) > 512:
+                truncated.append(field)
+            value = value[:512]
+        elif value is not None and type(value) not in {bool, int, float}:
+            value = None
+        elif type(value) is float and not math.isfinite(value):
+            value = None
+        context[field] = value
+    context["truncated_fields"] = truncated
+    observed = row.get("amount_cell")
+    if not isinstance(observed, dict):
+        source_row = row.get("source_row")
+        observed = {"coordinate": "J"+str(source_row) if type(source_row) is int else None,
+                    "raw_type": None, "state": "not_captured", "raw_value": None, "truncated": False}
+    return {"sheet": _PAYMENTS_SHEET, "payment_context": context,
+            "amount_cell": copy.deepcopy(observed)}
+
+
+def unused_payment_lookup(row) -> bool:
+    """Only the empty native template with a numeric H lookup zero.
+
+    A real J zero, incomplete payment or L:N allocation is never discarded.
+    A is the prefilled sequence, not a payment amount or identity.
+    """
+    cell = lambda index: row[index] if index < len(row) else None
+    article = cell(_PAYMENTS_COLUMNS['article_name'])
+    return (type(article) in (int, float) and article == 0
+            and all(cell(index) in (None, '') for index in _PAYMENTS_COLUMNS.values()
+                    if index != _PAYMENTS_COLUMNS['article_name']))
+
+
+def _payment_contract_allocation(row, headers, source_row):
+    """Read the additional contract level without changing the bank payment.
+
+    D dates the B/C contract. The extra L/M contract has no declared date
+    column in this native format, so its legal date remains unknown.
+    """
+    roles = {'contractor': (11, {'контрагент', 'субподрядчик'}),
+             'contract': (12, {'договор', 'номер договора', '№ договора'}),
+             'purpose': (13, {'аванс/выполнение/гу'})}
+    get = lambda index: row[index] if index < len(row) else None
+    if not any(get(index) not in (None, '') for index, _ in roles.values()):
+        return None
+    result = {'contract_date': None, 'header_roles': {}, 'source_cells': {
+        'contractor': f'L{source_row}', 'contract': f'M{source_row}',
+        'purpose': f'N{source_row}', 'amount': f'J{source_row}'}}
+    for name, (index, labels) in roles.items():
+        observed = {re.sub(r'\s*/\s*', '/', _normalized(h[index])) for h in headers
+                    if index < len(h) and isinstance(h[index], str) and h[index].strip()
+                    and _normalized(h[index]) not in {'выбор', 'данные платежного поручения'}}
+        known = len(observed) == 1 and observed <= labels
+        result['header_roles'][name] = 'observed' if known else 'unknown'
+        value = get(index)
+        result[name] = ('' if value is None else str(value).strip()) if known else ''
+    return result
+
+
+def _read_payment_rows(path: str | Path) -> list[dict[str, Any]]:
+    """One cached source reading for both public payment projections.
+
+    Keep the amount cell unchanged: the legacy and strict readers interpret
+    missing or invalid monetary values differently. No payment is discarded
+    before the caller chooses its projection.
     """
     rows: list[dict[str, Any]] = []
+    headers = []
     for index, row in enumerate(_sheet(path, _PAYMENTS_SHEET, max_col=max(_PAYMENTS_COLUMNS.values()) + 1), 1):
         if index < _PAYMENTS_FIRST_ROW:
+            headers.append(row)
             continue
 
         def cell(field: str) -> Any:
             position = _PAYMENTS_COLUMNS[field]
             return row[position] if position < len(row) else None
 
-        amount = _money(cell("amount"))
-        if include_incomplete:
-            import math
-            if not any(cell(field) not in (None, "") for field in _PAYMENTS_COLUMNS):
-                continue
-            raw_amount = cell("amount")
-            try:
-                amount = (None if raw_amount is None or isinstance(raw_amount, bool) else
-                          float(str(raw_amount).replace("\xa0", "").replace(" ", "").replace(",", ".")))
-            except (TypeError, ValueError):
-                amount = None
-            if amount is not None and not math.isfinite(amount):
-                amount = None
-        elif not amount:
+        if not any(cell(field) not in (None, "") for field in _PAYMENTS_COLUMNS):
+            continue
+        # The work-name lookup is prefilled below the payment list. Its
+        # numeric zero, with every payment field empty, is an unused template
+        # row. A zero in the amount column is still a payment observation.
+        if unused_payment_lookup(row):
             continue
         source = str(cell("source") or "").strip()
         item = {
@@ -1485,12 +1608,42 @@ def read_payments(path: str | Path, *, include_incomplete: bool = False) -> dict
             "estimate_code": _code(cell("estimate_code")),
             "article_name": str(cell("article_name") or "").strip(),
             "date": _date(cell("date")),
-            "amount": amount,
+            "amount": cell("amount"),
+            "_amount_cell": _payment_amount_cell(cell("amount"), index),
             "source": source,
             "own_funds": _OWN_FUNDS_MARKER in _normalized(source),
+            "source_row": index,
+            "_contract_allocation": _payment_contract_allocation(row, headers, index),
         }
-        if include_incomplete:
-            item["source_row"] = index
+        rows.append(item)
+    return rows
+
+
+def read_payments(path: str | Path, *, include_incomplete: bool = False,
+                  include_cell_metadata: bool = False,
+                  include_contract_allocation: bool = False) -> dict[str, Any]:
+    """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств.
+
+    Both projections read the same cached source rows. Strict financial
+    readers retain incomplete rows; legacy readers keep nonzero payments.
+    The cache returns independent copies, so projection never changes it.
+    Cell provenance is opt-in for internal financial issue records; default
+    legacy and strict row shapes are unchanged.
+    """
+    rows: list[dict[str, Any]] = []
+    for item in _read_payment_rows(path):
+        allocation = item.pop('_contract_allocation', None)
+        if include_contract_allocation and allocation is not None:
+            item['contract_allocation'] = allocation
+        observed = item.pop("_amount_cell", None)
+        if include_cell_metadata and observed is not None:
+            item["amount_cell"] = observed
+        amount = money_value(item["amount"]) if include_incomplete else _money(item["amount"])
+        if not include_incomplete:
+            if not amount:
+                continue
+            item.pop("source_row")
+        item["amount"] = amount
         rows.append(item)
     dated = [item for item in rows if item["date"]]
     def total(items):
@@ -2711,7 +2864,10 @@ def apply_proposals(programme: dict[str, Any] | None,
 # Кэш навешивается после объявлений: читатели зовут друг друга по имени
 # модуля, поэтому обёртка одного не ломает других.
 for _name in ("read_estimate", "read_register", "read_completed_works",
-              "read_article_crosswalk", "read_payments", "read_contracts",
+              "read_article_crosswalk", "_read_payment_rows", "read_contracts",
               "read_sales", "read_programme", "read_credits", "read_schedule"):
-    globals()[_name] = _cached_read(globals()[_name])
+    # Keep the payment cache's existing identity so a new parser replaces its
+    # previous stored projections instead of leaving them beside the source.
+    globals()[_name] = _cached_read(globals()[_name],
+        cache_name="read_payments" if _name == "_read_payment_rows" else None)
 del _name

@@ -18,6 +18,7 @@ def rental_inputs(**overrides):
             "land_rent_rates": [{"year": 1, "rate_pct": 1.5}],
             "land_rent_tail_rule": "repeat_last", "land_rent_vat_treatment": "public_exempt",
             "land_rent_termination_date": "2029-01-01", "land_rent_cadastral_target_mln": 120,
+            "land_rent_cadastral_change_date": "2027-12-01",
             **overrides}
 
 
@@ -42,7 +43,7 @@ def test_known_rent_names_the_economic_result_but_keeps_it_provisional(metric, v
 def test_missing_rent_does_not_pass_as_a_free_site(rent):
     bundle = {"consolidated": {"summary": {"preliminary": True, "llcr": 9}, "land_rent": rent}}
     assert core.entry_price_verdict(bundle) == {
-        "title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
+        "title": "Предварительный расчёт", "tone": "edge"}
 
 
 def test_known_zero_is_not_missing_and_confirmed_economics_keeps_normal_verdict():
@@ -61,7 +62,7 @@ def test_raw_construction_total_cannot_override_the_canonical_unknown_sum():
                            "land_rent_sum": {"known": False, "reason": "Аренда после ввода требует отдельного расчёта."}},
               "land_rent": {"complete": True, "construction_total": 3e6}}
     assert core.entry_price_verdict({"consolidated": result}) == {
-        "title": "Предварительная экономика: уточните аренду земли", "tone": "edge"}
+        "title": "Предварительный расчёт", "tone": "edge"}
 
 
 def test_the_canonical_known_zero_does_not_require_a_duplicate_raw_rent_payload():
@@ -104,7 +105,8 @@ def test_actual_model_delivers_the_same_verdict_before_and_after_price_search(ph
         block = core.entry_price_block({"consolidated": r}, args["inputs"], None)
         assert r["report"]["entry_price_verdict"] == block["verdict"]
         assert block["verdict"]["title"].startswith("Предварительно: экономика")
-        assert r["summary"]["preliminary_reason"] in block["tiles"][0]["note"]
+        assert all(r["summary"]["preliminary_reason"] not in tile.get("note", "") for tile in block["tiles"])
+        assert r["summary"]["preliminary"] is True
 
 
 @pytest.mark.parametrize("width", [390, 1440])

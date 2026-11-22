@@ -1,19 +1,4 @@
-"""Посчитанная аренда земли видна в «Результате» и не держит «уточните аренду».
-
-1. Строка «Аренда земли участка» в «Параметрах проекта»: раньше посчитанная
-   аренда в «Результат» не попадала вовсе. Своя земля — строки нет (ноль
-   читался бы «аренда бесплатна»); сумма не определена — известная часть с
-   причиной от движка, а без известной части — «Не определена», не ноль.
-   Применимость решает `land_rent.status`, определена ли сумма —
-   `summary.land_rent_sum` (`developaid_land_rent.sum_state`).
-2. Карточка «Инвестиционное решение» писала «Предварительная экономика:
-   уточните аренду земли», пока предварительными оставались только график
-   оплаты или НДС, — хотя сумма аренды уже определена. Заголовок остаётся,
-   когда сумма не определена по тому же ответу движка, что и строка
-   страницы; оговорку несёт подпись под плитками.
-
-Запуск: python3 -m pytest tests/test_land_rent_shows_in_the_result.py -q
-"""
+"""Аренда показана суммой или неизвестным значением; подробности остаются в калькуляторе."""
 
 from __future__ import annotations
 
@@ -33,10 +18,11 @@ from browser import chromium_or_skip, serve, wait_for_result  # noqa: E402
 
 core = _wrapper.core
 PORT = 18833
-ASK = "Предварительная экономика: уточните аренду земли"
+ASK = "Предварительный расчёт"
 LEASE = {"land_right": "lease", "vri_region": "msk", "land_rent_mode": "manual",
          "land_rent_cadastral_mln": 100, "land_rent_regime_start": "2027-01-01",
          "project_start": "2027-01-01", "land_rent_rates": [{"year": 1, "rate_pct": 1.5}],
+         "land_rent_cadastral_change_date": "2027-12-01",
          "land_rent_tail_rule": "repeat_last", "land_rent_vat_treatment": "public_exempt"}
 
 
@@ -56,9 +42,19 @@ def test_a_known_rent_sum_does_not_ask_to_clarify_the_rent():
     assert core.entry_price_verdict(bundle)["title"] != ASK
 
 
+def test_a_future_value_without_its_confirmed_date_keeps_the_rent_unknown():
+    bundle = _run(land_rent_termination_date="2028-01-01",
+                  land_rent_cadastral_target_mln=120,
+                  land_rent_cadastral_change_date=None)
+    result = bundle["consolidated"]
+    assert "cadastral_date" in result["land_rent"]["financial_missing_codes"]
+    assert result["summary"]["land_rent_sum"]["known"] is False
+    assert core.entry_price_verdict(bundle)["title"] == ASK
+
+
 @pytest.mark.parametrize("case, kw, reason", [
-    # Без даты окончания аренда после ввода не посчитана — суммы нет.
-    ("после ввода", {"land_rent_cadastral_target_mln": 120}, "Аренда после ввода требует отдельного расчёта."),
+    # Неверный срок регистрации оставляет сценарную сумму предварительной.
+    ("после ввода", {"land_rent_cadastral_target_mln": 120, "land_rent_registration_months": -1}, "Срок аренды после ввода"),
     # Сумма посчитана, но стоимость после смены ВРИ не указана — сумма ещё изменится.
     ("смена ВРИ", {"land_rent_termination_date": "2028-01-01"}, "Кадастровая стоимость участка после смены ВРИ"),
     # Москва: повышенная часть первого года оплачивается отдельно, её сумма не определена.
@@ -126,12 +122,10 @@ def test_the_result_shows_the_rent_row_only_where_the_engine_says_it_applies():
     assert got["own"]["rows"] == [], "у своей земли строка аренды нулём"
     assert len(got["lease"]) == 1 and got["lease"][0][1].replace(" ", " ") == "2,5 млрд ₽", got["lease"]
     assert got["part"][0][1].replace(" ", " ") == (
-        "2,5 млрд ₽ Это известная часть суммы, она ещё уточнится. Аренда после ввода требует отдельного расчёта."), got
-    assert got["none"][0][1] == ("Не определена. Для арендуемой земли не заданы кадастровая база, дата и годовые "
-                                 "ставки аренды."), got["none"]
+        "2,5 млрд ₽ Учтённая часть суммы."), got
+    assert got["none"][0][1] == "Не определена.", got["none"]
     assert got["silent"][0][1].replace(" ", " ") == (
-        "2,5 млрд ₽ Это известная часть суммы, она ещё уточнится. Расчёт не назвал, каких данных для неё "
-        "не хватает."), got["silent"]
+        "2,5 млрд ₽ Учтённая часть суммы."), got["silent"]
 
 
 def test_an_unnamed_reason_does_not_repeat_the_row():

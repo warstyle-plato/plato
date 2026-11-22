@@ -17,28 +17,67 @@ build_freeform_tep, шаблон /templates/tep и список пресетов
 _XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _XLSX_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _XLSX_PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+_XLSX_MAX_MEMBERS = 512
+_XLSX_MAX_EXPANDED_BYTES = 64 * 1024 * 1024
+_XLSX_MAX_MEMBER_BYTES = 16 * 1024 * 1024
+_XLSX_MAX_TABLE_SLOTS = 500_000
+_XLSX_MAX_XML_NODES = 250_000
 
 
 def _xlsx_col_index(ref: str) -> int:
-    letters = re.match(r"[A-Z]+", ref or "")
-    if not letters:
-        return 0
+    cell = re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]{0,6})',ref or '')
+    if cell is None or int(cell.group(2)) > 1_048_576:
+        raise ValueError('В XLSX некорректный адрес ячейки. Файл не прочитан целиком.')
     result = 0
-    for ch in letters.group(0):
+    for ch in cell.group(1):
         result = result * 26 + ord(ch) - 64
+    if result > 16_384:
+        raise ValueError('Столбец XLSX выходит за пределы Excel. Файл не прочитан целиком.')
     return result - 1
 
 
 def _xlsx_read_tables(data: bytes) -> dict[str, list[list[Any]]]:
+    import document_processing
+    document_processing.check()
+    if len(data) > 20*1024*1024:
+        raise ValueError('Файл XLSX больше 20 МБ.')
     try:
-        zf = zipfile.ZipFile(io.BytesIO(data))
-    except Exception as exc:
-        raise ValueError("Файл не является корректным XLSX") from exc
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            return _xlsx_tables_from_archive(zf)
+    except zipfile.BadZipFile as exc:
+        raise ValueError('Файл не является корректным XLSX') from exc
+
+
+def _xlsx_tables_from_archive(zf) -> dict[str,list[list[Any]]]:
+    import document_processing
+    members = zf.infolist()
+    names = [member.filename for member in members]
+    if (len(members) > _XLSX_MAX_MEMBERS or len(set(names)) != len(names)
+            or any(member.file_size > _XLSX_MAX_MEMBER_BYTES for member in members)
+            or sum(member.file_size for member in members) > _XLSX_MAX_EXPANDED_BYTES):
+        raise ValueError('Распакованный XLSX превышает предел чтения или содержит неоднозначные части. Файл не принят.')
+
+    def read_xml(path):
+        document_processing.check()
+        try:
+            parser = ET.iterparse(io.BytesIO(zf.read(path)),events=('start',))
+            for count,_ in enumerate(parser,start=1):
+                if count > _XLSX_MAX_XML_NODES:
+                    raise ValueError('Структура XLSX превышает предел чтения. Файл не принят.')
+                if count % 1024 == 0:
+                    document_processing.check()
+            result = parser.root
+        except (document_processing.Cancelled,document_processing.Expired):
+            raise
+        except (ET.ParseError,zipfile.BadZipFile,RuntimeError) as exc:
+            raise ValueError('Структура XLSX повреждена или зашифрована. Файл не прочитан целиком.') from exc
+        document_processing.check()
+        return result
 
     ns = {"m": _XLSX_MAIN_NS, "r": _XLSX_REL_NS}
     try:
-        workbook = ET.fromstring(zf.read("xl/workbook.xml"))
-        rels_root = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
+        workbook = read_xml("xl/workbook.xml")
+        rels_root = read_xml("xl/_rels/workbook.xml.rels")
     except KeyError as exc:
         raise ValueError("В XLSX отсутствует структура книги Excel") from exc
 
@@ -48,7 +87,7 @@ def _xlsx_read_tables(data: bytes) -> dict[str, list[list[Any]]]:
 
     shared: list[str] = []
     try:
-        sst = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+        sst = read_xml("xl/sharedStrings.xml")
         for si in sst.findall(f"{{{_XLSX_MAIN_NS}}}si"):
             shared.append("".join(t.text or "" for t in si.iter(f"{{{_XLSX_MAIN_NS}}}t")))
     except KeyError:
@@ -59,7 +98,9 @@ def _xlsx_read_tables(data: bytes) -> dict[str, list[list[Any]]]:
     if sheets is None:
         return tables
 
+    slots = 0
     for sheet in sheets:
+        document_processing.check()
         name = sheet.attrib.get("name", "")
         rid = sheet.attrib.get(f"{{{_XLSX_REL_NS}}}id")
         target = rels.get(rid, "")
@@ -70,9 +111,9 @@ def _xlsx_read_tables(data: bytes) -> dict[str, list[list[Any]]]:
         else:
             path = "xl/" + target.lstrip("/")
         try:
-            root = ET.fromstring(zf.read(path))
-        except KeyError:
-            continue
+            root = read_xml(path)
+        except KeyError as exc:
+            raise ValueError('Объявленный лист XLSX недоступен. Файл не прочитан целиком.') from exc
 
         rows_out: list[list[Any]] = []
         sheet_data = root.find(f"{{{_XLSX_MAIN_NS}}}sheetData")
@@ -81,11 +122,14 @@ def _xlsx_read_tables(data: bytes) -> dict[str, list[list[Any]]]:
             continue
 
         for row in sheet_data.findall(f"{{{_XLSX_MAIN_NS}}}row"):
+            document_processing.check()
             values: dict[int, Any] = {}
             max_col = -1
             for cell in row.findall(f"{{{_XLSX_MAIN_NS}}}c"):
                 ref = cell.attrib.get("r", "")
                 col = _xlsx_col_index(ref)
+                if col in values:
+                    raise ValueError('В строке XLSX повторяется столбец. Неоднозначные значения не приняты.')
                 max_col = max(max_col, col)
                 ctype = cell.attrib.get("t")
                 value = None
@@ -110,12 +154,18 @@ def _xlsx_read_tables(data: bytes) -> dict[str, list[list[Any]]]:
                         else:
                             try:
                                 num = float(raw)
-                                value = int(num) if num.is_integer() else num
                             except ValueError:
                                 value = raw
+                            else:
+                                if not math.isfinite(num):
+                                    raise ValueError('В XLSX есть неопределённое числовое значение. Файл не принят.')
+                                value = int(num) if num.is_integer() else num
                 values[col] = value
 
             if max_col >= 0:
+                slots += max_col+1
+                if slots > _XLSX_MAX_TABLE_SLOTS:
+                    raise ValueError('Таблица XLSX превышает предел чтения. Файл не прочитан частично.')
                 rows_out.append([values.get(i) for i in range(max_col + 1)])
 
         tables[name] = rows_out

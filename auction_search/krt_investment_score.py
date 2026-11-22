@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from auction_search.krt_status import model_exclusion, running_kind
 from market_search.http import load_json, save_json
 
 TARGET_LLCR = 1.20
@@ -323,7 +324,7 @@ def score(
             if str(key) in components and components[str(key)]["score"] is not None
         }
     coverage = len(observed) * 25
-    rankable = str(status_kind or "").strip().lower() != "running"
+    rankable = not running_kind(status_kind)
     total = None
     reason = ""
     arithmetic = ""
@@ -720,6 +721,9 @@ def generic_project_burden(
     собственности; уже собранные model_inputs дают соцобъекты. После этого
     тот же authoritative engine пересчитывает LLCR с известной нагрузкой.
     """
+    excluded = model_exclusion(project)
+    if excluded is not None:
+        return {**excluded, "pending": False}
     now = int(time.time())
     if not screening.get("available"):
         return {

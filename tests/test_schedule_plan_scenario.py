@@ -8,6 +8,8 @@ from browser import expand_gantt
 import developaid_schedule_plan_scenario as scenario
 from test_monitor_cumulative_controls import browser_page
 from test_monitor_gpr_sections import monitor_view
+from gpr_view_fixtures import readiness_view
+import developaid_schedule_readiness as readiness
 
 
 def row(progress=.5):
@@ -79,10 +81,14 @@ def test_actual_page_displays_a_scenario_label_beside_unknown_pace(width):
     target['plan_pace_scenario']=scenario.work(target,view['cut'])
     assert target['plan_pace_scenario']['finish']=='2027-01-08'
     view['schedule']['plan_pace_scenarios']=scenario.summary([target])
+    tasks[2]['construction_work']=False
+    state=readiness.model(dict(works={task['id']:task for task in tasks}),cut=view['cut'],
+        baseline_scope='remaining_work',source_sha256='a'*64)
+    view=readiness_view(tasks,state)
     with browser_page(width) as (page,responses,errors):
-        page.evaluate('(v)=>{currentView=v;renderDash(v);renderGantt(v)}',view)
-        expect(page.locator('.plan-scenario-summary')).to_be_visible()
-        expect(page.locator('.plan-scenario-summary')).to_contain_text('условная оценка')
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderDash(v);renderGantt(v)}',view)
+        expect(page.locator('.canonical-work-forecast')).to_be_visible()
+        expect(page.locator('.canonical-work-forecast')).to_contain_text('Условный сценарий при плановом темпе')
         cell=page.locator('#gprFactMatrix [data-work-id="2"]')
         expect(cell.locator('.gpr-cell-forecast')).to_have_text('При плановом темпе: 08.01.2027')
         expect(cell.locator('.gpr-cell-scenario')).to_have_text('При плановом темпе: 08.01.2027')

@@ -1393,8 +1393,8 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
                            ) -> tuple[dict[str, Any], dict[str, str]]:
     """Наша сторона сверки — из тех же владельцев, что считают модель.
 
-    Нормы мест, соцпотребности и МПТ — `tep_derived_norms` (её ответ подписан
-    как наш расчёт по городским формулам), приобъектные места — `parking_demand`,
+    Нормы мест и соцпотребности — `tep_derived_norms`, рабочие места МПТ —
+    `vri_benefits_for`, приобъектные места — `parking_demand`,
     плата за ВРИ — поле проекта. Своей формулы сверка не заводит: второй ответ
     на тот же вопрос был бы третьим мнением, а не проверкой.
 
@@ -1428,6 +1428,10 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
         social_population_method=str(inputs.get("social_population_method") or ""))
     tep_src = "ТЭП проекта, ГНС"
     norm_src = "наша норма (tep_derived_norms)"
+    benefits = vri_benefits_for(inputs, tep)
+    jobs = benefits.get("jobs_total") if benefits.get("applicable") else None
+    jobs_src = ("расчёт льгот проекта: рабочие места нежилья и соцобъектов"
+                if jobs is not None else "")
     ours: dict[str, Any] = {
         "spp": {
             "total": (round(total / 1000.0, 3), tep_src + ": все наземные строки"),
@@ -1450,7 +1454,7 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
                          "наша норма приобъектных (parking_demand, 945-ПП)"),
             "short_stop": (None, ""),
         },
-        "mpt": (derived["jobs"], norm_src + f": НП нежилья / {derived['sqm_per_job']:g} м²"),
+        "mpt": (jobs, jobs_src),
         "density": (round(total / 1000.0 / area, 3) if area > 0 else None,
                     "ТЭП проекта: СПП / площадь территории"),
     }
@@ -1659,8 +1663,10 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
         "parking.attached": ("наша норма — от общей площади нежилья с К1 "
                              f"{float(demand.get('k1') or 0):g} и К2 {float(demand.get('k2') or 0):g}; "
                              "калькулятор считает по ВРИ, НП и К1/К2 своего квартала"),
-        "mpt": (f"у модели {derived['sqm_per_job']:g} м² НП на рабочее место; "
-                "калькулятор считает по ВРИ (лист «МПТ»)"),
+        "mpt": (("модель берёт рабочие места из расчёта льгот проекта: нормы по назначению "
+                 "нежилых объектов и числу мест соцобъектов; калькулятор — из листа «МПТ»")
+                if jobs is not None else str(benefits.get("reason") or
+                                            "расчёт рабочих мест проекта не выполнен")),
         "parking.guest": ("гостевые — десятая часть постоянных и у нас, и у калькулятора: "
                           "расхождение идёт от постоянных мест; " + population_line
                           + "; " + area_line),

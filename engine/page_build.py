@@ -11,10 +11,17 @@ MONITOR_PAGE_HTML, помощник _js_keys и маршрут GET /.
 Отдельно не импортировать: второй импорт поднял бы вторую копию движка.
 """
 # ruff: noqa
+import document_intake_protocol as document_protocol
+import normatives_registry as _page_normatives_registry
 
 # Подстановка разовая, на импорте: страница отдаётся на каждый запрос, а версия
 # за время работы процесса не меняется.
 PAGE = PAGE.replace(VERSION_PLACEHOLDER, VERSION)
+PAGE = PAGE.replace("__DEVELOPAID_MO_BENEFITS_CATALOG__", json.dumps(mo_vri_benefits.catalog(), ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_MO_VRI_COMPENSATION_SOURCE__", json.dumps(
+    _page_normatives_registry.official_link("mo-1310-vri-ksu"), ensure_ascii=False))
+PAGE = PAGE.replace('</head>', '<script>window.PlatoDocumentProtocol=Object.freeze('
+    + json.dumps(document_protocol.client_contract(), ensure_ascii=False) + ');</script></head>', 1)
 # Ссылка на панораму Яндекса — один шаблон сервера на страницу и бота.
 PAGE = PAGE.replace("__DEVELOPAID_PANORAMA_LINK__", json.dumps(YANDEX_PANORAMA_LINK))
 # Контур подставляется, как версия и подвал: копию негде обновлять, а
@@ -249,6 +256,24 @@ def index() -> HTMLResponse:
         "Expires": "0",
         "X-DevelopAid-Version": VERSION,
     })
+
+
+@app.get(document_protocol.ENTRY_PATH.rstrip('/'), response_class=HTMLResponse, include_in_schema=False)
+@app.get(document_protocol.ENTRY_PATH, response_class=HTMLResponse, include_in_schema=False)
+def qualified_document_index() -> HTMLResponse:
+    import inspect
+    # main_registry may replace the public root with the primary PAGE layer.
+    # Delegate that installed renderer; never reconstruct a second UI here.
+    renderer = next((route.endpoint for route in app.routes
+        if getattr(route, 'path', None) == '/' and 'GET' in (getattr(route, 'methods', None) or set())), index)
+    if inspect.signature(renderer).parameters:
+        raise HTTPException(503, document_protocol.UNAVAILABLE_MESSAGE)
+    response = renderer()
+    if not isinstance(response, HTMLResponse) or response.status_code != 200:
+        raise HTTPException(503, document_protocol.UNAVAILABLE_MESSAGE)
+    response.body = response.body.replace(b'</head>', b'<script>window.PlatoQualifiedDocumentEntry=true;</script></head>', 1)
+    response.headers['Content-Length'] = str(len(response.body))
+    return response
 
 import partial_tep as _partial_tep_schema
 PAGE = PAGE.replace("__DEVELOPAID_PARTIAL_TEP_SCHEMA__", json.dumps(_partial_tep_schema.schema(), ensure_ascii=False))

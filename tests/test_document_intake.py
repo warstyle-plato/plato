@@ -238,7 +238,10 @@ def test_both_surfaces_use_the_same_parser() -> None:
     for source in (site, bot):
         assert "document_intake.extract_text" in source
         assert "document_intake_read(" in source
-        assert "_intake_queue_start(" in source
+    assert "_intake_queue_start(" in site
+    assert "_intake_queue_prepare(" in bot
+    assert "_intake_queue_publish(" in inspect.getsource(core._telegram_document_publish)
+    assert "_intake_queue_prepare(" in inspect.getsource(core._intake_queue_start)
     reader = inspect.getsource(core.document_intake_read)
     assert "document_intake.parse_intake" in reader
     assert "document_intake.intake_prompt" in reader

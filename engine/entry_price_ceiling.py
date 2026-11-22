@@ -187,12 +187,14 @@ def entry_price_verdict(bundle: dict[str, Any]) -> dict[str, str]:
     preliminary = bool(summary.get("preliminary"))
     # Keep the canonical sum-state shared by the result row and all verdicts.
     # A construction subtotal alone does not resolve post-RVE or VRI costs.
+    document_qualification = summary.get('intake_qualification') or {}
+    if document_qualification.get('reason'):
+        return {'title': ('Предварительная экономика: есть неоценённые обязательства'
+                          if document_qualification.get('status') == 'conditional'
+                          else 'Предварительная экономика: перепроверьте условия документа'), 'tone':'edge'}
     rent_sum = summary.get("land_rent_sum") or {}
     if preliminary and not rent_sum.get("known"):
-        title = ("Предварительная экономика: подтвердите дату начала аренды"
-                 if rent_sum.get("reason_code") == "regime_start"
-                 else "Предварительная экономика: уточните аренду земли")
-        return {"title": title, "tone": "edge"}
+        return {"title": "Предварительный расчёт", "tone": "edge"}
     verdict = _entry_price_metric_verdict(bundle)
     if preliminary:
         verdict["title"] = "Предварительно: " + verdict["title"][0].lower() + verdict["title"][1:]
@@ -309,9 +311,12 @@ def entry_price_tiles(bundle: dict[str, Any], inputs: dict[str, Any],
                    "note": f"Подбор цены при {name} {target_text} для этого документа не выполнялся."}
         margin = {"label": "Запас к цене", "value": "—", "wait": True,
                   "note": "Считается после подбора максимума."}
-    if summary.get("preliminary_reason"):
+    # Rental conditions belong to the rental calculator. Document-specific
+    # qualifications remain beside the affected investment decision.
+    qualification = (summary.get("intake_qualification") or {}).get("reason")
+    if qualification:
         for tile in (cover, ceiling, margin):
-            tile["note"] = str(summary["preliminary_reason"]) + " " + str(tile.get("note") or "")
+            tile["note"] = str(qualification) + " " + str(tile.get("note") or "")
     return [cover, entry, ceiling, margin]
 
 

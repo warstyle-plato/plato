@@ -20,6 +20,8 @@ from urllib.parse import urlencode
 
 import developaid_monitor as monitor
 import developaid_monitor_daily as daily
+import developaid_contract_stage_profile as stage_profile
+import developaid_contract_match_cache as match_cache
 from developaid_monitor_contracts import _party_norm, _contract_number
 
 _MAX_TEXT = 20000
@@ -75,6 +77,8 @@ def _party_identity(value: Any) -> str:
     return " ".join(re.findall(r"[0-9a-zа-я]+", _text(value)))
 
 
+@match_cache.mutable('party_parts', freeze=lambda pair: (tuple(pair[0]), pair[1]),
+                     fresh=lambda pair: (list(pair[0]), pair[1]))
 def _party_parts(value: Any) -> tuple[list[str], str]:
     """Comparison only: persisted source identities keep their original text."""
     words = _party_identity(_party_norm(value)).split()
@@ -92,6 +96,7 @@ def _same_party_exact(left: Any, right: Any) -> bool:
             and (not first_form or not second_form or first_form == second_form))
 
 
+@match_cache.mutable('work_words', freeze=frozenset, fresh=set)
 def _work_words(value: Any) -> set[str]:
     """Small inflection normalization for a source's work annotation."""
     result = set()
@@ -244,17 +249,21 @@ def _scope(value: Any) -> set[str]:
     return _scope_info(value)[0]
 
 
+@stage_profile.stage('daily_scope')
 def _contract_scope_info(row: dict) -> tuple[set[str], bool]:
     texts = [row.get("subject"), *(row.get("scope") or [])]
     for item in row.get("physical_items") or []:
         texts.extend([item.get("scope"), item.get("name")])
-    scopes: set[str] = set()
-    ambiguous = False
-    for text in texts:
-        parts, unclear = _scope_info(text)
-        scopes.update(parts)
-        ambiguous = ambiguous or unclear
-    return scopes, ambiguous
+    def parse():
+        scopes: set[str] = set()
+        ambiguous = False
+        for text in texts:
+            parts, unclear = _scope_info(text)
+            scopes.update(parts)
+            ambiguous = ambiguous or unclear
+        return frozenset(scopes), ambiguous
+    scopes, ambiguous = match_cache.remember('scope', tuple(texts), parse)
+    return set(scopes), ambiguous
 
 
 def _contract_scopes(row: dict) -> set[str]:
@@ -681,12 +690,14 @@ def _enrich_raw(project: str, register: dict, cut: str, start: str = "", *,
     return result
 
 
+@stage_profile.stage('daily_enrich')
+@match_cache.scoped
 def enrich(project: str, register: dict, cut: str, start: str = "", *,
            _reports: list[dict] | None = None, _parties: list[str] | None = None) -> dict:
     import developaid_contract_ownership as ownership
     with ownership.read_scope(project, _day(cut)) as context:
         context.require_current(register)
-        if 'raw_rows' not in register:
+        if not ownership.has_raw_views(register):
             return _enrich_raw(project, register, cut, start, _reports=_reports, _parties=_parties)
         enriched = _enrich_raw(project, ownership.raw_view(register), cut, start,
                                _reports=_reports, _parties=_parties)

@@ -17,7 +17,7 @@ import developaid_monitor_contracts as contracts
 import developaid_monitor_ledgers as ledgers
 import developaid_schedule_physical as quantities
 
-RULE_VERSION = 4
+RULE_VERSION = 5
 SCOPE_FIELDS = ('locations', 'floors', 'zones', 'systems', 'materials', 'operation_parts')
 
 _GROUND = r'(?:подземн|наземн)(?:ый|ая|ое|ые|ых|ого|ой|ому|ую|ом|ыми)'
@@ -299,7 +299,10 @@ def _descriptor(name, context, location_context=(), *, hierarchy_ambiguous=False
                 or re.search(r'\bитп\s*(?:№\s*)?[a-zа-я]\b', _text(text))
                 or re.search(r'\d+(?:-го)?\s*(?:/|по|до|или)\s*\d+(?:-го)?\s*этаж', _text(text))
                 or re.search(r'\bитп\s*(?:№\s*)?\d+\s*[-–—]\s*\d+', _text(text))
-                or re.search(r'\b(?:участк|секци|зон[аыуе]\b|осях\b|осям\b|оси\b|отметк)', _text(text))):
+                # «На земельном участке» names the whole parcel of the object,
+                # not a construction plot inside it.
+                or re.search(r'\b(?:участ(?:к|ок\b)|секци|зон[аыуе]\b|осях\b|осям\b|оси\b|отметк)',
+                             re.sub(r'\bземельн\w*\s+участ(?:к|ок)\w*', ' ', _text(text)))):
             ambiguous = True
     # A cross-product of floors and several buildings is not a proved scope.
     if len(location) > 1 and floors:

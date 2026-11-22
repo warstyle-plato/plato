@@ -229,6 +229,66 @@ def test_conflicting_header_scope_evidence_is_not_reduced_to_an_empty_shared_sco
     assert item['detail_history_key'] is None and item['detail_history_state'] == 'unknown'
 
 
+@pytest.mark.parametrize('changes', [
+    {'unit': '', 'is_group': True}, {'unit': ''}, {'position': ''},
+    {'position': '', 'unit': '', 'is_group': True, 'plan_quantity': None},
+])
+def test_repeated_incomplete_rows_keep_one_projection_and_all_archive_observations(changes):
+    sources = [source(day, view(period(1), **changes))
+               for day in ['2026-11-06', '2026-11-12', '2026-11-16', '2026-11-17']]
+    before = copy.deepcopy(sources)
+    item = only(compose(sources, CUT))
+    assert len(item['history_sources']) == 4
+    assert item['snapshot_date'] == '2026-11-17'
+    assert item['detail_history_state'] == ('group' if changes.get('is_group') else 'unknown')
+    if not changes.get('is_group'):
+        assert item['completed_amount'] is None and item['completed_quantity'] is None
+    assert sources == before
+    assert only(compose(list(reversed(sources)), CUT)) == item
+
+
+def test_incomplete_named_row_can_move_and_rename_without_becoming_another_work():
+    old = source('2026-11-06', view(period(1), unit=''))
+    moved = view(period(1), unit='')
+    moved['source'].update(filename='Renamed.xlsx', row=100)
+    new = source('2026-11-16', moved, sha='b')
+    item = only(compose([old, new], CUT))
+    assert len(item['history_sources']) == 2 and item['detail_history_state'] == 'unknown'
+    assert item['source']['row'] == 100 and item['completed_amount'] is None
+
+
+def test_repeated_scope_conflict_keeps_one_unknown_row_but_different_evidence_stays_separate():
+    evidence = {'object_scope': [{'raw': 'Корпус 1'}, {'raw': 'Корпус 2'}]}
+    old = source('2026-11-06', view(period(1)), object_scope='', scope_evidence=evidence)
+    new = source('2026-11-16', view(period(1)), sha='b', object_scope='', scope_evidence=evidence)
+    item = only(compose([old, new], CUT))
+    assert item['detail_history_state'] == 'unknown' and item['completed_amount'] is None
+    assert len(item['history_sources']) == 2
+    other = source('2026-11-17', view(period(1)), sha='c', object_scope='',
+                   scope_evidence={'object_scope': [{'raw': 'Корпус 1'}, {'raw': 'Корпус 3'}]})
+    assert len(compose([old, new, other], CUT)['items']) == 2
+
+
+def test_indistinguishable_incomplete_rows_are_not_merged_by_their_names():
+    first, second = view(period(1), unit=''), view(period(1), unit='')
+    second['source']['row'] = 10
+    old = source('2026-11-06', first, second)
+    again = source('2026-11-17', first, second)
+    result = compose([old, again], CUT)
+    assert len(result['items']) == 2
+    assert all(len(item['history_sources']) == 2 for item in result['items'])
+    assert all(item['detail_history_state'] == 'unknown' for item in result['items'])
+    changed_file = source('2026-11-18', first, second, sha='b')
+    assert len(compose([old, again, changed_file], CUT)['items']) == 4
+
+
+def test_incomplete_rows_in_different_buildings_or_with_different_unnumbered_volumes_stay_separate():
+    old = source('2026-11-06', view(period(1), position='', unit=''))
+    other_building = source('2026-11-16', view(period(1), position='', unit=''), object_scope='Корпус 2')
+    other_volume = source('2026-11-17', view(period(1), position='', unit='', plan_quantity=20))
+    assert len(compose([old, other_building, other_volume], CUT)['items']) == 3
+
+
 def test_changed_plan_is_kept_for_reconciliation_without_adding_or_choosing_it():
     item = only(compose([source('2026-04-01', view(period(1))),
                          source('2026-05-01', view(period(2), planned_amount=1200), sha='b')], CUT))

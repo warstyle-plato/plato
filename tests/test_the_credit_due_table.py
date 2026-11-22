@@ -98,10 +98,12 @@ def test_own_money_carries_the_escrow_over():
     assert [row["own"]["pace"] for row in rows] == [0.0, 20.0, 10.0]
 
 
-def _with_the_increase(built):
+def _with_the_increase(built, reconciliation=None):
     funding = dict(built["funding"], limit={
         "known": True, "approved": 9000 * M, "need_basis": "model",
         "deficit_ladder": {"total": 2400 * M}})
+    if reconciliation is not None:
+        funding['limit']['reconciliation'] = reconciliation
     linked = (report.sales_link(PROJECT) or {}).get("sales_project") or ""
     plan = report._credit_on_plan(PROJECT, linked, None, report._date(built["end"]),
                                   {"schedule": {"approved_finish": "2027-09-30"}},
@@ -135,7 +137,8 @@ def test_the_limit_increase_is_on_the_first_loan_schedule(monkeypatch):
         f"{report._rub(own['fm'])} по плану ФМ, пик — {report._day(due['peak'])}; это с "
         f"учётом увеличения лимита на 2,40 млрд ₽ ({report._rub(own['pace_base'])} без него).")
     page = report._credit_due_html(due)
-    assert "<td>Без увеличения лимита</td>" in page
+    assert 'data-financing="base"' in page and 'data-financing="extra"' in page
+    assert page.count("<table class='credit-due'>") == 2
     assert "условия приняты как у НКЛ 2025" in page
 
 
@@ -357,3 +360,94 @@ def test_sales_after_commissioning_pay_the_loans_too(monkeypatch):
             "в месяц, пока не распродан остаток 500,0 млн ₽; по плану финмодели — по её "
             "графику, 900,0 млн ₽ к 30.09.2029.") in page
     assert "остаток эскроу и продажи после ввода" in " ".join(report.credit_lines(due))
+
+
+def test_both_financing_variants_show_every_date_and_their_own_cumulative_gap(monkeypatch):
+    import copy
+    import re
+    due = _with_the_increase(_built(monkeypatch))
+    before = copy.deepcopy(due)
+    page = report._credit_due_html(due)
+    for name, suffix in [('base', '_base'), ('extra', '')]:
+        section = page.split('data-financing="'+name+'"', 1)[1].split('</section>', 1)[0]
+        table = section.split("<table class='credit-due'>",1)[1].split('</table>',1)[0]
+        lines = [line for line in re.findall(r'<tr>(.*?)</tr>', table) if line.startswith('<td>')]
+        assert len(lines) == len(due['rows'])
+        running = {'pace': 0., 'fm': 0.}
+        for row, line in zip(due['rows'], lines):
+            assert report._day(row['date']) in line
+            cells = re.findall(r'<td[^>]*>(.*?)</td>', line)
+            for key, offset in [('pace', 2), ('fm', 6)]:
+                gap = row['own'][key+suffix]
+                running[key] += gap
+                assert cells[offset+2] == (report._nb(gap) if gap > .5 else 'хватает')
+                assert cells[offset+3] == (report._nb(running[key]) if running[key] > .5 else '—')
+            assert running['pace'] <= due['own_total']['pace'+suffix]+.01
+        assert running['pace'] == pytest.approx(due['own_total']['pace'+suffix])
+        assert running['fm'] == pytest.approx(due['own_total']['fm'+suffix])
+    assert due == before
+
+
+def test_current_funding_reconciliation_supplies_the_extra_amount(monkeypatch):
+    built = _built(monkeypatch)
+    due = _with_the_increase(built, {'calculated_additional': 1700*M, 'confirmed_additional': None,
+                                   'budget': 9000*M, 'primary_source_gate': 'BLOCKED'})
+    assert due['extra'] == 1700*M  # not the obsolete 2400M ladder
+    assert due['extra_known'] and 'допущение' in due['extra_note']
+    assert due['rows'][0]['principal_extra'] == pytest.approx(.61*1700*M)
+    assert due['own_total']['pace_base'] == pytest.approx(built['credit_due']['own_total']['pace'])
+    assert '1,70 млрд' in report._credit_due_html(due)
+
+
+@pytest.mark.parametrize('amount', [None, True, float('nan'), -1])
+def test_unknown_extra_never_falls_back_to_an_old_amount_or_claims_zero_need(monkeypatch, amount):
+    due = _with_the_increase(_built(monkeypatch), {'budget':9000*M, 'calculated_additional':amount})
+    assert not due['extra_known']
+    section = report._credit_due_html(due).split('data-financing="extra"',1)[1].split('</section>',1)[0]
+    assert 'Не рассчитано' in section and 'хватает' not in section
+    assert '<table' not in section
+
+
+@pytest.mark.parametrize('bridge',[{}, [], 'invalid'])
+def test_present_but_invalid_reconciliation_never_revives_the_old_ladder(monkeypatch, bridge):
+    due = _with_the_increase(_built(monkeypatch), bridge)
+    assert not due['extra_known'] and due['extra'] == 0
+    section = report._credit_due_html(due).split('data-financing="extra"',1)[1].split('</section>',1)[0]
+    assert 'Не рассчитано' in section
+
+
+def test_known_zero_extra_keeps_both_explicit_variants(monkeypatch):
+    due = _with_the_increase(_built(monkeypatch), {'budget':9000*M, 'calculated_additional':0.})
+    assert due['extra_known'] and due['extra'] == 0
+    page = report._credit_due_html(due)
+    assert page.count("<table class='credit-due'>") == 2
+    assert 'Не рассчитано' not in page
+
+
+@pytest.mark.parametrize('width', [390,1440])
+def test_financing_comparison_is_visible_in_html_and_a4_pdf(monkeypatch, tmp_path, width):
+    import io
+    from playwright.sync_api import sync_playwright, expect
+    from pypdf import PdfReader
+    from browser import chromium_or_skip
+    built = _built(monkeypatch)
+    due = _with_the_increase(built, {'budget':9000*M, 'calculated_additional':1700*M})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chromium_or_skip()))
+        page = browser.new_page(viewport={'width':width,'height':960})
+        page.set_content('<meta charset="utf-8"><style>'+report.REPORT_STYLE+'</style>'+report._credit_due_html(due))
+        for name in ['base','extra']:
+            host = page.locator('[data-financing="'+name+'"]')
+            expect(host.locator('h3')).to_be_visible()
+            expect(host.locator('.credit-due')).to_be_visible()
+            assert host.locator('.credit-due tr').count() == len(due['rows'])+3
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.screenshot(path=str(tmp_path/f'credit-variants-{width}.png'),full_page=True)
+        raw = page.pdf(format='A4',print_background=True)
+        (tmp_path/f'credit-variants-{width}.pdf').write_bytes(raw)
+        text = ' '.join(' '.join((p.extract_text() or '').split()) for p in PdfReader(io.BytesIO(raw)).pages)
+        assert 'Без допфинансирования' in text and 'С допфинансированием' in text
+        assert '1,70 млрд' in text
+        for key in ['pace','fm','pace_base','fm_base']:
+            assert report._rub(due['own_total'][key]) in text
+        browser.close()

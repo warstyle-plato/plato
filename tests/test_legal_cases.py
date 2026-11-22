@@ -205,6 +205,31 @@ def test_the_report_names_sums_growth_and_the_nearest_deadline():
     assert "Неустойка за остановку работ" not in page and "Направили претензию" not in page
 
 
+@pytest.mark.parametrize("contract_state", ["missing", "alerts", "performance"])
+def test_contract_details_are_excluded_from_the_summary(contract_state):
+    from test_contract_performance_report import record
+
+    legal.save(PROJECT, CARD, [], "Иванова", at="2026-10-01T09:00:00+00:00")
+    got = report.build(PROJECT, "week", "2026-10-04")
+    row = record(contractor="Подрядчик без юридического спора", contract="КС-999",
+                 risk={"status": "overdue", "label": "Срок договора прошёл"})
+    # Also cover previously assembled reports without performance_rows.
+    block = {"state": "ok", "rows": [row], "summary": {"counts": {"overdue": 1}}}
+    if contract_state == "performance":
+        block.update(performance_rows=[row], performance_summary={"primary_known": 1})
+    elif contract_state == "missing":
+        block = {"state": "missing", "reason": "Нет накопительных для договоров."}
+    got["contract_risks"] = block
+
+    for rendered in (report.render_html(got), report.render_text(got)):
+        assert CARD["counterparty"] in rendered
+        assert CARD["subject"] in rendered
+        assert "Наши требования 8,0 млн ₽" in rendered
+        for unrelated in (row["contractor"], row["contract"], "Договоры: выполнение и сроки",
+                          "Договоры под угрозой срыва срока", "Нет накопительных для договоров."):
+            assert unrelated not in rendered
+
+
 def test_upload_reads_in_the_background_through_the_model_route(monkeypatch):
     import main_legacy as core
 

@@ -66,7 +66,7 @@ def storage(tmp_path, monkeypatch):
 def test_real_source_states_and_values(scenario):
     cut = sources(scenario)
     built = report.build(PROJECT, "week", cut)
-    executive = built["construction_summary"]
+    executive = report._executive_schedule(built)
     expected = {"noarchive": "no_archive", "unmapped": "unmapped", "unknownpace": "pace_unknown",
                 "historical": "historical", "partialRNV": "pace_unknown", "versionspresent": "pace_unknown"}[scenario]
     assert executive["source_status"]["state"] == expected
@@ -80,7 +80,11 @@ def test_real_source_states_and_values(scenario):
     else:
         assert not executive["facts"]
     if scenario == "partialRNV":
+        # Retained legacy WBS keeps its qualified partial work estimate.
+        # That date does not become a confirmed RNV milestone.
+        assert built['gantt']['work_forecast_applicable'] is False
         assert executive["state"] == "partial" and executive["forecast"] == "2026-12-31"
+        assert 'rnv_state' not in executive and 'rnv_forecast' not in executive
         assert built["schedule"]["qualification"]["forecast"] is None
         assert executive["forecast_label"] == "Оценка по части работ"
     elif scenario in {"unknownpace", "versionspresent"}:
@@ -105,17 +109,26 @@ def stalled_sources(partial):
 def test_stalled_gpr_work_and_its_cause_remain_in_the_executive_conclusion(partial):
     stalled_sources(partial)
     built = report.build(PROJECT, "week", CUT)
-    assert built["construction_summary"]["state"] == ("partial" if partial else "unknown")
-    risk = built["construction_summary"]["stalled_text"]
+    executive = report._executive_schedule(built)
+    # Source qualification retains a partial work date without a confirmed RNV.
+    assert built["construction_summary"]["forecast"] == ("2026-12-31" if partial else None)
+    assert built['gantt']['work_forecast_applicable'] is False
+    assert executive["state"] == ("partial" if partial else "unknown")
+    assert executive["forecast"] == ("2026-12-31" if partial else None)
+    # The source-qualified partial work date preserves the stalled work risk;
+    # the independent RNV milestone remains unconfirmed.
+    assert 'rnv_state' not in executive and 'rnv_forecast' not in executive
+    risk = executive["stalled_text"]
     assert "Демонтаж башенных кранов К-1,2" in risk
     assert built["schedule"]["stalled"][0]["reason"] in risk
     assert "процент в ГПР" in risk and "актов" not in risk
     conclusion = next(item["text"] for item in built["findings"] if item["topic"] == "Срок")
     assert risk in conclusion
     if partial:
-        assert "Фасад" in conclusion  # the known driver does not erase the other risk
+        # The source still identifies the work behind its partial date.
+        assert "Фасад" in executive["driver"]
     from developaid_report_schedule import render
-    assert risk in render(built["construction_summary"])
+    assert risk in render(executive)
     assert built["schedule"]["qualification"]["forecast"] is None
 
 
@@ -139,27 +152,32 @@ def test_stalled_gpr_risk_is_visible_before_details_in_html_and_pdf(monkeypatch)
             tab.select_option("#project", PROJECT)
             tab.fill("#cut", CUT)
             tab.click("#reportBtn")
-            summary = tab.locator("#reportBox .executive-schedule")
+            summary = tab.locator("#reportBox .report-gpr-compact")
             summary.wait_for(state="visible")
-            for width in (390, 1440):
-                tab.set_viewport_size({"width": width, "height": 1000})
-                risk = summary.locator(".executive-stalled")
-                assert risk.is_visible()
+            for width in (390,1440):
+                tab.set_viewport_size(dict(width=width,height=1000))
+                assert summary.locator('[data-gpr-block]').count()==3
+                assert summary.locator('details,.executive-stalled').count()==0
+                risk = summary.locator('[data-gpr-block=forecast] .rg-stalled')
+                assert risk.count() == 1 and risk.is_visible()
                 text = risk.inner_text()
-                assert "Демонтаж башенных кранов К-1,2" in text and "процент в ГПР" in text
-                assert "актов" not in text
-                assert risk.evaluate("e=>e.scrollWidth<=e.clientWidth+1")
-                detail = tab.locator("#reportBox details.report-source-screen").filter(
-                    has_text="Источники и ограничения оценки")
-                assert not detail.get_attribute("open")
+                assert 'По всему текущему ГПР' in text
+                assert 'Демонтаж башенных кранов К-1,2' in text and 'процент в ГПР' in text
+                assert 'актов' not in text
+                assert risk.evaluate('e=>e.scrollWidth<=e.clientWidth+1')
+                assert summary.evaluate('e=>e.scrollWidth<=e.clientWidth+1')
             with tab.expect_download(timeout=90_000) as download:
                 tab.click("#reportPdfBtn")
             raw = Path(download.value.path()).read_bytes()
             text = " ".join(" ".join((page.extract_text() or "").split())
                             for page in PdfReader(io.BytesIO(raw)).pages)
-            main = text.split("Приложение. Источники и ограничения оценки", 1)[0]
-            assert "Демонтаж башенных кранов К-1,2" in main and "процент в ГПР" in main
-            assert "2044" not in main and not errors, errors
+            assert 'Приложение. Источники и ограничения оценки'not in text
+            assert 'Прогноз учтённых работ'in text and 'Гант по корпусам'in text
+            assert 'По всему текущему ГПР' in text
+            assert text.count('Демонтаж башенных кранов К-1,2') == 1 and 'процент в ГПР' in text
+            assert '2044'not in text
+            assert not errors,errors
+
         finally:
             browser.close()
 
@@ -204,37 +222,18 @@ def test_actual_page_and_pdf(scenario, tmp_path, monkeypatch):
             tab.select_option("#project", PROJECT)
             tab.fill("#cut", cut)
             tab.click("#reportBtn")
-            summary = tab.locator("#reportBox .executive-schedule")
-            summary.wait_for(state="visible")
-            for width in (390, 1440):
-                tab.set_viewport_size({"width": width, "height": 1000})
-                summary.scroll_into_view_if_needed()
-                visible = summary.inner_text()
-                assert "План ввода" in visible
-                assert "не предоставлены" not in visible
-                assert "PM" not in visible and "цепочк" not in visible
-                assert "разными единицами" not in visible and "Сравнение версий" not in visible
-                assert "Команде:" in visible
-                if scenario in {"unknownpace", "partialRNV", "versionspresent"}:
-                    assert "4 из 10 м³" in visible and "28.02.2026" in visible
-                    assert "текущего темпа" in visible
-                if scenario == "unmapped":
-                    assert "ещё не сопоставлены" in visible
-                if scenario == "historical":
-                    assert "после даты сводки" in visible
-                if scenario == "partialRNV":
-                    assert "Оценка по части работ" in visible and "31.12.2026" in visible
-                    assert "не подтверждает дату" in visible
-                assert summary.evaluate("e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1}")
-                for node in summary.locator(".schedule-rnv-cards>div,.executive-action").all():
-                    assert node.evaluate("e=>e.scrollWidth<=e.clientWidth+1"), node.inner_text()
-                tab.screenshot(path=f"/tmp/plato1043-{scenario}-{width}.png", full_page=False)
-            detail = tab.locator("#reportBox details.report-source-screen").filter(has_text="Источники и ограничения оценки")
-            assert not detail.get_attribute("open")
-            assert not tab.locator("#reportBox .report-source-appendix").is_visible()
-            assert "PM" not in tab.locator("#reportBox").inner_text()
-            detail.locator("summary").click()
-            assert "Сравнение версий ГПР пока не рассчитано." in detail.inner_text()
+            summary=tab.locator('#reportBox .report-gpr-compact')
+            summary.wait_for(state='visible')
+            for width in (390,1440):
+                tab.set_viewport_size(dict(width=width,height=1000))
+                assert summary.locator('[data-gpr-block]').count()==3
+                dates=summary.locator('[data-gpr-block]').evaluate_all('es=>es.map(e=>e.dataset.projectForecast)')
+                assert dates==[dates[0]]*3
+                assert summary.locator('details,.executive-schedule,.cg-work').count()==0
+                assert summary.evaluate('e=>e.scrollWidth<=e.clientWidth+1')
+                assert tab.locator('#reportBox .report-source-appendix').count()==0
+                assert 'PM'not in summary.inner_text()
+                tab.screenshot(path=f'/tmp/plato1043-{scenario}-{width}.png',full_page=False)
             with tab.expect_download(timeout=90_000) as download:
                 tab.click("#reportPdfBtn")
             raw = Path(download.value.path()).read_bytes()
@@ -242,19 +241,10 @@ def test_actual_page_and_pdf(scenario, tmp_path, monkeypatch):
             pages = PdfReader(io.BytesIO(raw)).pages
             texts = [" ".join((p.extract_text() or "").split()) for p in pages]
             text = " ".join(texts)
-            assert "Сроки и выполнение работ" in text
-            assert "Приложение. Источники и ограничения оценки" in text
-            assert "Сравнение версий ГПР пока не рассчитано." in text
-            assert "не предоставлены" not in text
-            assert "PM" not in text
-            assert text.index("Сроки и выполнение работ") < text.index("Приложение. Источники")
-            if scenario in {"unknownpace", "partialRNV", "versionspresent"}:
-                assert "4 из 10 м³" in text
-            if scenario == "partialRNV":
-                assert "Оценка по части работ" in text and "31.12.2026" in text
-                chart_page = next(page for page in texts if "План и прогноз по корпусам" in page)
-                chart_start = chart_page.split("План и прогноз по корпусам", 1)[1]
-                assert "Работа / объект" in chart_start and "Корпус 1" in chart_start
+            assert 'Прогноз учтённых работ'in text and 'Матрица готовности'in text and 'Гант по корпусам'in text
+            assert 'Приложение. Источники и ограничения оценки'not in text
+            assert 'Сравнение версий ГПР пока не рассчитано.'not in text
+            assert '4 из 10 м³'not in text and 'PM'not in text
             assert not errors, errors
         finally:
             browser.close()
@@ -290,11 +280,19 @@ def test_confirmed_zero_is_known_natural_fact_even_without_pace():
                                  "components": [{"component_id": "Стены", "task_id": "1", "item_ids": ["0:0"]}],
                                  "note": "Подтверждён учебный нулевой объём за закрытые периоды."})
     built = report.build(PROJECT, "week", CUT)
-    executive = built["construction_summary"]
+    executive = report._executive_schedule(built)
     assert executive["facts"][0]["done"] == 0
     assert executive["source_status"]["state"] == "pace_unknown"
     assert executive["forecast"] is None
-    assert "0 из 10 м³" in report.render_html(built)
+    # Confirmed zero is still a measured fact in the complete native consumer;
+    # the compact document links to those details rather than printing them.
+    from developaid_report_schedule import fact_text
+    from developaid_schedule_timeline import render as monitor_timeline
+    assert "0 из 10 м³" in fact_text(executive["facts"][0])
+    assert "0 / 10 м³" in monitor_timeline(built['gantt']['dependency_timeline'])
+    markup = report.render_html(built)
+    assert markup.count('data-gpr-block=') == 3
+    assert "0 из 10 м³" not in markup and 'Подробные работы и источники — в Мониторе' in markup
 
 
 @pytest.mark.parametrize("revoked", [False, True])
