@@ -291,7 +291,7 @@ def test_cancelled_url_download_cannot_create_a_card(document_chat,monkeypatch):
     assert all(markup is None for _,markup in document_chat)
 
 
-@pytest.mark.parametrize('source_kind',['url','pdf'])
+@pytest.mark.parametrize('source_kind',['url','pdf','pdf_caption','photo_caption'])
 @pytest.mark.parametrize('active_conversation',[False,True])
 def test_new_source_entrypoint_claims_and_acknowledges_before_io(
         document_chat,monkeypatch,source_kind,active_conversation):
@@ -323,12 +323,43 @@ def test_new_source_entrypoint_claims_and_acknowledges_before_io(
     message={'chat':{'id':chat,'type':'private'},'from':{'id':chat}}
     if source_kind=='url':
         message['text']='https://example.invalid/synthetic'
+    elif source_kind=='photo_caption':
+        message['photo']=[{'file_id':'synthetic','width':100,'height':100}]
+        message['caption']='посмотри тизер'
     else:
         message['document']={'file_id':'synthetic','file_name':'source.pdf'}
+        if source_kind=='pdf_caption':
+            message['caption']='посмотри тизер'
     main._handle_update({'message':message})
     state=core._telegram_dialog_get(chat)
     assert loaded==[True]
     assert state['document_read']['status']=='ready' and state['intake']['id']
+
+
+@pytest.mark.parametrize('source_kind',['url','pdf_caption','photo_caption'])
+def test_unauthorized_new_source_entrypoint_stops_before_operation_or_io(
+        document_chat,monkeypatch,source_kind):
+    import document_source
+    chat=900000003
+    monkeypatch.setattr(core,'usage_track',lambda *a,**k:None)
+    monkeypatch.setattr(main,'_user_to_core',lambda *a,**k:None)
+    monkeypatch.setattr(main,'_dialog_active',lambda *_:True)
+    monkeypatch.setattr(core,'_telegram_user_allowed',lambda *_:False)
+    denied=[]
+    monkeypatch.setattr(core,'_telegram_start_message',lambda *a:denied.append(True))
+    monkeypatch.setattr(core,'_telegram_document_begin',lambda *a:pytest.fail('Unauthorized source claimed operation'))
+    monkeypatch.setattr(core,'_telegram_file_bytes',lambda *a:pytest.fail('Unauthorized file downloaded'))
+    monkeypatch.setattr(document_source,'read_url',lambda *a,**k:pytest.fail('Unauthorized URL downloaded'))
+    monkeypatch.setattr(main,'_run_agent',lambda *a:pytest.fail('Unauthorized source reached conversation'))
+    message={'chat':{'id':chat,'type':'private'},'from':{'id':chat},'caption':'посмотри тизер'}
+    if source_kind=='url':
+        message['text']='https://example.invalid/synthetic'
+    elif source_kind=='pdf_caption':
+        message['document']={'file_id':'synthetic','file_name':'source.pdf'}
+    else:
+        message['photo']=[{'file_id':'synthetic','width':100,'height':100}]
+    main._handle_update({'message':message})
+    assert denied==[True] and not document_chat
 
 
 @pytest.mark.parametrize('outcome',['cancelled','expired'])

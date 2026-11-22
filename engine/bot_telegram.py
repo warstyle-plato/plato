@@ -2067,8 +2067,11 @@ def _telegram_intake_region(numbers: list[str]) -> str:
     route = cadastral_route(numbers, None)
     if route in ("other", "mixed"):
         return route
+    import document_processing
     try:
         analysis = analyze_cadastral_territory(CadastralAnalysisRequest(cadastral_numbers=numbers))
+    except (document_processing.Cancelled,document_processing.Expired):
+        raise
     except Exception:  # noqa: BLE001
         analysis = None
     route = cadastral_route(numbers, analysis)
