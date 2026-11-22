@@ -109,6 +109,8 @@ def test_import_edit_reload_export_and_resume_without_inference(tmp_path,monkeyp
             assert saved['inputs']['_partial_tep']['origins']['tep.apartments.saleable']['pages']==[2]
             page.once('dialog',lambda d:d.accept())
             page.locator('#settingsFileInput').set_input_files(str(export))
+            # File reads are asynchronous; the existing values can precede reimport.
+            expect(page.locator('#projectsDialog')).not_to_be_visible()
             assert page.evaluate('tep.apartments.units')==10
             assert page.evaluate('tep.underground_parking.gns') is None
             # Explicitly complete every missing source field as the user would.
