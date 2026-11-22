@@ -126,6 +126,18 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .warning{border-left-color:#9a6700;background:#fff8e6;color:#704800}
 .finance-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
 .metric-table td:first-child{color:#555}.metric-table td:last-child{font-weight:650}
+@media(max-width:640px){
+ #moVriBenefitBreakdown{max-height:none;overflow:visible}
+ #moVriBenefitBreakdown table,#moVriBenefitBreakdown tbody,#moVriBenefitBreakdown tfoot,#moVriBenefitBreakdown tr{display:block;width:100%}
+ #moVriBenefitBreakdown thead{display:none}
+ #moVriBenefitBreakdown td,#moVriBenefitBreakdown tfoot th{display:block;width:auto;max-width:100%;text-align:left;white-space:normal;overflow-wrap:anywhere}
+ #moVriBenefitBreakdown tbody tr{border-top:1px solid #ddd;margin-bottom:14px}
+ #moVriBenefitBreakdown tbody td{border-bottom:0}
+ #moVriBenefitBreakdown tbody td::before{display:block;font-size:11px;color:#777;margin-bottom:5px;font-weight:400}
+ #moVriBenefitBreakdown tbody td:nth-child(1)::before{content:'Основание'}
+ #moVriBenefitBreakdown tbody td:nth-child(2)::before{content:'Расчёт и источник'}
+ #moVriBenefitBreakdown tbody td:nth-child(3)::before{content:'Оценка уменьшения'}
+}
 .llcr-hero{display:flex;align-items:end;gap:24px;border-top:8px solid #000;padding-top:18px}
 .llcr-value{font-size:58px;line-height:.95;font-weight:570;letter-spacing:-.04em}.llcr-label{font-size:12px;color:#777;max-width:330px;line-height:1.5}
 .compare{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:15px}.compare div{padding:12px;background:#f7f7f5}
