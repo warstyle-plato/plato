@@ -153,7 +153,7 @@ LAYOUT = r"""() => {
     pfGridHidden: document.getElementById('pfTable').closest('[data-needs]').hidden,
     reportBankHidden: document.getElementById('reportFinanceTable').closest('[data-needs]').hidden,
     objectLoanCards: [...document.querySelectorAll('[data-nonres-finance-card]')]
-      .map(c => ({hidden: c.hidden, tables: [...c.querySelectorAll('table.nonres-finance')].map(t => t.dataset.object)})),
+      .map(c => ({hidden: c.hidden, inReport: !!c.closest('#report'), tables: [...c.querySelectorAll('table.nonres-finance')].map(t => t.dataset.object)})),
   };
 }"""
 
@@ -209,7 +209,10 @@ def test_a_nonresidential_rent_project_reads_as_its_own_report(nonresidential_wa
     # Раздел «Финансирование» отчёта: БРИДЖ/ПФ/LLCR скрыты, кредит объекта — на месте
     # (и в отчёте, и на вкладке «Финансирование»).
     assert state["reportBankHidden"] is True
-    # Отчёт, вкладка «Финансирование» и раздел «Финансирование» объектной
-    # вёрстки (`object_report`) — таблица движка во всех трёх ящиках.
-    assert state["objectLoanCards"] == [{"hidden": False, "tables": ["offices"]}] * 3
+    # One native card in the finance tab and one moved into the report:
+    # moving the shared component must preserve the table without a duplicate.
+    assert sorted(state["objectLoanCards"], key=lambda c: c["inReport"]) == [
+        {"hidden": False, "inReport": False, "tables": ["offices"]},
+        {"hidden": False, "inReport": True, "tables": ["offices"]},
+    ]
     assert nonresidential_walk["errors"] == []
