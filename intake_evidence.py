@@ -53,10 +53,12 @@ def _area_basis(quote: str, number: re.Match, unit_end: int, whole_house_marks) 
     if previous and not re.search(r"[;|]",before) and re.match(r"\s*[—–:=\-(]",prefix):
         prefix = ""
     after = quote[unit_end:following]
-    postfix = re.split(r"[;|]",after)[0]
-    if (not re.match(r"\s*[—–:=\-(]",postfix)
-            or (following < len(quote) and not re.search(r"[;|]",after))):
-        postfix = ""
+    # With no following quantity, every remaining label can qualify this
+    # amount, regardless of punctuation. With a following quantity, keep only
+    # an explicitly separated preceding clause, never the next amount's label.
+    postfix = after if following == len(quote) else (
+        re.split(r"[;|]",after)[0] if re.search(r"[;|]",after) else "")
+    explicit_postfix = bool(re.match(r"\s*[—–:=\-(]",postfix))
 
     def label_basis(label):
         text = _flat(label)
@@ -79,10 +81,17 @@ def _area_basis(quote: str, number: re.Match, unit_end: int, whole_house_marks) 
             return "apartments_gns"
         return "unscoped_project_area" if gross else ""
 
-    bases = {basis for label in (prefix,postfix) if (basis := label_basis(label))}
+    prefix_basis, postfix_basis = label_basis(prefix), label_basis(postfix)
+    bases = {basis for basis in (prefix_basis,postfix_basis) if basis}
     if len(bases) > 1:
         return "ambiguous_area_basis"
-    return next(iter(bases),"unscoped_project_area")
+    if prefix_basis:
+        return prefix_basis
+    # Inspecting an unmarked suffix for contradictions must not newly admit
+    # an area whose only positive scope appears in an uncertain trailing phrase.
+    if explicit_postfix or postfix_basis == "saleable_area":
+        return postfix_basis or "unscoped_project_area"
+    return "unscoped_project_area"
 
 
 def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, Any]:
