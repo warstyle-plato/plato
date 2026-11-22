@@ -26,9 +26,10 @@ def test_contract_answers_are_visible_and_calculation_details_are_optional(width
         row['reconciliation']['issues'] = ['Проверочное замечание к исходному сообщению.']
         page.locator('#contractsTab').click()
         first = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(first.locator('.term')).to_contain_text('15.12.2026')
+        expect(first.locator('.term')).to_have_text('30.11.2026')
+        expect(first.locator('.contract-schedule')).to_have_text('Проверить документы')
         visible = first.inner_text()
-        assert '25%' in visible and 'задержка 15 дн.' in visible
+        assert '25%' in visible and 'задержка 15 дн.' not in visible
         for private in ('technical-source.xlsx', 'Темп работ', 'Проверочное основание', '01.09.2026'):
             assert private not in visible
         assert 'Что входит в реестр' not in page.locator('#contractsPanel').inner_text()
@@ -65,7 +66,8 @@ def test_missing_forecast_inputs_have_short_specific_explanations():
                        'reason': 'Длинное техническое пояснение. ' * 20}
         page.locator('#contractsTab').click()
         first = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        assert first.locator('.term .contract-risk').get_attribute('title') == 'Для прогноза нужна полная сумма договора.'
+        expect(first.locator('.term')).to_have_text('Указать срок договора')
+        expect(first.locator('.contract-attention')).to_contain_text('Уточнить сумму')
         more = opened(page, CONTRACT)
         expect(more.locator('.contract-money-forecast')).to_contain_text('Для прогноза нужна полная сумма договора.')
         for shown in (first, more):
@@ -92,24 +94,42 @@ def test_forecast_short_reason_distinguishes_missing_price_from_zero_pace(amount
 
 
 @pytest.mark.parametrize('width', [390, 1440])
-def test_contract_tab_hides_unrelated_navigation_and_monitor_restores_it(width):
+def test_contract_tab_keeps_one_shared_navigation_and_active_monitor_view(width):
+    import copy
+
     with browser_page(width) as (page, responses, errors):
-        navigation = page.locator('nav.contour')
-        navigation_menu = page.locator('.monitor-app-nav')
-        expect(navigation_menu).to_be_visible()
-        expect(navigation).to_be_hidden()
-        navigation_menu.locator('summary').click()
+        original_sources = copy.deepcopy(responses.data)
+        navigation = page.get_by_role('navigation', name='Управленческий контур', exact=True)
+        tabs = page.get_by_role('tablist', name='Виды Монитора', exact=True)
+        expect(page.get_by_role('navigation')).to_have_count(1)
         expect(navigation).to_be_visible()
+        expect(navigation.locator('a')).to_have_count(7)
+        expect(navigation.get_by_role('link')).to_have_count(6)
+        assert set(navigation.get_by_role('link').evaluate_all('(links)=>links.map(a=>a.getAttribute("href"))')) == {
+            '/report', '/cabinet/sales', '/cabinet/market', '/auctions', '/', '/statistics'}
+        current = navigation.locator('[aria-current="page"]')
+        expect(current).to_have_count(1)
+        expect(current).to_contain_text('Монитор проекта')
+        assert current.get_attribute('href') is None
+        expect(navigation.get_by_role('tab')).to_have_count(0)
+        expect(tabs).to_be_visible()
+        expect(tabs.get_by_role('tab')).to_have_count(4)
+        assert page.locator('.monitor-app-nav').count() == 0
+        assert page.locator('nav.contour,.monitor-tabs').count() == 2
         page.locator('#contractsTab').click()
         expect(page.locator('tr[data-contract-id]')).to_have_count(2)
-        expect(navigation_menu).to_be_hidden()
-        expect(navigation).to_be_hidden()
-        assert 'Коммерции' not in page.locator('body').inner_text()
-        page.screenshot(path=f'/tmp/contracts-focused-{width}.png', full_page=True)
-        page.locator('#monitorTab').click()
-        expect(navigation_menu).to_be_visible()
         expect(navigation).to_be_visible()
+        expect(tabs.locator('#contractsTab')).to_have_attribute('aria-selected', 'true')
+        for link in navigation.get_by_role('link').all():
+            expect(link).to_be_visible()
         expect(navigation).to_contain_text('Коммерции')
-        navigation_menu.locator('summary').click()
-        expect(navigation).to_be_hidden()
+        page.screenshot(path=f'/tmp/contracts-focused-{width}.png', full_page=True)
+        page.locator('#moneyTab').click()
+        expect(page.locator('#moneyPanel')).to_be_visible()
+        expect(tabs.locator('#moneyTab')).to_have_attribute('aria-selected', 'true')
+        page.locator('#monitorTab').click()
+        expect(navigation).to_be_visible()
+        expect(tabs.locator('#monitorTab')).to_have_attribute('aria-selected', 'true')
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        assert responses.data == original_sources
         assert not errors

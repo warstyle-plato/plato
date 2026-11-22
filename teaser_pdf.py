@@ -786,6 +786,10 @@ def _page_one(model: dict[str, Any], map_png: bytes | None, width: float, st: _S
         f"{model.get('project_name') or 'Проект'} · расчёт {origin.get('calculation_id') or '—'} · "
         f"движок DevelopAid {origin.get('engine_version') or '—'} · {origin.get('generated_at') or ''}", st.sub))
     story.append(Spacer(1, 2 * mm))
+    qualification = model.get('calculation_qualification') or {}
+    if qualification.get('reason'):
+        story.append(Paragraph(_esc(qualification['reason']), st.note))
+        story.append(Spacer(1, 2 * mm))
     story += decision_tiles_block(model.get("decision_tiles"), width, st)
     story += strategy_line_block(model.get("strategy_line"), st)
     story += office_class_line_block(model.get("office_class_line"), st)
@@ -1006,7 +1010,10 @@ def _page_two_object(model: dict[str, Any], story: list[Any], width: float, col_
                      gutter: float, st: _Styles, fm: _Formats) -> list[Any]:
     objects = {str(sec.get("key")): sec for sec in model.get("object_sections") or []}
     columns_data = []
-    for keys in OBJECT_PAGE_TWO_COLUMNS:
+    # Office order follows the full report; hotel keeps its established frame.
+    columns_order = (("income", "strategy", "costs"), ("finance", "owner", "comparison"),
+                     ("sensitivity", "calendar", "assumptions")) if "assumptions" in objects else OBJECT_PAGE_TWO_COLUMNS
+    for keys in columns_order:
         column: list[Any] = []
         for key in keys:
             if key in objects:

@@ -54,6 +54,9 @@ def _app(tmp_path: Path, monkeypatch, *, links: dict) -> FastAPI:
     # без заглушки один запрос стоил бы полутора минут прогона.
     monkeypatch.setattr(KrtRegistry, "tender_orders",
                         lambda self, **kw: {"orders": [], "note": ""})
+    monkeypatch.setattr(KrtRegistry, "decisions",
+                        lambda self, **kw: {"decisions": [], "complete": True})
+    monkeypatch.setattr(KrtRegistry, "catalogue", lambda self, **kw: [])
     monkeypatch.setattr(KrtRegistry, "projects",
                         lambda self, **kw: {"projects": [], "complete": True})
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
@@ -103,12 +106,94 @@ def test_both_numbers_stand_next_to_each_other(tmp_path, monkeypatch):
     prelude = (page_blocks.page_const("state", PAGE)
                + "\nstate.krt=[];"
                + "const box={style:{},innerHTML:''};"
-               + "function $(id){return id==='krtDecisions'?box:null}"
+               + "function $(id){return id==='krtTenderNote'?box:null}"
                + "function esc(s){return String(s==null?'':s)}"
-               + "function krtCityDay(t){return 'дата'}")
+               + "const KRT_FILTERS=[];function krtCityDay(t){return 'дата'}")
     tail = ("renderKrtTenderNote({orders:[],orders_by_site:{},krt_lots:7,"
             "known_links:11,orders_recent_12m:0,orders_with_address:0});"
             "console.log(JSON.stringify({html:box.innerHTML}));")
     html = page_blocks.run_json(prelude, tail, page=PAGE)["html"]
     assert "7" in html and "11" in html
     assert "наш" in html, "меньшее число — наш сбор, и это сказано"
+
+
+def test_tender_summary_replaces_itself_and_tracks_selection():
+    from playwright.sync_api import sync_playwright
+    from browser_launch import launch
+
+    prelude = """
+const state={krt:Array.from({length:14},(_,i)=>({live:true,eligible:i<10})),
+ krtTenders:{a:[]},krtPick:{stage:new Set(),other:new Set(['yes'])}};
+const KRT_FILTERS=[{key:'stage',options:[{value:'tender',test:x=>x.live}]},
+ {key:'other',options:[{value:'yes',test:x=>x.eligible}]}];
+function $(id){return document.getElementById(id)}
+function krtLiveLot(x){return x.live}
+function krtTenderAnnounced(x){return false}
+function esc(s){return String(s||'')}
+function krtCityDay(){return ''}
+const data={orders:[],known_links:14};
+"""
+    with sync_playwright() as p:
+        browser = launch(p, args=["--no-sandbox"])
+        page = browser.new_page()
+        page.set_content('<div id="krtDecisions">Проекты решений</div><div id="krtTenderNote"></div>')
+        page.add_script_tag(content=prelude
+                            + page_blocks.function('krtFilterCount', PAGE)
+                            + page_blocks.function('renderKrtTenderNote', PAGE))
+        page.evaluate('for(let i=0;i<8;i++)renderKrtTenderNote(data)')
+        note = page.locator('#krtTenderNote')
+        assert note.is_visible()
+        assert note.inner_text().count('Торги по КРТ.') == 1
+        assert '14 площадок во всём каталоге; 10 с учётом' in note.inner_text()
+        assert page.locator('#krtDecisions').inner_text() == 'Проекты решений'
+        page.evaluate("state.krtPick.other.clear();renderKrtTenderNote(data)")
+        assert '14 площадок во всём каталоге; 14 с учётом' in note.inner_text()
+        browser.close()
+
+
+def test_reconciliation_is_visible_once_and_failure_replaces_old_result():
+    from playwright.sync_api import sync_playwright
+    from browser_launch import launch
+    from auction_search.krt_reconciliation import reconcile
+    audit = reconcile([{'url': 'https://www.roseltorg.ru/procedure/123/1',
+                        'name': 'Площадка', 'address': 'Черепановых, 29', 'slugs': ['a']}],
+                      [], {'https://www.roseltorg.ru/procedure/123/1':
+                           {'state': 'unread', 'reason': 'HTTP 429'}})
+    with sync_playwright() as p:
+        browser = launch(p, args=['--no-sandbox'])
+        page = browser.new_page()
+        page.set_content('<div id="krtReconciliation"></div>')
+        page.add_script_tag(content='const state={};function $(id){return document.getElementById(id)}'
+                            + page_blocks.constant('esc', PAGE)
+                            + page_blocks.function('renderKrtReconciliation', PAGE))
+        page.evaluate('(data)=>{state.krtReconciliation=data;for(let i=0;i<5;i++)renderKrtReconciliation()}', audit)
+        box = page.locator('#krtReconciliation')
+        assert box.is_visible()
+        assert box.locator('tbody tr').count() == 1
+        assert 'HTTP 429' in box.inner_text()
+        assert 'Черепановых, 29' in box.inner_text()
+        assert '0 из 1' in box.inner_text()
+        page.evaluate("state.krtReconciliation={error:'Сбор не выполнен'};renderKrtReconciliation()")
+        assert box.inner_text() == 'Сбор не выполнен'
+        assert box.locator('tbody tr').count() == 0
+        browser.close()
+
+
+def test_discovery_returns_named_reconciliation_and_seeds_adapter(tmp_path, monkeypatch):
+    from auction_search.adapters import RoseltorgAdapter
+    url = 'https://www.roseltorg.ru/procedure/100/1'
+    app = _app(tmp_path, monkeypatch, links={'site': {'lots': [
+        {'url': url, 'address': 'Черепановых, 29', 'deadline': '30.11.2099 15:00'}]}})
+    adapter = RoseltorgAdapter()
+    def collect(**kw):
+        assert adapter.known_krt_lots[0]['url'] == url
+        adapter.last_report = {'lot_checks': {url: {'state': 'unread', 'reason': 'HTTP 429'}}}
+        return []
+    monkeypatch.setattr(adapter, 'discover_moscow', collect)
+    monkeypatch.setattr(api, '_discovery_adapters', lambda source: [adapter])
+    response = TestClient(app, headers={'X-Market-Key': TEAM_KEY}).get('/auctions/discover')
+    assert response.status_code == 200
+    result = response.json()['krt_reconciliation']
+    assert result['expected'] == 1 and result['included'] == 0
+    assert result['rows'][0]['name'] == 'Черепановых, 29'
+    assert result['rows'][0]['reason'] == 'HTTP 429', json.dumps(response.json().get('coverage'), ensure_ascii=False)

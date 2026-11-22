@@ -98,8 +98,47 @@ def test_every_internal_surface_carries_the_contour() -> None:
             skipped.append(f"{path} → {answer.status_code}")
             continue
         seen.append(path)
-        assert "Управленческий контур" in answer.text, f"{path} без входа в контур"
-        assert ".contour{" in answer.text, f"{path} без стиля контура"
+        if path in {"/monitor", "/report"}:
+            from html.parser import HTMLParser
+
+            class Navigation(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self.global_navs = self.local_navs = 0
+                    self.views, self.nested_views = [], []
+                    self.inside_global = False
+
+                def handle_starttag(self, tag, attrs):
+                    attrs = dict(attrs)
+                    if tag == "nav" and attrs.get("class") == "contour":
+                        self.global_navs += 1
+                        self.inside_global = True
+                    if tag == "nav" and attrs.get("class") == "monitor-tabs":
+                        self.local_navs += 1
+                    if "data-monitor-view" in attrs:
+                        self.views.append(attrs["data-monitor-view"])
+                        if self.inside_global:
+                            self.nested_views.append(attrs["data-monitor-view"])
+
+                def handle_endtag(self, tag):
+                    if tag == "nav":
+                        self.inside_global = False
+
+            navigation = Navigation()
+            navigation.feed(answer.text)
+            assert contour.markup(path) in answer.text
+            assert contour.STYLE in answer.text
+            assert navigation.global_navs == navigation.local_navs == 1
+            assert navigation.views == ["monitor", "money", "contracts", "data"]
+            assert navigation.nested_views == []
+            assert 'class="monitor-page-header"' in answer.text
+            assert 'src="/guide/assets/logo.webp"' in answer.text
+            assert 'class="monitor-navigation"' not in answer.text
+            assert "Разделы DevelopAid" not in answer.text
+            assert '<details class="monitor-app-nav"' not in answer.text
+        else:
+            assert "Управленческий контур" in answer.text, f"{path} без входа в контур"
+            assert ".contour{" in answer.text, f"{path} без стиля контура"
         assert "__DEVELOPAID_CONTOUR" not in answer.text, f"{path}: плейсхолдер на экране"
     assert seen, f"ни одна поверхность не проверена: {skipped}"
     assert skipped == [] or all("/cabinet" in item for item in skipped), skipped

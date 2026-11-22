@@ -62,6 +62,7 @@ def test_saved_source_uses_one_summary_in_monitor_tiles_and_findings(saved):
     state = view['schedule']['readiness']
     before = copy.deepcopy(state)
     summary = gpr_summary(state, CUT)
+    work_summary = gpr_summary(view['schedule']['work_forecast'], CUT)
     built = report.build(PROJECT, 'week', CUT)
     assert summary['progress'] == pytest.approx((25*.6)/37)
     assert summary['progress'] != pytest.approx(built['physical']['fact'])
@@ -72,12 +73,12 @@ def test_saved_source_uses_one_summary_in_monitor_tiles_and_findings(saved):
     assert built['gantt']['readiness'] == state
     tiles = report.tiles(built)
     assert tiles[0]['value'] == summary['value']
-    assert tiles[1]['value'] == report._day(summary['finish'])
-    assert summary['forecast_text'] in tiles[1]['note']
-    assert summary['as_of_text'] in tiles[0]['note']
+    assert tiles[1]['value'] == report._day(work_summary['finish'])
+    assert work_summary['forecast_text'] in tiles[1]['note']
+    assert work_summary['as_of_text'] in tiles[0]['note']
     findings = {r['topic']: r['text'] for r in built['findings']}
     assert findings['Стройка'] == summary['readiness_text']
-    assert summary['forecast_text'] in findings['Срок']
+    assert work_summary['forecast_text'] in findings['Срок']
     html = ready.render(state)
     assert summary['value'] in html and summary['forecast_text'] in html
     assert state == before
@@ -86,10 +87,13 @@ def test_saved_source_uses_one_summary_in_monitor_tiles_and_findings(saved):
 
 @pytest.mark.parametrize('progress', [0, None])
 def test_zero_and_unknown_stay_distinct_and_never_fall_back_to_physical(saved, progress):
-    state = monitor.build(PROJECT, CUT)['schedule']['readiness']
+    import developaid_gpr_work_forecast as work_dates
+    view = monitor.build(PROJECT, CUT)
+    state = view['schedule']['readiness']
     state['project']['progress'] = progress
     state['project']['coverage'] = None
-    built = dict(end=CUT, kind='week', gantt=dict(readiness=state),
+    view['schedule']['work_forecast'] = work_dates.build(view['schedule'], CUT)
+    built = dict(end=CUT, kind='week', gantt=report.gantt(view, {}),
                  physical=dict(state='ok', fact=.99, plan=.5, lag=.49))
     tile = report.tiles(built)[0]
     assert tile['value'] == ('0,0%' if progress == 0 else 'нет данных')
@@ -141,23 +145,17 @@ def test_real_report_page_tiles_and_downloaded_pdf_use_readiness(saved, monkeypa
             page.select_option('#project', PROJECT)
             page.fill('#cut', CUT)
             page.click('#reportBtn')
-            expect(page.locator('#reportBox .readiness-project-value')).to_have_text(summary['value'], timeout=90000)
+            expect(page.locator('#reportBox .report-gpr-compact')).to_be_visible(timeout=90000)
             for width in (390, 1440):
                 page.set_viewport_size(dict(width=width, height=1000))
-                tiles = page.locator('#reportBox .tile')
-                expect(tiles.nth(0)).to_contain_text(summary['value'])
-                expect(tiles.nth(1)).to_contain_text(report._day(summary['finish']))
-                expect(tiles.nth(0)).to_contain_text('11.04.2034')
-                broader = page.locator('#reportBox .gpr-broader-physical')
-                expect(broader).to_have_js_property('open', False)
-                closed_height = broader.bounding_box()['height']
-                broader.locator('summary').first.click()
-                expect(broader).to_contain_text('по плановой длительности')
-                expect(broader).to_contain_text('78,7%')
-                assert broader.bounding_box()['height'] > closed_height + 100
-                broader.locator('summary').first.click()
-                expect(broader).to_have_js_property('open', False)
-                expect(page.locator('.gpr-broader-schedule')).to_contain_text('Отдельная оценка строительных работ')
+                host=page.locator('#reportBox .report-gpr-compact')
+                expect(host.locator('[data-gpr-block]')).to_have_count(3)
+                expect(host.locator('[data-gpr-block=forecast]')).to_contain_text(summary['value'])
+                expect(host.locator('[data-gpr-block=forecast]')).to_contain_text('11.04.2034')
+                dates=host.locator('[data-gpr-block]').evaluate_all('es=>es.map(e=>e.dataset.projectForecast)')
+                assert dates==[dates[0]]*3
+                assert host.locator('details,.readiness-summary,.executive-schedule').count()==0
+                assert page.locator('#reportBox .gpr-broader-physical').count()==0
                 assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
                 page.screenshot(path=f'/tmp/gpr-executive-readiness-{width}.png', full_page=True)
             with page.expect_download(timeout=90000) as download:
@@ -165,15 +163,11 @@ def test_real_report_page_tiles_and_downloaded_pdf_use_readiness(saved, monkeypa
             raw = Path(download.value.path()).read_bytes()
             Path('/tmp/gpr-executive-readiness.pdf').write_bytes(raw)
             reader = PdfReader(io.BytesIO(raw))
-            first = ' '.join((reader.pages[0].extract_text() or '').split())
-            assert summary['value'] in first and report._day(summary['finish']) in first
-            assert '11.04.2034' in first and '16.04.2034' in first
-            assert '2 из 3 работ' in first and '37,0%' in first
-            assert 'плановом темпе' in first and 'не прогноз РНВ' in first
             all_text = ' '.join(' '.join((p.extract_text() or '').split()) for p in reader.pages)
-            assert '78,7%' in all_text and 'по плановой длительности' in all_text
-            assert 'Сроки по строительным работам текущего ГПР' in all_text
-            assert all_text.index(summary['value']) < all_text.index('78,7%')
+            assert summary['value'] in all_text and '11.04.2034' in all_text
+            assert 'Прогноз учтённых работ'in all_text and 'Матрица готовности'in all_text and 'Гант по корпусам'in all_text
+            assert '78,7%'not in all_text and 'по плановой длительности'not in all_text
+            assert 'Сроки по строительным работам текущего ГПР'not in all_text
             assert not errors
         finally:
             browser.close()

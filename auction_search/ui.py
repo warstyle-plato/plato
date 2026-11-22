@@ -27,6 +27,9 @@ AUCTIONS_PAGE = r'''<!doctype html>
 .krt-action-note{font-size:11px;color:var(--muted);max-width:265px;line-height:1.3}
 @media(max-width:950px){.krt-actions{justify-content:flex-start}.krt-actions-left,.krt-actions-right{width:100%}}
 @media(max-width:640px){.krt-actions-left,.krt-actions-right{display:grid;grid-template-columns:1fr;width:100%}.krt-actions button{width:100%}.krt-action-note{max-width:none}}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:14px}.stat{border:1px solid var(--line);border-radius:0;background:var(--panel);padding:12px}.stat b{font-size:22px;display:block}.stat span{font-size:12px;color:var(--muted)}.coverage{display:none}.layout{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(360px,.8fr);gap:12px}.tablewrap,.side{border:1px solid var(--line);background:var(--panel);border-radius:0;overflow:hidden}.tablecol{min-width:0;display:flex;flex-direction:column}.scrolltop{overflow-x:auto;overflow-y:hidden;height:14px;margin-bottom:-1px;border:1px solid var(--line);border-bottom:0;background:var(--panel)}.scrolltop>div{height:1px}.scrolltop[hidden]{display:none}.tablewrap{overflow:auto;min-height:420px}table{border-collapse:collapse;width:100%;min-width:900px}table.wide{min-width:1600px;table-layout:fixed}
+.coverage{overflow-wrap:anywhere}.coverage-details .foldbody{max-height:22rem;overflow:auto}.coverage-details .foldbody>div+div{margin-top:9px}
+#krtReconciliation{min-width:0;max-width:100%;overflow-wrap:anywhere}.krt-reconciliation-table{max-width:100%;overflow-x:auto;margin-top:10px}.krt-reconciliation-table table{min-width:0;table-layout:fixed}.krt-reconciliation-table th,.krt-reconciliation-table td{white-space:normal;overflow-wrap:anywhere;padding:9px 8px}.krt-reconciliation-table th:first-child{width:40%}.krt-reconciliation-table tbody tr{cursor:default}
+
 #krtTableWrap th,#krtTableWrap td{padding:8px 7px}
 #krtTableWrap th{font-size:10px;letter-spacing:.025em}
 #krtTableWrap .lotname{max-width:none;line-height:1.25;margin:0}
@@ -146,6 +149,7 @@ __DEVELOPAID_CONTOUR__
     <div id="krtSnapshot" class="source" style="margin:6px 2px"></div>
     <div id="krtRankStatus" class="notice" style="display:none"></div>
     <div id="krtDecisions" class="notice" style="display:none"></div>
+    <div id="krtTenderNote" class="source" style="display:none;margin-top:8px"></div>
     <div class="layout"><div class="tablecol"><div class="scrolltop" id="krtScrollTop"><div></div></div><div class="tablewrap" id="krtTableWrap"><table class="wide"><thead><tr>
 <th data-sort="name">Проект КРТ</th>
 <th data-sort="decided" title="Дата раннего сигнала либо публикации проекта решения о КРТ.">Сигнал / решение</th>
@@ -194,6 +198,7 @@ __DEVELOPAID_CONTOUR__
     <div class="stat"><b id="sDeadline">—</b><span>ближайший дедлайн</span></div>
   </div>
   <div id="coverage" class="notice coverage"></div>
+  <div id="krtReconciliation" class="notice" style="display:none"></div>
   <div id="foldNote" class="notice" style="display:none"></div>
   <div class="viewswitch" id="auctionViewSwitch" role="tablist"><button type="button" id="viewSheet" class="active" role="tab">Таблица как в Excel</button><button type="button" id="viewPick" role="tab">Подборка: балл и карточка лота</button></div>
   <div class="sheetview" id="auctionSheet">
@@ -940,46 +945,39 @@ function coverageLine(r){
  return {name, said:bits.join(' · '), why:why||errors};
 }
 function renderCoverage(){
- const box=$('coverage');
- const rows=(state.coverage||[]);
+ const box=$('coverage'), rows=state.coverage||[];
+ box.replaceChildren();
  if(!rows.length){box.style.display='none';return}
  box.style.display='block';
- const lines=rows.map(coverageLine);
- // Отказ хотя бы одного источника красит весь блок: выдача при этом
- // неполная, и показывать её как полную нельзя.
- box.className='notice coverage'+(lines.some(x=>x.why)?' warn':'');
- box.textContent='';
- const q=state.quality||{};
- if(q.seen!==undefined){
-  const line=document.createElement('div');
-  line.textContent=`Допуск качества — в основной подборке ${q.accepted||0} из ${q.seen||0}; неполных ${q.incomplete||0}; ниже профиля сделок ${q.outside_profile||0}; шум ${q.noise||0}`;
-  box.appendChild(line);
- }
- // Про КРТ спрашивают отдельно, и в общей воронке площадка неотличима от
- // гаража. Отсев без числа на каждом шаге чинится наугад — в тот шаг, который
- // на виду; поэтому здесь и сколько дошло, и чем отсеяно остальное.
- if(q.krt_seen!==undefined&&q.krt_seen>0){
-  const line=document.createElement('div');
-  const dropped=(q.krt_dropped||[]).map(x=>`${x.reason} — ${x.count}`).join('; ');
-  line.textContent=`Из них площадок КРТ — ${q.krt_seen}, в основную подборку ${q.krt_accepted||0}`
-   +(dropped?`; отсеяно: ${dropped}`:'');
-  box.appendChild(line);
- }
- lines.forEach(x=>{
-  const line=document.createElement('div');
-  line.textContent=x.name+(x.said?' — '+x.said:'')+(x.why?' · '+x.why:'');
-  box.appendChild(line);
+ const lines=rows.map(coverageLine), incomplete=lines.filter((x,i)=>{
+  const r=rows[i];
+  return x.why||Number(r.unread_cards)>0
+   ||[...(r.sections||[]),...(r.privatization_lists||[])].some(s=>s.reason);
  });
- // Что источник СОДЕРЖИТ — часть ответа. «Все официальные источники» в списке
- // обещают охват, которого нет: банкротные лоты лежат на площадках, которых мы
- // не читаем, и молчание об этом читается как их отсутствие на рынке.
+ box.className='notice coverage'+(incomplete.length?' warn':'');
+ const appendLine=(parent,text)=>{
+  const line=document.createElement('div');line.textContent=text;parent.appendChild(line);
+ };
+ const q=state.quality||{};
+ if(q.seen!==undefined)
+  appendLine(box,`В основную подборку включено ${q.accepted||0} из ${q.seen||0} проверенных лотов.`);
+ if(q.krt_seen!==undefined&&q.krt_seen>0)
+  appendLine(box,`Из ${q.krt_seen} проверенных площадок КРТ в подборку включено ${q.krt_accepted||0}.`);
+ if(incomplete.length)
+  appendLine(box,'Сбор неполный. Не удалось полностью проверить источники: '+incomplete.map(x=>x.name).join(', ')+'. Причины указаны в подробностях.');
+ const details=document.createElement('details');
+ details.className='fold coverage-details';
+ const summary=document.createElement('summary');
+ summary.textContent='Подробности проверки источников';details.appendChild(summary);
+ const body=document.createElement('div');body.className='foldbody';details.appendChild(body);
+ if(q.seen!==undefined)
+  appendLine(body,`Из проверенных лотов: неполных ${q.incomplete||0}, ниже профиля сделок ${q.outside_profile||0}, прочих ${q.noise||0}.`);
+ const dropped=(q.krt_dropped||[]).map(x=>`${x.reason} — ${x.count}`).join('; ');
+ if(dropped)appendLine(body,'Причины исключения площадок КРТ: '+dropped+'.');
+ lines.forEach(x=>appendLine(body,x.name+(x.said?' — '+x.said:'')+(x.why?' · '+x.why:'')));
  const markets=rows.map(x=>x&&x.market).filter(Boolean);
- if(markets.length){
-  const note=document.createElement('div');
-  note.className='source';
-  note.textContent='Что в выдаче: '+markets.join('; ');
-  box.appendChild(note);
- }
+ if(markets.length)appendLine(body,'Что в выдаче: '+markets.join('; '));
+ box.appendChild(details);
 }
 function areaLine(l){
  // Два разных числа под одним именем никто не заметит: у лота с торгов бывает
@@ -1329,7 +1327,7 @@ async function askJson(url, init){
  }
  return d;
 }
-async function discover(){if(state.finished.on)loadFinished();const btn=$('refresh');btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Читаю ЭТП';$('tableEmpty').style.display='grid';$('tableEmpty').textContent='Получаю публичный каталог официальной площадки…';try{const qs=new URLSearchParams({source:$('source').value,include_noise:$('noise').value==='1'?'true':'false'});const d=await askJson('/auctions/discover?'+qs);state.lots=d.lots||[];state.coverage=d.coverage||[];state.quality=d.quality||{};renderCoverage();filter();if(!state.lots.length){$('tableEmpty').textContent='Подтверждённых текущих лотов не найдено. Воронка источников показана выше.'}}catch(e){state.lots=[];state.coverage=[];state.quality={};renderCoverage();filter();$('tableEmpty').style.display='grid';$('tableEmpty').textContent=String(e.message||e)}finally{btn.disabled=false;btn.textContent='Обновить'}}
+async function discover(){if(state.finished.on)loadFinished();const btn=$('refresh');btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Читаю ЭТП';$('tableEmpty').style.display='grid';$('tableEmpty').textContent='Получаю публичный каталог официальной площадки…';try{const qs=new URLSearchParams({source:$('source').value,include_noise:$('noise').value==='1'?'true':'false'});const d=await askJson('/auctions/discover?'+qs);state.lots=d.lots||[];state.coverage=d.coverage||[];state.quality=d.quality||{};state.krtReconciliation=d.krt_reconciliation||null;renderKrtReconciliation();renderCoverage();filter();if(!state.lots.length){$('tableEmpty').textContent='Подтверждённых текущих лотов не найдено. Воронка источников показана выше.'}}catch(e){state.lots=[];state.coverage=[];state.quality={};state.krtReconciliation={error:'Сбор не выполнен: '+String(e.message||e)};renderKrtReconciliation();renderCoverage();filter();$('tableEmpty').style.display='grid';$('tableEmpty').textContent=String(e.message||e)}finally{btn.disabled=false;btn.textContent='Обновить'}}
 async function ingest(){const l=state.selected;if(!l)return;const b=$('ingestBtn'),status=$('detailStatus');b.disabled=true;b.innerHTML='<span class="spinner"></span>Разбираю';status.textContent=l.lot_kind==='krt'?'Читаю карточку и официальные документы КРТ…':'Повторно сверяю официальную карточку…';try{const d=await askJson('/auctions/ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:l.source.lot_url,enrich_krt_documents:true,include_raw:false})});
  // Перед handoff в ГлавАПУ оставляем только земельные КН. КН здания —
  // отдельный объект ЕГРН, его площадь никогда не является площадью участка.
@@ -1402,7 +1400,7 @@ function renderAnalysis(d){const s=d.screening||{},l=d.lot||{},a=$('analysis'),s
  a.innerHTML=`<div class="section"><h3>Оценка Платона: ${esc(px.rating||s.rating||'—')}</h3><div class="notice"><b>Почему здесь:</b> ${esc(px.why_here||s.why_here||'—')}</div><div class="items">${(px.concerns||[]).map(x=>`<div class="item"><b>Что настораживает</b>${esc(x)}</div>`).join('')}${(px.verify_before_calculation||[]).map(x=>`<div class="item"><b>Что проверить до расчёта</b>${esc(x)}</div>`).join('')}</div></div><div class="section"><h3>Готовность к DevelopAid</h3><div class="kv"><div>Структура сделки</div><div>${esc(kindLabel(s.legal_structure))}</div><div>Требует условий КРТ</div><div>${s.requires_krt_terms?'да':'нет'}</div><div>Вложений</div><div>${docsRead(s.documents,docs.length)}</div><div>Программа КРТ</div><div>${program.length}</div><div>Обязательств</div><div>${obs.length}</div></div>${docsRefusalNote(s.documents)}</div>${program.length?`<div class="section"><h3>Программа застройки из документов</h3><div class="items">${program.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)} · ${esc(x.area_sqm?fmtArea(x.area_sqm):x.quantity?x.quantity+' '+(x.unit||''):'')}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}${obs.length?`<div class="section"><h3>Обязательства инвестора</h3><div class="items">${obs.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)}${x.quantity?' · '+x.quantity+' '+(x.unit||''):''}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}<div class="actions"><button id="copySeed">Скопировать seed</button><button id="modelBtn" ${s.ready_for_financial_model?'':'disabled'}>Подготовить в DevelopAid</button></div><div id="modelNote" class="notice">Handoff использует штатный project-preset import; отдельный расчётный движок для торгов не создаётся.</div>`;
  $('copySeed').onclick=async()=>{await navigator.clipboard.writeText(JSON.stringify(d.developaid_seed,null,2));$('copySeed').textContent='Скопировано'};$('modelBtn').onclick=()=>{const note=$('modelNote');note.textContent='Project-preset handoff подключается следующим слоем: цена лота → цена входа, КРТ-ТЭП → planning, обязательства → отдельные cost/constraint lines.'}
 }
-function switchTab(showKrt){['auctionFilters','auctionStats','coverage','auctionViewSwitch'].forEach(id=>$(id).classList.toggle('hidden',showKrt));state.krtTab=!!showKrt;applyAuctionView();$('krtPanel').classList.toggle('hidden',!showKrt);$('tabAuctions').classList.toggle('active',!showKrt);$('tabKrt').classList.toggle('active',showKrt);renderAskContext();if(showKrt&&!state.krt.length)loadKrt()}
+function switchTab(showKrt){['auctionFilters','auctionStats','coverage','krtReconciliation','auctionViewSwitch'].forEach(id=>$(id).classList.toggle('hidden',showKrt));state.krtTab=!!showKrt;applyAuctionView();$('krtPanel').classList.toggle('hidden',!showKrt);$('tabAuctions').classList.toggle('active',!showKrt);$('tabKrt').classList.toggle('active',showKrt);renderAskContext();if(showKrt&&!state.krt.length)loadKrt()}
 // Кнопка «Обновить каталог» до 04.09.2026 не читала источник вовсе: снимок
 // живёт сутки, и обход начинался только у ПРОСРОЧЕННОГО — страница
 // перерисовывала тот же файл. Опубликованный вчера проект решения ждал ночного
@@ -2438,6 +2436,7 @@ function filterKrt(){
  state.krtHidden={small,unknown,priceBelow,priceUnknown};
  markKrtSort();
  renderKrtFilterCounts();
+ if(state.krtTenderSummary)renderKrtTenderNote(state.krtTenderSummary);
  renderKrt();
 }
 // Какая колонка сортирует и в какую сторону — видно на самой колонке. Пока
@@ -3979,14 +3978,28 @@ async function loadKrtTenders(){
   filterKrt();
  }catch(e){ /* торги не спрошены — список площадок от этого не ломается */ }
 }
+function renderKrtReconciliation(){
+ const box=$('krtReconciliation'), d=state.krtReconciliation;
+ if(!box)return;
+ if(d&&d.error){box.textContent=d.error;box.style.display='';return}
+ if(!d||!d.expected){box.innerHTML='';box.style.display='none';return}
+ box.style.display='';
+ box.innerHTML=`<b>Сверка сохранённых лотов КРТ с последним сбором.</b> В основной подборке ${d.included} из ${d.expected} ранее известных лотов с непросроченным сроком заявок.`
+  +'<div>Сохранённый срок не подтверждает, что торги продолжаются. Результат для каждой карточки — в списке ниже.</div>'
+  +`<details class="fold krt-reconciliation-details"${d.included<d.expected?' open':''}><summary>Площадки и результаты проверки</summary><div class="foldbody">`
+  +'<div class="krt-reconciliation-table"><table><thead><tr><th>Площадка</th><th>Сохранённый срок заявок</th><th>Результат проверки</th></tr></thead><tbody>'
+  +(d.rows||[]).map(r=>`<tr><td><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a></td><td>${esc(r.saved_deadline||'—')}</td><td>${esc(r.reason)}</td></tr>`).join('')
+  +'</tbody></table></div></div></details>';
+}
 function renderKrtTenderNote(d){
- const box=$('krtDecisions');
+ state.krtTenderSummary=d;
+ const box=$('krtTenderNote');
  if(!box)return;
  const sites=Object.keys(state.krtTenders).length, orphans=(d.unmatched||[]).length;
  const orders=(d.orders||[]).length;
  // Связки в счёт молчания входят тоже: помним одиннадцать, собрали ноль — и
  // подпись молчала бы ровно там, где расхождение и надо назвать.
- if(!sites&&!orphans&&!orders&&!(d.known_links||0))return;
+ if(!sites&&!orphans&&!orders&&!(d.known_links||0)){box.innerHTML='';box.style.display='none';return;}
  const last=(d.orders||[])[0];
  box.style.display='';
  // У числа обязано быть окно и предмет. «Город объявил 55» без них читается
@@ -4004,8 +4017,10 @@ function renderKrtTenderNote(d){
  const live=(state.krt||[]).filter(x=>krtLiveLot(x)).length;
  const announced=(state.krt||[]).filter(x=>krtTenderAnnounced(x)).length;
  const cancelled=(d.orders||[]).filter(o=>o&&o.action==='cancel').length;
- box.innerHTML+=`<div class="source" style="margin-top:8px"><b>Торги по КРТ.</b> `
-  +`Идёт аукцион у ${live} площадок`
+ const axis=KRT_FILTERS.find(a=>a.options.some(o=>o.value==='tender'));
+ const inSelection=axis?krtFilterCount(axis,axis.options.find(o=>o.value==='tender')):live;
+ box.innerHTML=`<b>Торги по КРТ.</b> `
+  +`По сохранённым срокам заявок: ${live} площадок во всём каталоге; ${inSelection} с учётом остальных условий отбора. Текущая проверка лотов — в таблице сверки на вкладке «Торги»`
   +(announced?`, торги объявлялись когда-то — ещё у ${announced}`:'')
   +`. Распоряжений города об аукционе — ${orders} за всё время`
   +(Number.isFinite(recent)?`, из них за последние 12 месяцев ${recent}`:'')
@@ -4021,7 +4036,7 @@ function renderKrtTenderNote(d){
         ? ` — больше, чем собрано сейчас: раздел читается не целиком, и это наш `
           +`сбор, а не рынок (непрочитанное названо в строке охвата)`
         : '')
-    :'')+'.</div>';
+    :'')+'.';
 }
 // Распоряжение о торгах на карточке площадки. Ставится РУКАМИ: адреса в
 // распоряжении нет ни в заголовке, ни в карточке документа, а PDF — скан

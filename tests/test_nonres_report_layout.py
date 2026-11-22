@@ -44,10 +44,16 @@ from test_nonres_object_result import _spec  # noqa: E402
 
 core = wrapper.core
 
-TITLES = ["Решение", "Объект и участок", "Стратегия реализации", "Доходы", "Затраты",
+HOTEL_TITLES = ["Решение", "Объект и участок", "Стратегия реализации", "Доходы", "Затраты",
           "Финансирование", "Экономика собственника", "Чувствительность", "Календарь"]
-KEYS = ["decision", "object", "strategy", "income", "costs", "finance", "owner",
+HOTEL_KEYS = ["decision", "object", "strategy", "income", "costs", "finance", "owner",
         "sensitivity", "calendar"]
+
+TITLES = ["Решение", "Объект и участок", "Доходы", "Цены и продажи во времени", "Затраты",
+          "Финансирование", "Экономика собственника", "Сравнение стратегий", "Чувствительность",
+          "Календарь", "Допущения и ограничения"]
+KEYS = ["decision", "object", "income", "strategy", "costs", "finance", "owner",
+        "comparison", "sensitivity", "calendar", "assumptions"]
 
 _CACHE: dict[tuple, dict] = {}
 
@@ -338,7 +344,7 @@ def _drawn_mismatches(drawn: dict[str, str], report: dict) -> list[str]:
 def test_the_page_prints_the_sections_of_the_engine() -> None:
     report = _run()["report"]
     drawn = _render_blocks(report)
-    assert list(drawn) == KEYS[:7]
+    assert list(drawn) == [k for k in KEYS if k not in ("sensitivity", "calendar")]
     assert _drawn_mismatches(drawn, report) == []
     verdict = _sections(_run())["decision"]["verdict"]
     assert verdict["title"] in drawn["decision"]
@@ -698,8 +704,8 @@ def test_the_pdf_opens_the_costs_with_the_expense_structure(object_pdf) -> None:
     assert " ".join(unit.split()[:12]).startswith(
         "Удельная экономика Показатель Всего на м² общей площади на м² продаваемой площади")
     assert "— на м² продаваемой площади" not in object_pdf
-    total = text[text.index("\nРасходы всего\n"):].splitlines()[2]
-    value, tolerance = _number(total)
+    total = re.search(r"Расходы всего\s+([\d\s,.-]+(?:млрд|млн)\s*₽)", text).group(1)
+    value, tolerance = _number(" ".join(total.split()))
     assert abs(value - _run()["summary"]["total_expenses"]) <= tolerance
     assert "Расходы проекта всего" not in object_pdf
 

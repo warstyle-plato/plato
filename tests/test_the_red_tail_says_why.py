@@ -127,10 +127,12 @@ def test_the_reason_is_attached_where_the_screen_draws_the_shift(width) -> None:
     assert task['delay_reason']['kind'] == 'gpr'
     assert task['delay_reason']['text'] == supplied
     assert task['delay_reason']['predecessors'] == []
+    from gpr_view_fixtures import legacy_response
+    view = legacy_response(view)
 
     with browser_page(width) as (page, responses, errors):
         assert page.evaluate('PM_DISABLED') is True
-        page.evaluate('(v)=>{currentView=v;renderGantt(v)}', view)
+        page.evaluate('(v)=>{document.activeElement?.blur();document.getElementById(`cut`).value=v.cut;currentView=v;renderGantt(v)}', view)
         from browser import expand_gantt
         expand_gantt(page)
         shown = page.locator('.g-row[data-key="task:1"]')

@@ -125,6 +125,7 @@ def capex_unit_rows(capex: dict[str, float], bases: dict[str, float]) -> dict[st
 
 def calculate(req: CalcRequest) -> dict:
     _partial_tep_preflight(req.inputs, req.tep)
+    mo_benefits_update = apply_mo_vri_benefits(req.inputs, req.tep)
     # Решение о доходности капитала принимается один раз, на выходе расчёта:
     # у раннего выхода (наложение фактов) и у основного пути одно правило.
     # Проект, сохранённый до «одной вводной роста после РВЭ», переносится
@@ -137,9 +138,11 @@ def calculate(req: CalcRequest) -> dict:
     original = (copy.deepcopy((req.inputs, req.tep, req.rates))
                 if any(strategy_path_prefixes(req.inputs, product) for product, _ in STRATEGY_PATH_PRODUCTS)
                 else None)
-    result = _finalize_result(_calculate_economics(req))
+    result = _finalize_result(_intake_qualification_apply(req.inputs, _calculate_economics(req)))
     if migrations and isinstance(result, dict):
         result["input_migrations"] = migrations
+    if mo_benefits_update and isinstance(result, dict):
+        result["mo_vri_benefits_update"] = mo_benefits_update
     if isinstance(result, dict):
         result["office_classes"] = office_class_rows(req.inputs)
     if original is not None and isinstance(result, dict) and result.get("summary"):
@@ -264,7 +267,25 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...],
         ddu_sales = sum(float(revenue.get(k) or 0.0) + float(revenue.get(object_parking_product_key(k)) or 0.0)
                         for k in office_keys)
     with_pf = float(finance.get("pf_draw_total") or 0.0) > 0
+    # Presentation completeness is separate from the numerical NPV ranking.
+    # A zero output caused by missing capitalization cannot prove that a
+    # rental strategy loses; do not change the financial model's numbers.
+    missing = []
+    for obj in ((finance.get("nonres") or {}).get("objects") or []):
+        if obj.get("strategy") != nonres_strategy.STRATEGY_INCOME:
+            continue
+        params = (obj.get("book") or {}).get("params") or {}
+        reason = ("не задана ставка капитализации" if float(params.get("exit_cap_pct") or 0) <= 0 else
+                  "нет положительного NOI для оценки" if float((obj.get("kpi") or {}).get("forward_noi") or 0) <= 0 else "")
+        if reason:
+            missing.append(str(obj.get("title") or obj.get("key")) + ": " + reason)
+
     return {
+        "comparison_missing": missing,
+        # Lease policy depends on this variant's sale/retention horizon.
+        # The native workbook must not reuse the selected variant's rental
+        # calendar for every comparison column.
+        "land_rent": copy.deepcopy(result.get("land_rent") or {}),
         "revenue": float(summary.get("revenue") or 0.0),
         "capex": float(summary.get("capex") or 0.0),
         "selling_cost": total("selling_cost"),
@@ -383,6 +404,8 @@ def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -
     как правил расчёт до выноса.
     """
     _partial_tep_preflight(x, t)
+    import developaid_land_cadastral
+    x.update(developaid_land_cadastral.prepare(x))
     if not rates:
         rates = generate_rate_curve(
             d(x.get("rate_start_date", date.today().isoformat())),
@@ -1357,6 +1380,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
                 cash_timeline, equity_cf, fin, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(x, fin, equity_cf),
             "products": products_report,
+            "office_results": (__import__("office_results").build(x, t, op, fin, products_report, STANDALONE_OBJECTS)
+                               if without_housing(x) and report_kind(x) != REPORT_KIND_HOTEL else {}),
             # Как себестоимость дома разложена по продуктам — одной фразой
             # для экрана и PDF (`cost_pool_product_costs`).
             "product_cost_basis": PRODUCT_COST_BASIS,

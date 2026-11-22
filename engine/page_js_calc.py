@@ -293,6 +293,7 @@ function renderAccessLine(access){
 
 function renderCalcLocked(reason,status){
  lastResult=null;phaseBundle=null;
+ renderCalculationQualification(null);
  const box=document.getElementById('calcLocked');
  if(!box)return;
  box.style.display='';
@@ -331,6 +332,7 @@ let calcRun=0,calcSettled=0;
 // раньше ответа, а `lastResult` после загрузки проекта ещё меняется.
 function calcIdle(){return calcSettled===calcRun}
 async function calculate(){
+ if(typeof telegramOverridesReviewRequired!=='undefined'&&telegramOverridesReviewRequired){lastResult=null;phaseBundle=null;blankResultSurfaces();telegramOverridesReviewNotice();return null}
  if(partialTepMode()&&partialTepMissing().length){lastResult=null;phaseBundle=null;blankResultSurfaces();partialTepNotice();return null}
  // Форма забирается целиком, КРОМЕ полей, где стоит счётный показатель, а не
  // набранное число: у таких вводная равна нулю, и ноль здесь значит «считает
@@ -399,6 +401,14 @@ async function calculate(){
  // страница только принимает его ответ: иначе поле показывало бы одно
  // число, а расчёт шёл по другому. Происхождение подписано у поля.
  applyInputMigrations((phaseBundle||lastResult||{}).input_migrations);
+ const moUpdate=(phaseBundle||lastResult||{}).mo_vri_benefits_update;
+ if(moUpdate&&moUpdate.inputs&&startedAtReset===resetRun){
+  Object.assign(inputs,moUpdate.inputs);
+  (moUpdate.removed_inputs||[]).forEach(key=>{delete inputs[key]});
+  const feeField=document.getElementById('f_land_rights_cost_mln');
+  if(feeField)feeField.value=inputs.land_rights_cost_mln;
+  if(typeof renderMoVriRelief==='function')renderMoVriRelief();
+ }
  if(startedAtReset!==resetRun){
   // Между стартом расчёта и его ответом человек нажал «Сбросить».
   lastResult=null;phaseBundle=null;blankResultSurfaces();return null;

@@ -11,13 +11,16 @@ import json
 import re
 import threading
 import time
+import sys
 from dataclasses import asdict, dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import urljoin
 
+from krt_status import model_cohort, with_last_known_status
 from .http import RemoteServiceError, fresh, load_json, request_bytes, save_json
+from . import krt_catalogue_observation as _catalogue_observation
 from .krt_requirements import (
     decision_intent,
     decision_search_urls,
@@ -215,6 +218,8 @@ class KrtTerritory:
     okrug: str | None = None
     district: str | None = None
     status: str | None = None
+    last_known_status_kind: str = ""
+    model_status_conflict: bool = False
     total_gfa_sqm: float | None = None
     housing_gfa_sqm: float | None = None
     nonresidential_gfa_sqm: float | None = None
@@ -338,7 +343,9 @@ def _checked(row: KrtTerritory) -> KrtTerritory:
     после следующего обхода — на проде это сутки, — и «пять ложных тревог
     сняты» читалось на экране как «ничего не изменилось».
     """
-    return replace(row, parse_problem=parse_problem(row))
+    history = with_last_known_status(row.to_dict())
+    return replace(row, parse_problem=parse_problem(row),
+                   last_known_status_kind=str(history.get("last_known_status_kind") or ""))
 
 
 def tep_from_fields(fields: dict[str, str]) -> dict[str, float | None]:
@@ -457,9 +464,31 @@ class KrtRegistry:
         if (self._cache_current(cached) and not refresh and fresh(self.path, self.ttl_seconds)
                 and cached.get("complete", True)):
             return self._decode(cached)
+        observation = _catalogue_observation.start(self.path, bool(cached))
+        try:
+            return self._projects_walk(cached, max_pages, observation)
+        finally:
+            _catalogue_observation.note(observation, 'finish', sys.exc_info()[1])
+
+    def _projects_walk(self, cached, max_pages, observation):
         rows: list[KrtTerritory] = []
+        previous_rows = cached.get("projects") if isinstance(cached, dict) else None
+        previous_statuses = {
+            str(raw["slug"]): with_last_known_status(raw)
+            for raw in (previous_rows if isinstance(previous_rows, list) else [])
+            if isinstance(raw, dict) and raw.get("slug")
+        }
         seen_urls: set[str] = set()
-        seen_slugs: set[str] = set()
+        seen_rows: set[tuple[str, str]] = set()
+
+        def unseen(page: list[KrtTerritory]) -> list[KrtTerritory]:
+            out = []
+            for row in page:
+                signature = (row.slug, str(row.status or ""))
+                if signature not in seen_rows:
+                    out.append(row)
+                    seen_rows.add(signature)
+            return out
         # Есть ли на диске ПОЛНЫЙ снимок. Пока этого вопроса не было, каждая
         # прочитанная страница переписывала файл усечённым списком: посреди
         # обхода каталог на экране падал с 282 строк до 84, а площадки, чьи
@@ -475,13 +504,34 @@ class KrtRegistry:
         def persist(*, complete: bool) -> None:
             if not rows:
                 return
+            # Persist the source's last recognized state independently of any
+            # model run. A confirmed planned transition must not be forgotten
+            # just because the next catalogue refresh has an unparsed value.
+            rows[:] = [replace(row, last_known_status_kind=str(
+                with_last_known_status(row.to_dict(), previous_statuses.get(row.slug))
+                .get("last_known_status_kind") or "")) for row in rows]
+            flags = model_cohort([row.to_dict() for row in rows])
+            rows[:] = [replace(row, model_status_conflict=bool(flag.get("model_status_conflict")))
+                       for row, flag in zip(rows, flags)]
             if not complete and had_complete:
                 return
-            save_json(self.path, {
+            payload = {
                 "schema_version": CACHE_SCHEMA_VERSION,
                 "source": CATALOGUE_URL, "retrieved_at": int(time.time()),
                 "complete": complete, "projects": [row.to_dict() for row in rows],
-            })
+            }
+            if observation is None:
+                save_json(self.path, payload)
+            else:
+                saved = {}
+                returned = False
+                try:
+                    save_json(self.path, payload, _saved_receipt=saved)
+                    returned = True
+                finally:
+                    replaced = saved.pop('_replaced', False)
+                    if returned or replaced:
+                        _catalogue_observation.note(observation, 'wrote', saved)
 
         # The official host is primary. It occasionally drops all TCP traffic;
         # failure then switches the public catalogue only to a read-only page
@@ -489,61 +539,79 @@ class KrtRegistry:
         direct_complete = False
         try:
             url = CATALOGUE_URL
-            for _ in range(max_pages):
+            for page_ordinal in range(max_pages):
                 if not url or url in seen_urls:
                     direct_complete = True
                     break
                 seen_urls.add(url)
-                page, url = parse_catalogue(self.fetch(url).decode("utf-8", errors="replace"))
-                if not page:
-                    # Неразобранная страница — не конец каталога. Конец
-                    # объявляет сам сайт отсутствием ссылки «показать ещё»;
-                    # пустой разбор посреди обхода значит, что страница не
-                    # прочиталась, и помечать усечённый список полным нельзя.
-                    break
-                new_rows = [row for row in page if row.slug not in seen_slugs]
-                rows.extend(new_rows)
-                seen_slugs.update(row.slug for row in new_rows)
-                persist(complete=False)
+                with _catalogue_observation.fetch_scope(observation, 'official', page_ordinal + 1) as observed:
+                    body = self.fetch(url)
+                    _catalogue_observation.note(observed, 'stage', 'decode')
+                    document = body.decode("utf-8", errors="replace")
+                    _catalogue_observation.note(observed, 'decoded')
+                    _catalogue_observation.note(observed, 'stage', 'parse')
+                    page, url = parse_catalogue(document)
+                    _catalogue_observation.note(observed, 'parsed', len(page))
+                    if not page:
+                        # Неразобранная страница — не конец каталога. Конец
+                        # объявляет сам сайт отсутствием ссылки «показать ещё»;
+                        # пустой разбор посреди обхода значит, что страница не
+                        # прочиталась, и помечать усечённый список полным нельзя.
+                        break
+                    new_rows = unseen(page)
+                    rows.extend(new_rows)
+                    _catalogue_observation.note(observed, 'contributed', len(new_rows))
+                    persist(complete=False)
         except (RemoteServiceError, OSError, UnicodeError):
             pass
         if rows and direct_complete:
             persist(complete=True)
+            _catalogue_observation.note(observation, 'returned', len(rows), 'existing_direct_termination')
             return rows
 
         # The renderer preserves the official page text and links. Pagination
         # has no reliable final-page marker, so a repeated page is the stop.
         try:
-            previous: list[str] | None = None
+            previous: list[tuple[str, str]] | None = None
             for page_number in range(1, max_pages + 1):
                 suffix = "" if page_number == 1 else f"?PAGEN_1={page_number}"
-                document = self.fetch(JINA_PREFIX + CATALOGUE_URL + suffix).decode(
-                    "utf-8", errors="replace"
-                )
-                page = parse_catalogue_markdown(document)
-                slugs = [row.slug for row in page]
-                # Конец — повтор предыдущей страницы, а не «нет новых
-                # площадок». Прямой путь мог оборваться на середине, и тогда
-                # первая же страница запасного состоит из уже прочитанных:
-                # обход останавливался на ней и объявлял усечённый список
-                # полным. Пустая первая страница — отказ рендерера, а не конец.
-                if slugs and previous is not None and slugs == previous:
-                    persist(complete=True)
-                    return rows
-                if not page:
-                    if previous is None:
-                        break
-                    persist(complete=True)
-                    return rows
-                previous = slugs
-                new_rows = [row for row in page if row.slug not in seen_slugs]
-                rows.extend(new_rows)
-                seen_slugs.update(row.slug for row in new_rows)
-                persist(complete=False)
+                with _catalogue_observation.fetch_scope(observation, 'renderer', page_number) as observed:
+                    body = self.fetch(JINA_PREFIX + CATALOGUE_URL + suffix)
+                    _catalogue_observation.note(observed, 'stage', 'decode')
+                    document = body.decode("utf-8", errors="replace")
+                    _catalogue_observation.note(observed, 'decoded')
+                    _catalogue_observation.note(observed, 'stage', 'parse')
+                    page = parse_catalogue_markdown(document)
+                    _catalogue_observation.note(observed, 'parsed', len(page))
+                    page_keys: list[tuple[str, str]] = [(row.slug, str(row.status or "")) for row in page]
+                    # Конец — повтор предыдущей страницы, а не «нет новых
+                    # площадок». Прямой путь мог оборваться на середине, и тогда
+                    # первая же страница запасного состоит из уже прочитанных:
+                    # обход останавливался на ней и объявлял усечённый список
+                    # полным. Пустая первая страница — отказ рендерера, а не конец.
+                    if page_keys and previous is not None and page_keys == previous:
+                        _catalogue_observation.note(observed, 'contributed', 0)
+                        persist(complete=True)
+                        _catalogue_observation.note(observation, 'returned', len(rows), 'existing_renderer_repeated_page')
+                        return rows
+                    if not page:
+                        if previous is None:
+                            break
+                        persist(complete=True)
+                        _catalogue_observation.note(observation, 'returned', len(rows), 'existing_renderer_empty_page')
+                        return rows
+                    previous = page_keys
+                    new_rows = unseen(page)
+                    rows.extend(new_rows)
+                    _catalogue_observation.note(observed, 'contributed', len(new_rows))
+                    persist(complete=False)
         except (RemoteServiceError, OSError, UnicodeError):
             pass
         persist(complete=False)
-        return rows or (self._decode(cached) if cached else [])
+        result = rows or (self._decode(cached) if cached else [])
+        _catalogue_observation.note(observation, 'returned', len(result),
+            'prior_cache_retained' if not rows and cached else 'loop_limit_or_partial')
+        return result
 
     @staticmethod
     def _decode(payload: Any) -> list[KrtTerritory]:
@@ -557,7 +625,9 @@ class KrtRegistry:
                 out.append(_checked(KrtTerritory(**clean)))
             except (TypeError, ValueError):
                 continue
-        return out
+        flags = model_cohort([row.to_dict() for row in out])
+        return [replace(row, model_status_conflict=bool(flag.get("model_status_conflict")))
+                for row, flag in zip(out, flags)]
 
     @staticmethod
     def _cache_current(payload: Any) -> bool:

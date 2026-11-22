@@ -14,6 +14,7 @@ import copy
 import math
 from typing import Any
 
+from auction_search.krt_status import model_exclusion
 from market_search.krt_requirements import social_objects_from_decision
 # Основание ориентира объявляет price_hint; здесь оно читается, а не
 # пересказывается строковым литералом.
@@ -130,7 +131,7 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 
 
 # Версия МЕТОДИКИ скрининга: цена, очереди, соцобъекты, реновация, балл.
-# Поднимается рукой, когда правка меняет ЧИСЛА посчитанных строк, — и тогда всё,
+# Поднимается рукой, когда правка меняет числа или состав посчитанных строк, — и тогда всё,
 # что посчитано прежней, объявляется устаревшим. Версией приложения это делать
 # нельзя: выпусков в день бывает пять, а методику они трогают редко, и каталог
 # пришлось бы пересчитывать на каждый.
@@ -157,7 +158,10 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 # медиана класса по Москве остаются ценой МОДЕЛИ с названным основанием, но
 # наблюдением этой площадки не считаются. Подъём версии нужен, чтобы строки,
 # посчитанные прежним правилом, перечитались.
-SCREENING_RULES_VERSION = 6
+# 7: строка сохраняет текущий вид статуса и последний подтверждённый статус.
+# Это позволяет отличить неизвестное новое значение от подтверждённого
+# прекращения реализации; реализуемые исключаются до проверки этой версии.
+SCREENING_RULES_VERSION = 7
 
 
 def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, str]:
@@ -761,6 +765,48 @@ def _programme(
     }
 
 
+def market_only_screening(
+    project: dict[str, Any], market_report: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Current market observations for a project excluded from modelling."""
+    excluded = model_exclusion(project)
+    if excluded is None:
+        return None
+    if not isinstance(market_report, dict) or not market_report:
+        return {**excluded, "market_problem": "Источник рынка не вернул отчёт для обновления наблюдений"}
+    if (market_report.get("available") is False or market_report.get("error")
+            or market_report.get("market_problem")):
+        return {**excluded, "market_problem": "Источник рынка сообщил об ошибке вместо успешного отчёта"}
+    for key in ("analysis", "price_hint", "verdict"):
+        if market_report.get(key) is not None and not isinstance(market_report[key], dict):
+            return {**excluded, "market_problem": "Источник рынка вернул отчёт с неподдерживаемой структурой"}
+    analysis = market_report.get("analysis") or {}
+    for key in ("site", "overall"):
+        if analysis.get(key) is not None and not isinstance(analysis[key], dict):
+            return {**excluded, "market_problem": "Источник рынка вернул отчёт с неподдерживаемой структурой"}
+    segment, start_price, market_price, basis = _market_inputs(market_report)
+    if not math.isfinite(start_price) or not math.isfinite(market_price):
+        return {**excluded, "market_problem": "Источник рынка вернул недействительный ценовой ориентир"}
+    raw_pace = _verdict(market_report).get("units_per_month")
+    try:
+        pace = float(raw_pace)
+        pace_known = not isinstance(raw_pace, bool) and math.isfinite(pace) and pace >= 0
+    except (ValueError, TypeError):
+        pace, pace_known = 0.0, False
+    if start_price <= 0 and not pace_known:
+        return {**excluded, "market_problem": "Источник рынка не вернул ценовых наблюдений или темпа продаж"}
+    return {
+        **excluded,
+        "market": {
+            "recommended_segment": segment,
+            "start_price_rub_sqm": start_price or None,
+            "market_price_rub_sqm": market_price or None,
+            "basis": basis,
+        },
+        "absorption": {"available": pace_known, "market_units_per_month": pace if pace_known else None},
+    }
+
+
 def build_krt_model_screening(
     project: dict[str, Any] | None,
     market_report: dict[str, Any],
@@ -781,6 +827,9 @@ def build_krt_model_screening(
     """
     if not project:
         return {"available": False, "reason": "Проект КРТ не найден в официальном каталоге"}
+    excluded = model_exclusion(project)
+    if excluded is not None:
+        return excluded
     # Съехавшая карточка называет себя сама (`parse_problem`), и до модели она
     # доходить не должна. На «ул. Мусоргского» площадь участка вышла 26 500 «га»
     # — это метры, съехавшие на поле, — и на них расчёт выдал LLCR 1,10x, маржу

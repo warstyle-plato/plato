@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import document_processing
 
 # Плотность растра. Двести точек — то, на чём распознавание распоряжений о
 # торгах сошлось с прописью; ниже начинают путаться цифры, выше растёт время
@@ -28,6 +29,7 @@ DEFAULT_DPI = 200
 # Сколько ждём распознавание ОДНОЙ страницы. Человек ждёт ответа в окне, и
 # зависшая страница не имеет права держать его до конца бесконечности.
 PAGE_TIMEOUT_SECONDS = 60
+MAX_RASTER_PIXELS = 25_000_000
 # Сколько русских слов от четырёх букв должно найтись на странице, чтобы
 # считать её стоящей прямо. Акт КС-2 и график сканируют альбомным листом,
 # положенным боком: прямо такая страница даёт два-три десятка обрывков,
@@ -74,9 +76,12 @@ def _words(text: str) -> int:
 
 
 def _recognized(png: bytes) -> str:
+    document_processing.check()
+    timeout = document_processing.remaining(PAGE_TIMEOUT_SECONDS)
     done = subprocess.run(
         ["tesseract", "stdin", "stdout", "-l", "rus", "--psm", "6"],
-        input=png, capture_output=True, timeout=PAGE_TIMEOUT_SECONDS)
+        input=png, capture_output=True, timeout=timeout)
+    document_processing.check()
     if done.returncode:
         raise Unavailable("Распознавание страницы не выполнилось; проверьте "
                           "Tesseract и наличие русского словаря на сервере.")
@@ -108,9 +113,13 @@ def text(pdf: bytes, pages: int = 3, dpi: int = DEFAULT_DPI, *,
                    else list(range(min(max(0, int(pages)), document.page_count))))
         out: list[str] = []
         for index in indices:
+            document_processing.check()
             if not isinstance(index, int) or not 0 <= index < document.page_count:
                 raise ValueError("Номер страницы вне документа")
             page = document[index]
+            rect = getattr(page,'rect',None)
+            if rect is not None and (rect.width*float(dpi)/72)*(rect.height*float(dpi)/72) > MAX_RASTER_PIXELS:
+                raise Unavailable('Страница PDF слишком велика для распознавания: пришлите её в меньшем разрешении.')
             recognized = _recognized(page.get_pixmap(dpi=dpi).tobytes("png"))
             if upright and _words(recognized) < UPRIGHT_WORDS:
                 for turn in (90, 270):

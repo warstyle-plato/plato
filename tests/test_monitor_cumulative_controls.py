@@ -5,6 +5,7 @@ those responses separately. No customer workbook is kept in this fixture.
 """
 from __future__ import annotations
 
+import base64
 import contextlib
 import copy
 import http.server
@@ -132,7 +133,7 @@ class Responses:
             assert len(ticket) == 32
             self.jobs[ticket] = (path, body)
             return route.fulfill(status=202, json={'pending': True, 'ticket': ticket})
-        if path in ['/monitor/contracts/result', '/monitor/cumulative/result']:
+        if path in ['/monitor/contracts/result', '/monitor/contracts/result-part', '/monitor/cumulative/result']:
             if self.reject_poll:
                 return route.abort('connectionfailed')
             job, params = self.jobs[body['ticket']]
@@ -166,7 +167,14 @@ class Responses:
             data = copy.deepcopy(self.data)
             if data['rows']:
                 data['rows'][0]['contractor'] = 'Подрядчик ' + params['project']
-            return route.fulfill(json={'pending': False, 'ok': True, 'register': data})
+            result = {'ok': True, 'register': data}
+            if path.endswith('/result-part'):
+                raw = json.dumps(result, ensure_ascii=False).encode()
+                offset = body['offset']
+                return route.fulfill(json={'pending': False, 'ticket': body['ticket'], 'result_part': {
+                    'offset': offset, 'total_bytes': len(raw),
+                    'content_base64': base64.b64encode(raw[offset:offset+256*1024]).decode()}})
+            return route.fulfill(json={'pending': False, **result})
         return route.fulfill(json={})
 
 
@@ -202,7 +210,7 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
         expect(page.locator('#contractsRows')).to_contain_text('197,8%')
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         expect(row).to_contain_text('1\u00a0000\u00a0000 ₽')
-        expect(row.locator('.term')).to_contain_text('Нужен срок')
+        expect(row.locator('.term')).to_contain_text('Указать срок договора')
         from contract_rows import opened
         expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('выполнено 0 ₽')
         assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—']
@@ -389,7 +397,7 @@ def test_undated_quantity_and_later_manual_deadline_are_only_references():
         page.locator('#contractsTab').click()
         row = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         row.wait_for()
-        expect(row.locator('.term')).to_contain_text('Нужен срок')
+        expect(row.locator('.term')).to_contain_text('Указать срок договора')
         expect(row.locator('.term')).not_to_contain_text('01.02.2027')
         assert page.evaluate('document.querySelector("#contractsRows").scrollWidth <= document.querySelector("#contractsRows").clientWidth')
         row.locator('.contract-open').click()

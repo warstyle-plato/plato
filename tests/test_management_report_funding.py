@@ -56,6 +56,22 @@ def _rss_with_sources() -> bytes:
         (datetime.date(2026, 10, 19), 50 * M),
     ])
     book = load_workbook(io.BytesIO(data))
+    estimate = book["Расчет стоимости строительства"]
+    # These payment codes are explicit members of the selected synthetic RSS,
+    # including the chapter1 payment added by the scope-comparison test. A
+    # prefix alone is not evidence that an absent source code belongs here.
+    estimate.delete_rows(10, 3)
+    for row, (code, label, amount) in enumerate([
+        ("1", "Земельный участок", 900 * M), ("1.1", "Земельный участок", 900 * M),
+        ("2", "Строительство", 1000 * M), ("2.2", "Строительство", 1000 * M),
+        ("2.2.1", "Монолит", 1000 * M), ("2.2.1.4", "Монолит", 1000 * M),
+        ("3", "Прочие затраты", 18 * M), ("3.1", "Реклама", 0),
+        ("3.5", "Услуги банка", 18 * M), ("3.5.1", "Услуги банка", 2 * M),
+    ], 10):
+        for column, value in ((1, code), (4, label), (5, amount)):
+            estimate.cell(row, column, value)
+    estimate.cell(22, 4, "Всего инвестиционные расходы")
+    estimate.cell(22, 5, 1918 * M)
     paid = book["Реестр платежей"]
     for r in range(10, paid.max_row + 1):
         if paid.cell(row=r, column=10).value is not None:
@@ -296,7 +312,7 @@ def test_the_report_names_no_chapters_sheets_or_codes(monkeypatch):
     assert "Лимит банка: 4,10 млрд ₽" in text and "Утверждённый бюджет: 6,50 млрд ₽" in text
     assert "Эскроу на конец " in text and "Комиссии и услуги банка" in page
     notes = {item["label"]: item["note"] for item in report.tiles(built)}
-    source_notes = dashboard.funding_source_notes(built["funding"]["limit"])
+    source_notes = dashboard.funding_source_tile_notes(built["funding"]["limit"])
     assert notes["Лимит банка"] == "по смете РСС; резерв 138,0 млн ₽. " + source_notes["limit"]
     assert notes["Утверждённый бюджет"] == "по финмодели. " + source_notes["budget"]
 
@@ -345,7 +361,7 @@ def test_the_draws_follow_the_chapters_of_the_limit(monkeypatch):
     # Число и одна строка (владелец, 27.10.2026: подписи плиток — «простыни»).
     assert note == ("смета минус всё оплаченное, кредитом и своими деньгами; не хватит "
                     "1,06 млрд ₽ с ноября 2026. "
-                    + dashboard.funding_source_notes(built["funding"]["limit"])["left"])
+                    + dashboard.funding_source_tile_notes(built["funding"]["limit"])["left"])
     text = report.render_text(built)
     assert ("перерасход по статьям 1,20 млрд ₽ остаток не уменьшает; лимиты по статьям "
             "больше общего лимита на 60,0 млн ₽") in text
@@ -386,7 +402,7 @@ def test_without_chapter_one_the_report_stays_plain(monkeypatch):
     built = report.build(PROJECT, "week", "2026-10-18")
     notes = {item["label"]: item["note"] for item in report.tiles(built)}
     assert notes["Лимит банка"] == ("по смете РСС. "
-                                   + dashboard.funding_source_notes(built["funding"]["limit"])["limit"])
+                                   + dashboard.funding_source_tile_notes(built["funding"]["limit"])["limit"])
     assert "главы 2–3" not in report.render_html(built)
 
 
@@ -407,7 +423,7 @@ def test_the_money_tiles_name_chapters_reserves_and_periods(monkeypatch):
         "deficit_ladder": {"total": 2_000 * M}}}})
     built = report.build(PROJECT, "week", "2026-10-18")
     notes = {item["label"]: item["note"] for item in report.tiles(built)}
-    source_notes = dashboard.funding_source_notes(built["funding"]["limit"])
+    source_notes = dashboard.funding_source_tile_notes(built["funding"]["limit"])
     assert notes["Утверждённый бюджет"] == ("из них по 1 главе 1,30 млрд ₽, по 2 главе 6,90 млрд ₽, "
                                              "по 3 главе 610,0 млн ₽. " + source_notes["budget"])
     assert notes["Лимит банка"] == ("из них по 1 главе 1,20 млрд ₽, по 2 главе 5,10 млрд ₽, "

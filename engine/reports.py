@@ -171,7 +171,12 @@ REPORT_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
         ("expenses", "Расходы"), ("income", "Доходы"), ("finance", "Финансирование"),
         ("sensitivity", "Чувствительность"), ("calendar", "Календарный план"),
     ),
-    REPORT_KIND_OBJECT: _OBJECT_FRAME_SECTIONS,
+    REPORT_KIND_OBJECT: (
+        ("decision", "Решение"), ("object", "Объект и участок"), ("income", "Доходы"),
+        ("strategy", "Цены и продажи во времени"), ("costs", "Затраты"),
+        ("finance", "Финансирование"), ("owner", "Экономика собственника"),
+        ("comparison", "Сравнение стратегий"), ("sensitivity", "Чувствительность"),
+        ("calendar", "Календарь"), ("assumptions", "Допущения и ограничения")),
     REPORT_KIND_HOTEL: _OBJECT_FRAME_SECTIONS,
 }
 
@@ -320,7 +325,12 @@ def _expense_structure_block(report: dict[str, Any], summary: dict[str, Any]) ->
                  "share": 1.0 if float(total or 0.0) else None})
     return [{"title": "Структура расходов", "kind": "expense_structure",
              "columns": [list(c) for c in EXPENSE_STRUCTURE_COLUMNS], "years": rows,
-             "widths": list(EXPENSE_STRUCTURE_PDF_WIDTHS)}]
+             "widths": list(EXPENSE_STRUCTURE_PDF_WIDTHS),
+             "note": "Итог включает CAPEX, коммерческие расходы, эксплуатацию, финансирование и налоги. "
+                     "Таблицы ниже — расшифровка этих статей, повторно в итог не добавляются.",
+             "charts": [{"title": "Структура расходов, млн ₽", "unit": "млн ₽",
+                         "fields": [["value", "Сумма"]], "multiplier": 1e-6,
+                         "horizontal": True, "rows": rows[:-1]}]}]
 
 
 def _object_unit_block(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -410,7 +420,7 @@ def _object_sensitivity(objects: list[dict[str, Any]], deal_rub: float,
 
 
 def object_report(result: dict[str, Any]) -> dict[str, Any]:
-    """Отчёт проекта без жилья — девять разделов (`REPORT_SECTIONS`) из уже
+    """Отчёт проекта без жилья — разделы (`REPORT_SECTIONS`) из уже
     посчитанного: `finance.nonres`, смета объектов (`object_costs`),
     `report.nonres_financing`, `report.equity_participation`, сводка и
     `report.layout.debt_metric`. Второго расчёта нет — только раскладка.
@@ -480,6 +490,15 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
         _row("Пик собственных средств", equity.get("peak") if equity else _equity_need(result), "rub"),
         _row("Цена входа (участок, сделка)", deal_rub, "rub"),
     ]
+    disclosure = report.get("office_results") or {}
+    if disclosure.get("valuation"):
+        decision[0]["label"] += " (с оценкой удержания)"
+        decision += [_row("Денежная выручка — без оценки", disclosure.get("cash_revenue"), "rub"),
+                     _row("Оценка удержания — без сделки", disclosure["valuation"], "rub")]
+    if disclosure.get("valuation_missing"):
+        decision[0]["label"] += " (без нерассчитанной оценки удержания)"
+        decision += [_row(p["label"] + " — оценка удержания", "Нет данных — " + p["reason"], "text")
+                     for p in disclosure["valuation_missing"]]
     sections["decision"] = {
         "brief": [_row("Вывод", verdict["title"], "text"),
                   _row("Основание", verdict["text"], "text"), *decision[:4]],
@@ -584,6 +603,8 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
                     _row("Стоимость объекта — оценка удержания, без сделки" if hold
                          else "Выход: продажа по ставке капитализации",
                          kpi.get("exit_value"), "rub")]
+            if hold and any(p["key"] == item.get("key") for p in disclosure.get("valuation_missing") or []):
+                rows[-1] = _row("Стоимость объекта — оценка удержания, без сделки", "Нет данных — " + next(p["reason"] for p in disclosure["valuation_missing"] if p["key"] == item.get("key")), "text")
             columns = [["year", "Год", "text"], ["rent_revenue", "Аренда", "mln"],
                        ["opex", "Эксплуатация", "mln"], ["property_tax", "Налог на имущество", "mln"],
                        ["noi", "NOI", "mln"], ["exit_revenue", "Выход", "mln"]]
@@ -613,7 +634,9 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     exit_value = sum(float((o.get("kpi") or {}).get("exit_value") or 0.0) for o in objects
                      if o.get("strategy") == nonres_strategy.STRATEGY_INCOME)
     if exit_value:
-        income_brief.append(_row("Стоимость выхода", exit_value, "rub"))
+        income_brief.append(_row("Продажа объектов при выходе — денежная выручка", totals["exit_revenue"], "rub"))
+        if disclosure.get("valuation"):
+            income_brief.append(_row("Оценка удержания — без сделки", disclosure["valuation"], "rub"))
     sections["income"] = {"brief": income_brief, "blocks": income_blocks}
 
     # 5. Затраты -----------------------------------------------------------
@@ -725,7 +748,7 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     nonres_costs = next((float(e.get("value") or 0.0) for e in report.get("expense_structure") or []
                          if e.get("label") == (report.get("nonres_costs_label")
                                                or NONRES_COSTS_LABEL)), 0.0)
-    pnl = [_row("Выручка", summary.get("revenue"), "rub")]
+    pnl = [_row("Доходы модели — деньги + оценка удержания" if (report.get("office_results") or {}).get("valuation") else "Выручка", summary.get("revenue"), "rub")]
     if income_any:
         pnl.append(_row("NOI объектов за горизонт", totals["noi"], "rub"))
     pnl += [_row("Затраты стройки (смета объектов и общие)", summary.get("capex"), "rub"),
@@ -781,6 +804,15 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     sections["calendar"] = {"brief": brief, "calendar": calendar,
                             "blocks": [{"ref": "calendar", "title": "Календарный план объекта"}]}
 
+    # Disclosures are prepared once alongside the authoritative calculation.
+    from office_results import blocks as office_disclosure_blocks
+    disclosure_income, disclosure_sales, disclosure_assumptions = office_disclosure_blocks(
+        report.get("office_results") or {})
+    sections["income"]["blocks"] = disclosure_income + sections["income"]["blocks"]
+    sections["strategy"]["blocks"] = disclosure_sales + sections["strategy"]["blocks"]
+    sections["comparison"] = {"brief": [_row("Критерий", "NPV проекта при сопоставимых условиях; см. сравнение стратегий", "text")], "blocks": []}
+    # strategy_compare attaches its ref later using the section key.
+    sections["assumptions"] = {"brief": [_row("Статус", "Расчётный план; исходные цены и динамика раскрыты по продуктам", "text")], "blocks": disclosure_assumptions}
     return {"kind": REPORT_KIND_OBJECT,
             "sections": [{"key": key, "title": title, **sections[key]}
                          for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}
@@ -812,6 +844,7 @@ def _ddu_objects(result: dict[str, Any], objects: list[dict[str, Any]]) -> list[
     выручка объекта в расчёте; площадь и смета — те же поля движка."""
     revenue = result.get("revenue") or {}
     tep = {str(row.get("key")): row for row in (result.get("tep") or {}).get("rows") or []}
+    products = {str(p.get("key")): p for p in (result.get("report") or {}).get("products") or []}
     own = {str(o.get("key")) for o in objects}
     out = []
     for obj in STANDALONE_OBJECTS:
@@ -819,8 +852,13 @@ def _ddu_objects(result: dict[str, Any], objects: list[dict[str, Any]]) -> list[
         if obj.key in own or value <= 0.5:
             continue
         row = tep.get(obj.key) or {}
+        # TEP retains building area before first-floor parking is allocated.
+        # Product saleable is the canonical base used by revenue and prices;
+        # object cards and unit costs must use that same sold metre.
+        product = products.get(obj.key) or {}
+        area = product.get("saleable")
         out.append({"key": obj.key, "title": str(row.get("label") or obj.label),
-                    "revenue": value, "area": float(row.get("saleable") or 0.0)})
+                    "revenue": value, "area": float(area) if area is not None else 0.0})
     return out
 
 

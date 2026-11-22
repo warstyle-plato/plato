@@ -177,6 +177,10 @@ def test_real_editor_uses_full_cost_and_missing_cost_stays_unknown(site,api,monk
         page.locator('#readinessSave').click()
         expect(page.locator('#readinessSummary .readiness-project-value')).to_have_count(0)
         expect(page.locator('#readinessSummary')).to_contain_text('Не хватает полной плановой стоимости')
+        assessment=page.evaluate('currentView.schedule.work_forecast')
+        assert 'outside_current_source' in assessment['reason']
+        assert 'Не хватает полной плановой стоимости' in assessment['project']['reason']
+        assert assessment['cut']==DAY
         assert ready.editor(PROJECT)['configuration']['element_profile']['assignments']['2']['weight']['value'] is None
         expect(page.locator('#readinessSave')).to_be_enabled()
         page.locator('#readinessEditorBody>details').filter(has=page.locator('.readiness-works')).locator('summary').first.click()

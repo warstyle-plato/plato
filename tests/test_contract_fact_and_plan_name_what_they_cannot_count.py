@@ -1,7 +1,8 @@
 """Что план и факт договора не могут посчитать, они называют с причиной, а не считают нулём.
 
-Позиция без цены и период КС с суммой, но без объёма, уходят на проверку. Объём, который не
-вошёл в факт, не делает строку графика выполненной. Позиции без суммы в плане и в приложении
+Непрочитанная цена и сумма без объёма требуют проверки. При неизвестной цене денежный итог
+остаётся неизвестным, а подтверждённый объём работы сохраняется. Несопоставленный объём
+не делает строку графика выполненной. Позиции без суммы в плане и в приложении
 о принятых работах названы числом. Ручные доли строк дают ровно всю позицию. Номер акта
 берётся только из явной записи. При нулевом плане на дату среза процент не считается.
 Данные выдуманы: репозиторий публичный.
@@ -66,7 +67,11 @@ def test_a_position_without_a_price_goes_to_review_and_gives_no_money():
     result = _fact(_act(1, "1.2", "Устройство плит", 1.0, 700.0, "2026-01-31"))
     (review,) = result["review"]
     assert review["reason"] == "У позиции № 1.2 в расчёте не прочитана цена за единицу."
-    assert (result["total"], result["lines"], result["positions"]) == (0.0, [], [])
+    assert result['total'] is None and result['money_incomplete']
+    (line,) = result['lines']
+    assert line['fact'] is None and line['work_fact'] is None
+    assert line['volumes'] == [{'unit': 'м3', 'quantity': 1.0}]
+    assert result['positions'][0]['amount'] is None and result['positions'][0]['act_amount'] == 700.0
 
 
 def test_a_ks_period_with_a_sum_and_no_volume_goes_to_review_with_the_sum():
@@ -74,11 +79,11 @@ def test_a_ks_period_with_a_sum_and_no_volume_goes_to_review_with_the_sum():
                                "periods": [{"quantity": 0, "amount": 5000.0, "date_start": "2026-01-20",
                                             "date_end": "2026-01-31", "label": "январь"}]}]}
     (act,) = fact.acts(row)["acts"]
-    assert (act["quantity"], act["act_amount"]) == (None, 5000.0)
+    assert (act["quantity"], act["act_amount"]) == (0, 5000.0)
     result = _fact(act)
     (review,) = result["review"]
-    assert review["reason"] == ("В периоде КС записана сумма 5 000,00 ₽, а объём не записан (например, оплачена "
-                                "только поставка материалов): без объёма выполнение не пересчитать по цене расчёта.")
+    assert review["reason"] == ("В периоде КС записана сумма 5 000,00 ₽, а объём работ равен нулю и количество "
+                                "материала не записано: без объёма выполнение не пересчитать по цене расчёта.")
     assert result["total"] == 0.0
 
 
@@ -178,7 +183,7 @@ def test_the_card_says_why_there_is_no_percent_and_what_is_left_out():
             box.innerHTML = contractControlHtml({json.dumps(_control(LEFT_OUT), ensure_ascii=False)});
             document.body.append(box); return box.innerText}}""")
         assert errors == []
-    assert ("готовность договора 0 %, выполнение плана не посчитано: по плану на эту дату ещё ничего не должно "
+    assert ("готовность сопоставленных работ 0 %, выполнение плана не посчитано: по плану на эту дату ещё ничего не должно "
             "быть выполнено") in shown
     # Отклонение без плана — не 0 %: процент не считается вовсе.
     assert "(0 %)" not in shown and "(+0 %)" not in shown

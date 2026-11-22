@@ -140,7 +140,14 @@ def test_the_report_takes_the_monitor_tree():
     assert by_name["Корпус 2"]["forecast_finish"] == "2026-10-30"
     assert by_name["Корпус 2"]["delta_days"] == -30
     page = report.render_html(got)
-    assert "Сроки работ по корпусам" in page and 'class="chart gantt"' in page
+    assert page.count('data-gpr-block=') == 3
+    assert all(title in page for title in ['Прогноз учтённых работ', 'Матрица готовности', 'Гант по корпусам'])
+    assert '<article class="cg-work"' not in page and 'class="chart gantt"' not in page
+    assert 'Подробные работы и источники — в Мониторе' in page
+    # Full source dates stay in the DTO/text consumer; the executive document
+    # presents only its independently qualified canonical project assessment.
+    finish = gantt.compact_model(block, got['end'])['finish'] or ''
+    assert page.count('data-project-forecast="'+finish+'"') == 3
     text = report.render_text(got)
     assert "Корпус 2: окончание работ по графику 29.11.2026, прогноз 30.10.2026 (раньше на 30 дн.)." in text
     # No corpus is late by the GPR pace, so there is no delay finding.

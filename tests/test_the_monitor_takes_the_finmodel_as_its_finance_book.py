@@ -50,6 +50,7 @@ def _finmodel(crosswalk: bool = True, credit: bool = True) -> bytes:
     ws = book.active
     ws.title = "ОТЧЕТ"
     cf = book.create_sheet("cf_1_new")
+    cf["B2"] = "Все суммы в тыс. руб."
     cf.cell(6, 9, "ИТОГО"), cf.cell(6, 10, "ФАКТ"), cf.cell(6, 11, "ПЛАН")
     # факт закрыт сентябрём, план — с октября
     cf.cell(5, 13, "факт"), cf.cell(6, 13, datetime.datetime(2026, 9, 1))
@@ -123,11 +124,12 @@ def test_the_chapters_come_from_the_crosswalk(tmp_path):
     assert "2.4.9" in got["chapters_reason"] and "не найдены" in got["chapters_reason"]
 
 
-def test_a_mixed_article_without_a_decision_goes_by_majority_and_says_so(tmp_path, monkeypatch):
+def test_a_mixed_article_without_a_monetary_decision_remains_unallocated(tmp_path, monkeypatch):
     monkeypatch.setattr(dashboard, "_FM_CHAPTER_DECIDED", {})
     got = _read(tmp_path, _finmodel())
-    # 2.3.4: две строки карты в главу 3, одна в главу 2 — глава большинства, и это сказано.
-    assert got["articles"]["2.3.4"]["chapter"] == "3"
+    # Counting map rows cannot assign the money of a mixed article.
+    assert got["articles"]["2.3.4"]["chapter"] == ""
+    assert got['chapter_flow']['']['sections']['2.3'] > 0
     assert "2.3.4" in got["chapters_reason"] and "разные главы" in got["chapters_reason"]
 
 
@@ -183,7 +185,7 @@ def _finmodel_funding(monkeypatch, sections: dict | None, estimate: dict, paid: 
     })
     monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {"rows": [], "by_code": estimate})
     monkeypatch.setattr(dashboard, "_paid_in_chapters",
-                        lambda rss, est, chapters=("2", "3"): {
+                        lambda rss, est, chapters=("2", "3"), **_: {
                             "total": sum(paid[c][0] for c in chapters),
                             "borrowed": sum(paid[c][1] for c in chapters)})
     # Оплаты РСС по кодам в статьи финмодели не кладутся вовсе.
@@ -276,17 +278,16 @@ def test_the_report_names_the_bank_need_by_chapter_for_the_model(monkeypatch):
     # «простыни»); разбивка по главам — в разделе «Финансирование» ниже.
     assert tiles["Осталось по смете после всех оплат"]["note"] == (
         "смета минус всё оплаченное, кредитом и своими деньгами; не хватит 2,39 млрд ₽ с ноября 2026. "
-        "Смета и оплаты для остатка лимита — РСС: дата данных не указана. "
-        "Дата расчётного среза не указана.")
+        "По учтённым оплатам. РСС: дата не указана.")
     assert "Дефицит на достройку" not in tiles
-    # No AHR observations are available: this remains the separately named
-    # bank component, with an explicit caveat rather than a combined claim.
+    # The complete legacy bank result remains available without an AHR cash
+    # observation; a missing cash widget must not erase its calculated need.
     tile = tiles["Потребность в допфинансировании банка"]
     limit = built['funding']['limit']
     assert tile['value'] == report._rub(limit['deficit_ladder']['total'])
-    assert 'Сумма без уточнения АХР: остаток АХР пока не рассчитан' in tile['note']
-    assert 'Дата расчётного среза не указана' in tile['note']
-    assert 'финмодель: дата данных не указана; РСС: дата данных не указана' in tile['note']
+    assert 'ФМ: дата не указана. РСС: дата не указана.' in tile['note']
+    assert 'участок и проценты по кредиту сюда не входят' in tile['note']
+    assert 'сверка' not in tile['note']
     text = report.render_text(built)
     assert ("на стройку и коммерцию по финмодели нужно 3,67 млрд ₽ при остатке лимита глав 2–3 "
             "1,28 млрд ₽ — потребность в допфинансировании банка 2,39 млрд ₽: на стройку") in text

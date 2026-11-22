@@ -54,18 +54,24 @@ def test_the_register_and_card_share_the_same_source_interval(source_card):
 @pytest.mark.parametrize('width',[390,1440])
 def test_real_page_shows_known_plan_dates_when_forecast_is_unavailable(source_card,width):
     from playwright.sync_api import expect
+    from developaid_contract_documents import CHART_DATES_ASSUMPTION
     row={'id':CONTRACT,'physical_items':[]}
     control=files.register_control(PROJECT,{'rows':[row]},CUT)['rows'][0]['schedule_control']
+    control['schedule_source']['assumption']=CHART_DATES_ASSUMPTION
     with browser_page(width) as (page,responses,errors):
         responses.data['rows'][0]['schedule_control']=control
         page.route('**/monitor/contracts/document*',lambda route:route.fulfill(json={
             'pending':False,'ok':True,**source_card}))
         page.locator('#contractsTab').click()
         line=page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(line).to_contain_text('Прогноз не рассчитан')
-        expect(line).to_contain_text('План по ГПР: 29.01.2026 — 05.02.2026')
-        expect(line.locator('.term')).to_contain_text('Окончание исходного ГПР: 05.02.2026')
-        expect(line.locator('.term')).to_contain_text('Прогноз по ГПР не рассчитан')
+        expect(line.locator('.term')).to_contain_text('План ГПР: 05.02.2026')
+        schedule=line.locator('.contract-schedule')
+        expect(schedule).to_have_text('Проверить документы')
+        expect(schedule).not_to_contain_text(CHART_DATES_ASSUMPTION)
+        expect(schedule).not_to_contain_text('Это сроки исходного графика')
+        expect(schedule.locator('.contract-source-plan .warn')).to_have_count(0)
+        expect(line.locator('.term')).to_contain_text('Указать срок договора')
+        expect(line.locator('.term')).not_to_contain_text('Прогноз')
         expect(line.locator('.term')).not_to_contain_text('Прогноз неизвестен')
         line.locator('.contract-open').click()
         expect(page.locator('#contractComparisonInfo')).to_contain_text('План по ГПР: 29.01.2026 — 05.02.2026')
@@ -99,21 +105,21 @@ def test_known_gpr_forecast_is_the_same_in_the_term_tile_and_schedule(width,cont
         page.locator('#contractsTab').click()
         line=page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         term=line.locator('.term')
-        target='Срок договора: 03.02.2026' if contract_deadline else 'Окончание плана по ГПР: 05.02.2026'
+        target='03.02.2026' if contract_deadline else 'План ГПР: 05.02.2026'
         expect(term).to_contain_text(target)
-        expect(term).to_contain_text('Прогноз по ГПР: 06.02.2026')
+        expect(term).not_to_contain_text('Прогноз по ГПР')
         expect(term).not_to_contain_text('Прогноз неизвестен')
-        expect(line.locator('.contract-schedule')).to_contain_text('прогноз 06.02.2026')
+        expect(line.locator('.contract-schedule')).to_have_text('Сверить с КС-6а')
         more=opened(page,CONTRACT)
         expect(more.locator('[data-label="Срок договора"]')).to_contain_text('03.02.2026' if contract_deadline else 'Не определён')
         expect(more.locator('[data-label="Прогноз окончания"]')).to_contain_text('06.02.2026')
         expect(more.locator('[data-label="Прогноз окончания"]')).not_to_contain_text('Прогноз неизвестен')
         expect(more.locator('[data-label="Прогноз окончания"] .contract-card-pill-value')).to_have_text('06.02.2026')
         if not contract_deadline:
-            expect(term).to_contain_text('Срок договора не указан')
+            expect(term).to_contain_text('Указать срок договора')
             expect(more.locator('.contract-term')).to_have_text('Указать срок')
         else:
-            expect(term).to_contain_text('ДС № 1 · стр. 2 · п. 2.3.2')
+            expect(more).to_contain_text('ДС № 1 · стр. 2 · п. 2.3.2')
             more.locator('#contractRecordSources > summary').click()
             more.locator('#contractRecordSources > .contract-sources > summary').click()
             history=more.locator('.contract-deadline-history')

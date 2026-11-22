@@ -1,0 +1,383 @@
+{
+  "quality": {
+    "krt_seen": 14,
+    "krt_accepted": 13,
+    "krt_dropped": [
+      {
+        "reason": "не опубликована площадь территории",
+        "count": 1
+      }
+    ],
+    "seen": 97,
+    "accepted": 38,
+    "incomplete": 15,
+    "outside_profile": 20,
+    "noise": 24
+  },
+  "coverage": [
+    {
+      "pages": 13,
+      "cards": 97,
+      "kept": 64,
+      "cards_per_page": 10,
+      "total_elements": 97,
+      "filters": [
+        {
+          "filter": "земельные участки",
+          "pages": 3,
+          "cards": 23,
+          "total_elements": 23,
+          "stopped": "",
+          "reason": ""
+        },
+        {
+          "filter": "здания",
+          "pages": 6,
+          "cards": 53,
+          "total_elements": 53,
+          "stopped": "",
+          "reason": ""
+        },
+        {
+          "filter": "незавершённые объекты",
+          "pages": 1,
+          "cards": 0,
+          "total_elements": 0,
+          "stopped": "",
+          "reason": ""
+        },
+        {
+          "filter": "имущественные комплексы",
+          "pages": 3,
+          "cards": 21,
+          "total_elements": 21,
+          "stopped": "",
+          "reason": ""
+        }
+      ],
+      "region_filter": "dynSubjRF=78 (Москва) + проверка официального subjectRFCode=77",
+      "market": "приватизация государственного и муниципального имущества (178-ФЗ); банкротные лоты в выдаче не найдены",
+      "reason": "",
+      "privatization_seen": 29,
+      "privatization_kept": 2,
+      "privatization_dropped": {
+        "участок меньше 0,5 га": 20,
+        "здание меньше 1 000 м²": 4,
+        "начальная цена ниже 10 млн ₽": 1,
+        "площадь участка не указана": 1,
+        "площадь здания не указана": 1
+      },
+      "privatization_rule": "Москва и Московская область; земля от 0,5 га, здание от 1 000 м², цена от 10 млн ₽; доля в обществе — по правилу для долей; только пока идёт приём заявок",
+      "kept_krt": 0,
+      "source": "ГИС Торги (torgi.gov.ru)"
+    },
+    {
+      "source": "RAD / Lot-online",
+      "pages": 0,
+      "cards": 61,
+      "kept": 0,
+      "skipped": 0,
+      "reason": "остановлено по времени: разобрано лотов 0 из 61 найденных",
+      "kept_krt": 0
+    },
+    {
+      "source": "Roseltorg",
+      "pages": 0,
+      "cards": 106,
+      "kept": 16,
+      "reason": "не прочитано карточек 42 из 106: источник не ответил или кончился срок сбора",
+      "market": "процедуры площадки по тегам «земельный участок» и «комплексное развитие», раздел имущества «Развитие территории» по Москве и городская приватизация: доли обществ, земля и здания Московской области",
+      "sections": [
+        {
+          "name": "Развитие территории (имущество, Москва)",
+          "procedure_links": 25,
+          "krt_titles": 1
+        }
+      ],
+      "privatization_lists": [
+        {
+          "name": "Доли городских обществ (178-ФЗ), тег «продажа доли»",
+          "procedure_links": 8,
+          "not_178": 5,
+          "empty_pages": 1
+        },
+        {
+          "name": "Доли городских обществ (178-ФЗ), тег «уставный капитал»",
+          "procedure_links": 23,
+          "not_178": 3,
+          "empty_pages": 0
+        },
+        {
+          "name": "Доли городских обществ (178-ФЗ), тег «доля в уставном капитале»",
+          "procedure_links": 3,
+          "not_178": 0,
+          "empty_pages": 1
+        },
+        {
+          "name": "Земельные участки, Московская область",
+          "procedure_links": 1,
+          "not_178": 10,
+          "empty_pages": 1
+        },
+        {
+          "name": "Коммерческая недвижимость, Московская область",
+          "procedure_links": 13,
+          "not_178": 6,
+          "empty_pages": 0,
+          "reason": "страница 2: Refused: площадка ответила HTTP 429; попыток: 1 из 1"
+        }
+      ],
+      "privatization_listing_dropped": {
+        "участок меньше 0,5 га": 1,
+        "отдельное помещение — не земля и не здание": 1
+      },
+      "krt_titles": 1,
+      "dropped": {
+        "срок подачи прошёл или не назван": 13,
+        "не распоряжение имуществом": 6,
+        "статус «Отменен»": 1
+      },
+      "krt_dropped": {
+        "срок подачи прошёл или не назван": 13,
+        "статус «Отменен»": 1
+      },
+      "krt_read": 27,
+      "privatization_seen": 31,
+      "privatization_kept": 3,
+      "privatization_dropped": {
+        "не Москва и не Московская область": 15,
+        "регион в карточке не указан": 11,
+        "приём заявок закончен": 2
+      },
+      "privatization_rule": "Москва и Московская область; земля от 0,5 га, здание от 1 000 м², цена от 10 млн ₽; доля в обществе — по правилу для долей; только пока идёт приём заявок",
+      "from_section": 25,
+      "unread_cards": 42,
+      "kept_krt": 13
+    },
+    {
+      "catalogue": "investmoscow",
+      "catalogue_pages": 5,
+      "city_cards": 0,
+      "official_etp_links": 0,
+      "verified_lots": 0,
+      "unsupported_etp_hosts": [],
+      "unresolved_city_cards": 0,
+      "errors": [],
+      "kept_krt": 0,
+      "source": "Торги Москвы → официальная ЭТП"
+    },
+    {
+      "source": "ЭТП ГПБ",
+      "queries": 5,
+      "cards": 500,
+      "kept": 0,
+      "skipped": 500,
+      "outside_region": 474,
+      "outside_profile": 26,
+      "inactive": 0,
+      "invalid": 0,
+      "duplicates": 0,
+      "reason": "",
+      "kept_krt": 0
+    },
+    {
+      "source": "ЭТП РФ",
+      "pages": 1,
+      "cards": 20,
+      "kept": 0,
+      "skipped": 20,
+      "reason": "",
+      "kept_krt": 0
+    },
+    {
+      "source": "Сбербанк-АСТ",
+      "pages": 3,
+      "cards": 0,
+      "kept": 0,
+      "skipped": 0,
+      "endpoints": [
+        {
+          "url": "https://utp.sberbank-ast.ru/Bankruptcy/List/BidList",
+          "pages": 1,
+          "cards": 0
+        },
+        {
+          "url": "https://utp.sberbank-ast.ru/Bankruptcy/List/BidListProperty",
+          "pages": 1,
+          "cards": 0
+        },
+        {
+          "url": "https://utp.sberbank-ast.ru/AP/List/BidList/309",
+          "pages": 1,
+          "cards": 0
+        }
+      ],
+      "endpoint_errors": [],
+      "reason": "официальный реестр ответил, но карточки не распознаны",
+      "kept_krt": 0
+    },
+    {
+      "source": "НИС",
+      "pages": 1,
+      "cards": 20,
+      "kept": 0,
+      "skipped": 20,
+      "reason": "",
+      "kept_krt": 0
+    },
+    {
+      "source": "ЕФРСБ",
+      "pages": 88,
+      "cards": 1309,
+      "kept": 19,
+      "skipped": 4068,
+      "skipped_not_moscow": 355,
+      "skipped_not_development": 254,
+      "skipped_not_live": 3459,
+      "skipped_status_unknown": 0,
+      "collected_at": 1794857183.111093,
+      "harvest": "fresh",
+      "region_note": "Москва — по региону должника в ЕФРСБ и по адресу или кадастровому номеру имущества в лоте",
+      "min_start_price_rub": 20000000,
+      "reason": "",
+      "kept_krt": 1
+    }
+  ],
+  "krt_reconciliation": {
+    "expected": 13,
+    "included": 13,
+    "rows": [
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000032802/1",
+        "name": "г. Москва, Куркинское ш., вл. 27-39, Куркинское ш., вл. 21, ул. Героев Панфиловцев, вл. 20, корп. 1",
+        "slugs": [
+          "kurkinskoe-sh-vl-27-39-kurkinskoe-sh-vl-21-geroev-panfilovts"
+        ],
+        "saved_deadline": "18.11.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000032801/1",
+        "name": "г. Москва, вдоль ул. Синельниковской, ул. 1-я Горловская, влд. 4",
+        "slugs": [
+          "1-ya-gorlovskaya-ul-vl-4-vdol-sinelnikovskoy-ul"
+        ],
+        "saved_deadline": "18.11.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000031473/1",
+        "name": "производственной зоне № 54 «Прожектор» (территория 2)",
+        "slugs": [
+          "prozhektor-ter-2"
+        ],
+        "saved_deadline": "23.11.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000031472/1",
+        "name": "производственной зоне № 54 «Прожектор» (территория 1)",
+        "slugs": [
+          "prozhektor-ter-1"
+        ],
+        "saved_deadline": "23.11.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000031369/1",
+        "name": "г. Москва, Шипиловский пр-д, влд. 55",
+        "slugs": [
+          "shipilovskiy-pr-d-vl-55"
+        ],
+        "saved_deadline": "26.11.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000031312/1",
+        "name": "г. Москва, ул. Нижние Поля",
+        "slugs": [
+          "nizhnie-polya-ul"
+        ],
+        "saved_deadline": "26.11.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000033444/1",
+        "name": "г. Москва, Задонский пр-д, влд. 1А, Ясеневая ул., влд. 48",
+        "slugs": [
+          "yasenevaya-ul-vl-48"
+        ],
+        "saved_deadline": "01.12.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000033452/1",
+        "name": "г. Москва, Рубцовская наб., влд. 3",
+        "slugs": [
+          "decision:333331220"
+        ],
+        "saved_deadline": "01.12.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000033941/1",
+        "name": "г. Москва, Черницынский пр-д, влд. 3",
+        "slugs": [
+          "decision:331618220"
+        ],
+        "saved_deadline": "30.11.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000033939/1",
+        "name": "г. Москва, пр-д Черепановых, влд. 29",
+        "slugs": [
+          "cherepanovykh-pr-d-vl-29-tpu-likhobory"
+        ],
+        "saved_deadline": "30.11.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000034295/1",
+        "name": "г. Москва, проспект Мира, вл. 82-92",
+        "slugs": [
+          "prospekt-mira-vl-82-92"
+        ],
+        "saved_deadline": "30.11.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000034294/1",
+        "name": "г. Москва, Харьковский пр-д, влд. 1-9",
+        "slugs": [
+          "decision:334995220"
+        ],
+        "saved_deadline": "30.11.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      },
+      {
+        "url": "https://www.roseltorg.ru/procedure/21000005000000034296/1",
+        "name": "г. Москва, ул. Фабрициуса, влд. 19А (территория 2)",
+        "slugs": [
+          "decision:352127220"
+        ],
+        "saved_deadline": "30.11.26 15:00",
+        "state": "included",
+        "reason": "Есть в основной подборке"
+      }
+    ],
+    "error": ""
+  }
+}

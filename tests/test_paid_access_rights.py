@@ -265,7 +265,7 @@ def test_the_core_rejects_a_forged_request():
 
 def _locked_html(status: int) -> str:
     prelude = ("const box={style:{},innerHTML:'',classList:{add(){},remove(){}}};"
-               "const document={getElementById:()=>box};"
+               "const document={getElementById:id=>id==='documentQualificationNotice'?null:box};"
                "let lastResult=1,phaseBundle=1;"
                "const fetch=()=>Promise.reject(new Error('нет сети'));")
     out, _ = page_blocks.run(prelude, f"renderCalcLocked('Причина от сервера',{status});"

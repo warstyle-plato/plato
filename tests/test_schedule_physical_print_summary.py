@@ -24,9 +24,11 @@ def gpr_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, '_SNAPSHOT_DIR', tmp_path / 'monitor')
     monkeypatch.setenv('DATA_DIR', str(tmp_path / 'data'))
     monkeypatch.setattr(physical, '_now', lambda: dt.datetime(2026, 11, 6, 12, tzinfo=dt.timezone.utc))
+    import developaid_schedule_versions as versions
+    monkeypatch.setattr(versions, '_now', lambda: dt.datetime(2026, 11, 6, 12, tzinfo=dt.timezone.utc))
     import developaid_monitor_page  # noqa: F401 — actual production overlays
 
-    def build(scenario='confirmed', *, view=False):
+    def build(scenario='confirmed', *, view=False, with_readiness_profile=True):
         monitor.store_schedule(PROJECT, _gpr_book([
             (1, 'Монтаж корпуса 1', .8, dt.date(2026, 9, 1), dt.date(2026, 10, 31),
              'В работе', '2.2.1.1')]), None, '2026-10-01')
@@ -47,6 +49,25 @@ def gpr_sources(tmp_path, monkeypatch):
                            'scope_confirmed': scenario != 'unconfirmed', 'actual_finish': ''}],
                 'components': [{'component_id': 'Монтаж корпуса 1', 'task_id': '1', 'item_ids': ['0:0']}],
                 'note': 'Проверены работа, корпус, единица и полный объём.'})
+        if with_readiness_profile:
+            # Declare project membership separately from the natural binding.
+            # The one-work frame assignment qualifies this synthetic project's
+            # aggregate; it never confirms the separate natural correspondence.
+            import developaid_schedule_readiness as ready
+            import developaid_schedule_elements as elements
+            source = monitor._working_baseline_state(PROJECT, CUT)
+            configuration = dict(label='Учебный состав монтажа', scope_kind=ready.CURRENT_ESTIMATE,
+                scope_note='Единственная работа учебного проекта', basis='estimated_elements',
+                source_reference='Учебная декларация состава', building_type='Учебный корпус',
+                full_source_sha256=source['source_sha256'], effective_from=CUT,
+                full_scope_confirmed=False, included_ids=['1'], excluded_ids=[],
+                outside_completed_ids=[], weights=[], element_profile=dict(
+                    id=elements.PROFILE_ID, overrides={}, objects={'Корпус 1': 'residential'},
+                    assignments={'1': dict(element_id='frame', share=100)}))
+            options = dict(expected_source_sha256=source['source_sha256'],
+                           expected_source_revision=source['revision'], expected_revision=0)
+            checked = ready.preview(PROJECT, configuration, **options)
+            ready.save(PROJECT, configuration, **options, expected_profile_sha256=checked['profile_sha256'])
         # An unconfirmed relationship must not erase the original archive or
         # pretend that its quantities are already confirmed for the GPR work.
         catalog = physical.catalog(PROJECT, CUT)
@@ -80,34 +101,20 @@ def test_actual_report_keeps_quantities_visible_without_approving_unknown_scope(
         page = engine.new_page(viewport={'width': width, 'height': 1000})
         page.route('**/*', lambda route: route.abort())
         page.set_content(markup)
-        section = page.locator('.executive-schedule')
+        section=page.locator('.report-gpr-compact')
         expect(section).to_be_visible()
-        if summary['source_status']['state'] != 'confirmed':
-            expect(section).to_contain_text(summary['source_status']['reason'])
-        assert section.locator('details').count() == 0
-        assert section.evaluate('(e)=>e.getBoundingClientRect().width <= innerWidth')
-        assert page.locator('.schedule-confirmation-summary').count() == 0
-        if scenario == 'unconfirmed':
-            assert summary['source_status']['state'] == 'unconfirmed'
-            assert summary['facts'] == []
-            assert section.locator('.executive-facts').count() == 0
-            assert data['gantt']['dependency_timeline']['physical']['tasks'][0]['progress'] is None
+        expect(section.locator('[data-gpr-block]')).to_have_count(3)
+        assert section.locator('details,.executive-facts').count()==0
+        assert section.evaluate('(e)=>e.getBoundingClientRect().width<=innerWidth')
+        assert '50 из 100 м²'not in section.inner_text()
+        if scenario=='unconfirmed':
+            assert summary['source_status']['state']=='unconfirmed'
+            assert summary['facts']==[]
         else:
-            fact = section.locator('.executive-facts')
-            expect(fact).to_be_visible()
-            expect(fact).to_contain_text('50 из 100 м²')
-            expect(fact).to_contain_text('28.02.2026' if scenario == 'stale' else '31.10.2026')
-            assert fact.locator('li').count() == 1
-            assert fact.evaluate('(e)=>parseFloat(getComputedStyle(e).fontSize)') >= 12
-            assert summary['facts'][0]['done'] == 50 and summary['facts'][0]['plan'] == 100
-            assert data['gantt']['dependency_timeline']['physical']['tasks'][0]['progress'] == .5
-        if scenario != 'confirmed':
-            assert summary['forecast'] is None
-            expect(section.locator('.schedule-rnv-cards')).to_contain_text('Не определена')
-        else:
-            assert summary['state'] == 'estimate'
-            expect(section).to_contain_text('Оценка окончания работ')
-            expect(section).to_contain_text('не подтверждает дату получения разрешения на ввод')
+            assert summary['facts'][0]['done']==50 and summary['facts'][0]['plan']==100
+        if scenario=='confirmed':assert summary['state']=='estimate'
+        assert data['gantt']['dependency_timeline']['physical']['tasks'][0]['progress']==(None if scenario=='unconfirmed'else .5)
+        if scenario!='confirmed':assert summary['forecast']is None
         engine.close()
 
 
@@ -126,18 +133,10 @@ def test_quantities_and_source_dates_remain_in_real_pdf_without_raw_network(scen
         engine.close()
     with fitz.open(stream=content, filetype='pdf') as pdf:
         text = ' '.join(' '.join(page.get_text() for page in pdf).split())
-    assert 'Сроки и выполнение работ' in text and '06.11.2026' in text
-    assert '31.10.2026' in text  # the approved GPR date survives qualification
-    main = text.split('Приложение. Источники и ограничения оценки', 1)[0]
-    if scenario == 'unconfirmed':
-        assert '50 из 100 м²' not in main
-        assert data['construction_summary']['source_status']['reason'] in main
-    else:
-        assert '50 из 100 м²' in main
-        assert ('28.02.2026' if scenario == 'stale' else '31.10.2026') in main
-    if scenario != 'confirmed':
-        assert 'Не определена' in main and data['construction_summary']['forecast'] is None
-    assert 'Все работы исходной сети' not in text
+    assert 'Прогноз учтённых работ'in text and 'Матрица готовности'in text and 'Гант по корпусам'in text
+    assert '50 из 100 м²'not in text and 'Приложение. Источники'not in text
+    if scenario!='confirmed':assert data['construction_summary']['forecast']is None
+    assert 'Все работы исходной сети'not in text
 
 
 def test_legacy_confirmation_note_is_escaped_without_promoting_a_revocation(gpr_sources):

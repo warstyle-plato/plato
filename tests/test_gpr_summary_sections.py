@@ -11,6 +11,7 @@ import developaid_schedule_readiness as ready
 from test_schedule_readiness_elements import reading, DAY
 from test_gpr_readable_matrix import matrix_view, serve_view, settled
 from test_monitor_cumulative_controls import browser_page
+from gpr_view_fixtures import projected_readiness, readiness_view
 
 
 def weighted_rows():
@@ -78,32 +79,39 @@ def test_native_page_groups_pir_and_displays_totals_and_dates_with_closed_work_l
                 'Этап 3. АГР','Этап 4. Экспертиза','Этап 5. Сопроводительная и разрешительная документация',
                 'Конструктив','Наружные сети']
     for i, task in enumerate(tasks):
-        task.update(section=sections[i%7], construction_work=i%7>=5)
+        task.update(section=sections[i%7], construction_work=i%7>=5, forecast_known=False)
         if i%7==6: task['name']='Благоустройство — озеленение'
         task['plan_pace_scenario'] = dict(finish='2027-02-03',complete=False,source_date='2026-11-06')
     view['schedule']['display_groups'] = groups.metadata(tasks)
-    rows, config = weighted_rows()
-    config['corpus_shares']={'Корпус 1':20,'Корпус 2':80}
-    for i,row in enumerate(rows):
-        row.update(plan_start='2026-11-01',plan_finish=['2027-01-12','2027-01-20'][i])
-        row['plan_pace_scenario']=dict(finish='2027-02-03',source_date='2026-11-06')
-    state = ready.model({'works':{r['id']:r for r in rows}},cut=DAY,baseline_scope='remaining_work',source_sha256='a'*64)
-    state.update(elements.projection(rows,config,cut=DAY,confirmed=True))
-    scenario.decorate_readiness(state, rows, dict(plan_date='2027-09-30',plan_label='План РНВ владельца'))
-    view['schedule']['readiness_html']=ready.render(state)
+    # The weighted selected works are leaves of this exact source roster.
+    selected=[next(task for task in tasks if task['object']==obj and task['construction_work'])
+              for obj in ['Корпус 1','Корпус 2']]
+    for i,task in enumerate(selected):
+        reading_value=[.2,.8][i]
+        task.update(actual_progress=reading_value,
+            primary=dict(value=reading_value,date=DAY,label='Учебное показание'),
+            plan_start='2026-11-01',plan_finish=['2027-01-12','2027-01-20'][i])
+    config=dict(id=elements.PROFILE_ID,overrides={},
+        objects={'Корпус 1':'residential','Корпус 2':'residential'},
+        assignments={task['id']:dict(element_id='frame',share=100) for task in selected},
+        corpus_shares={'Корпус 1':20,'Корпус 2':80})
+    state=projected_readiness(tasks,config,DAY,included_ids=[task['id'] for task in selected])
+    view=readiness_view(tasks,state,milestone=dict(plan_date='2027-09-30',plan_label='План РНВ владельца'))
     serve_view(monkeypatch,view)
     with browser_page(width) as (page,_,errors):
         settled(page,view)
         expect(page.locator('.readiness-milestone-plan')).to_be_visible()
         expect(page.locator('.readiness-milestone-plan')).to_have_text('План РНВ владельца: 30.09.2027')
-        expect(page.locator('.readiness-project-plan')).to_be_visible()
-        expect(page.locator('.readiness-project-plan')).to_contain_text('20.01.2027')
-        expect(page.locator('.readiness-project-forecast')).to_contain_text('Оценка окончания: 03.02.2027')
+        headline=page.locator('.canonical-work-forecast')
+        expect(headline.locator('strong')).to_have_text('03.02.2027')
+        expect(headline).to_contain_text('План того же учтённого состава: 20.01.2027')
+        expect(page.locator('.readiness-project-plan,.readiness-project-forecast')).to_have_count(0)
         stages=page.locator('#gprFactMatrix .gpr-matrix-stage')
         expect(stages).to_have_count(3)
         assert stages.evaluate_all('(xs)=>xs.map(x=>x.dataset.stage)')==['ПИР','Конструктив','Благоустройство']
         expect(stages.first.locator('.gpr-source-stage')).to_have_count(5)
-        expect(stages.first.locator(':scope > summary')).to_contain_text('При плановом темпе: 03.02.2027')
+        expect(stages.first.locator(':scope > summary')).to_contain_text('Вне общей оценки')
+        expect(stages.first.locator(':scope > summary')).not_to_contain_text('03.02.2027')
         page.locator('#gprMatrixExpand').click()
         expect(page.locator('#gprFactMatrix [data-work-id]:visible')).to_have_count(len(tasks))
         assert page.locator('#gprFactMatrix [data-work-id]').evaluate_all('(xs)=>xs.map(x=>x.dataset.workId).sort()')==sorted(t['id'] for t in tasks)

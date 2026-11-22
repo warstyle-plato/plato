@@ -53,6 +53,9 @@ class MonitorSalesRequest(BaseModel):
     key: str = ""
 
 
+from pydantic import Field as _MonitorProfileField
+
+
 class MonitorViewRequest(BaseModel):
     project: str
     cut: str
@@ -61,6 +64,7 @@ class MonitorViewRequest(BaseModel):
     session: str = ""
     key: str = ""
     background: bool = False
+    profile_python: bool = _MonitorProfileField(default=False, strict=True)
     ticket: str = ""
 
 
@@ -245,14 +249,20 @@ async def monitor_audit_sources(request: Request) -> Response:
 @app.post("/monitor/view", include_in_schema=False)
 def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
     """Срез и тренд по нему. Считает сервер, страница только рисует."""
+    if req.profile_python and not req.background:
+        _require_admin_key(req.key, 'Диагностика Монитора', req.session)
+        raise HTTPException(400, 'Диагностика Python доступна только для фоновой сборки.',
+                            headers={'Cache-Control': 'private, no-store'})
     if req.background:
         return _monitor_view_job(req, start=True)
     _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     programme = _monitor_programme(req)
+    selection_day = developaid_monitor._day(req.cut)
     try:
         return {
             "snapshot": developaid_monitor.build(
-                req.project, cut=req.cut, programme=programme),
+                req.project, cut=req.cut, programme=programme,
+                upto=selection_day.isoformat() if selection_day else ""),
             "trend": developaid_monitor.trend(
                 req.project, cut=req.cut, programme=programme),
         }
@@ -543,6 +553,9 @@ def _monitor_view_job(req, *, start: bool) -> Response:
 
     private = {"Cache-Control": "private, no-store"}
     try:
+        profile_python = start and getattr(req, 'profile_python', False)
+        if profile_python:
+            _require_admin_key(req.key, 'Диагностика Монитора', req.session)
         _require_team_access(req.session, req.key, "Монитор проекта", write=False)
         profile = "demo" if demo_session_chat(req.session) else "admin"
         owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
@@ -559,9 +572,22 @@ def _monitor_view_job(req, *, start: bool) -> Response:
             # calculation is running. Only retries of this ticket reuse it.
             payload = {"project": project, "cut": cut,
                        "click": req.ticket or _secrets.token_hex(16)}
+            if profile_python:
+                import developaid_monitor_python_profile as python_profile
+                payload['diagnostics'] = python_profile.PURPOSE
             def build():
-                return {"snapshot": jsonable_encoder(developaid_monitor.build(project, cut=cut))}
-            result = store.start(owner, profile, payload, build, req.ticket)
+                def snapshot():
+                    return {"snapshot": jsonable_encoder(developaid_monitor.build(project, cut=cut, upto=cut))}
+                if profile_python:
+                    import developaid_monitor_python_profile as python_profile
+                    result, diagnostics = python_profile.run(snapshot)
+                    return {**result, 'diagnostics': diagnostics}
+                return snapshot()
+            # Full snapshots can contain several complete financial and GPR
+            # projections. Keep every field within a bounded, server-owned
+            # budget; other job families retain their existing limits.
+            result = store.start(owner, profile, payload, build, req.ticket,
+                                 result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES)
         else:
             result = store.poll(req.ticket, owner, profile)
         if result["pending"]:
@@ -576,8 +602,12 @@ def _monitor_view_job(req, *, start: bool) -> Response:
                     404: "Расчёт не найден или срок хранения истёк. Обновите срез.",
                     409: "Этот расчёт относится к другому проекту или дате. Обновите срез.",
                     429: "Сервер занят другими расчётами. Повторите чуть позже."}
-        raise HTTPException(exc.status, messages.get(exc.status,
-            "Не удалось рассчитать план и факт проекта. Обновите срез."), headers=private) from None
+        if exc.code:
+            private["X-Monitor-Job-Error"] = exc.code
+        detail = ("Полный расчёт не удалось передать: результат превышает допустимый размер. "
+                  "Обратитесь к администратору." if exc.code == "result_too_large" else
+                  messages.get(exc.status, "Не удалось рассчитать план и факт проекта. Обновите срез."))
+        raise HTTPException(exc.status, detail, headers=private) from None
     except (OSError, ValueError):
         raise HTTPException(503, "Расчёт Монитора сейчас недоступен. Повторите чуть позже.",
                             headers=private) from None
@@ -888,6 +918,25 @@ def monitor_replace_finance(req: MonitorFinanceBaselineRequest) -> dict[str, Any
     try:
         return developaid_monitor.replace_finance_baseline(
             req.project, base64.b64decode(req.content_base64), req.taken_at, req.file_name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+class MonitorFinanceUnitRequest(BaseModel):
+    project: str
+    unit: str = ''
+    expected_source_sha256: str = ''
+    session: str = ''
+    key: str = ''
+
+
+@app.post('/monitor/finance-unit', include_in_schema=False)
+def monitor_finance_unit(req: MonitorFinanceUnitRequest) -> dict[str, Any]:
+    _require_team_access(req.session, req.key, 'Монитор проекта')
+    import developaid_finance_units as finance_units
+    try:
+        return finance_units.configure(req.project, req.unit,
+            expected_source_sha256=req.expected_source_sha256)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
 
@@ -1957,6 +2006,31 @@ def monitor_gpr_view(req: MonitorGanttRequest) -> Response:
         return JSONResponse(content=jsonable_encoder(view), headers={"Cache-Control":"private, no-store"})
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(400, str(exc), headers={"Cache-Control":"private, no-store"}) from None
+
+
+@app.post("/monitor/gpr-brief", include_in_schema=False)
+def monitor_gpr_brief(req: MonitorGanttRequest) -> Response:
+    """Короткий вид блока ГПР для тестовой страницы: тот же расчёт, что /monitor/gpr-view."""
+    try:
+        _require_team_access(req.session, req.key, "Монитор проекта", write=False)
+    except HTTPException as exc:
+        raise HTTPException(exc.status_code, exc.detail,
+                            headers={**(exc.headers or {}), "Cache-Control": "private, no-store"}) from None
+    from fastapi.encoders import jsonable_encoder
+    import developaid_gpr_brief as gpr_brief
+    import developaid_monitor_pace as pace
+    try:
+        brief = gpr_brief.build(pace.schedule_view(req.project, req.cut))
+        return JSONResponse(content=jsonable_encoder(brief), headers={"Cache-Control":"private, no-store"})
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(400, str(exc), headers={"Cache-Control":"private, no-store"}) from None
+
+
+@app.get("/gpr-preview", include_in_schema=False)
+def monitor_gpr_preview_page() -> HTMLResponse:
+    """Тестовая страница «ГПР — новый вид». Оболочка открыта, данные — за входом, как у /monitor."""
+    from developaid_gpr_preview_page import PAGE
+    return HTMLResponse(PAGE.replace("__VERSION__", VERSION))
 
 
 @app.post("/monitor/gantt", include_in_schema=False)

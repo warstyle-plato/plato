@@ -94,6 +94,7 @@ from developaid_report_page import REPORT_PAGE as _REPORT_PAGE_RAW
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
 import teaser_card
+import intake_qualification
 from request_body import json_object
 import v4_book_polish
 import v4_dashboard
@@ -114,7 +115,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.29.66"
+VERSION = "0.30.21"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой

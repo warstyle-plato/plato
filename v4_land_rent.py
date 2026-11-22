@@ -139,6 +139,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                 month_formulas: list[str] | None = None,
                 hostvri_amount_formula: str | None = None,
                 phase_rve_formulas: list[str] | None = None,
+                phase_calendars: list[dict[str, Any]] | None = None,
+                exposure_formulas: dict[str, dict[str, Any]] | None = None,
+                master_terms_sheet: str | None = None,
                 layout: dict[str, Any] | None = None) -> bytes:
     """Editable Actual/Actual accrual and separately reconciled payment dates.
 
@@ -157,6 +160,13 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         raise ValueError("Аренда ЗУ: число месяцев должно быть от 1 до 600")
     if month_formulas is not None and len(month_formulas) != months:
         raise ValueError("Аренда ЗУ: календарь не соответствует числу месяцев")
+    if result.get("project_start"):
+        cash_start = dt.date.fromisoformat(str(result["project_start"])).replace(day=1)
+        month_index = cash_start.year*12+cash_start.month-1+months
+        cash_end = dt.date(month_index//12,month_index%12+1,1)
+        for key,value in (result.get("monthly") or {}).items():
+            if value and not cash_start <= dt.date.fromisoformat(str(key)) < cash_end:
+                raise ValueError("Аренда ЗУ: известные платежи выходят за календарь книги; нужен более длинный денежный горизонт")
     last_col, last_matrix_col = _col(3+months), _col(9+months)
     history = result.get("historical") or {}
     history_mode = history.get("mode") if isinstance(history, dict) else None
@@ -186,10 +196,23 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                 raise ValueError("Аренда ЗУ: факт выходит за конец календаря книги; нужна более длинная сетка")
             if str(history.get("covered_from")) != min(observed) or str(history.get("covered_to")) != max(observed):
                 raise ValueError("Аренда ЗУ: диапазон покрытия факта не совпадает с исходными месяцами")
-    phase_land = result.get("phase_land") or []
-    phased = len(phase_land) > 1
-    if phased and (phase_rve_formulas is None or len(phase_rve_formulas) != len(phase_land)):
-        raise ValueError("Аренда ЗУ: в книгу не переданы даты ввода всех очередей")
+    land_exposures = result.get("land_exposures") or []
+    phase_land = land_exposures or result.get("phase_land") or []
+    exposure_mode = bool(land_exposures)
+    phased = exposure_mode or len(phase_land) > 1
+    phase_refs = list(phase_rve_formulas or [])
+    if exposure_mode:
+        if exposure_formulas is None or any(item.get("id") not in exposure_formulas for item in land_exposures):
+            raise ValueError("Аренда ЗУ: в книгу не переданы живые доли и даты всех объектов")
+    elif phased:
+        for p in range(len(phase_refs), len(phase_land)):
+            calendar = (phase_calendars or [])[p] if p < len(phase_calendars or []) else {}
+            numbers = [_numeric(calendar.get(key)) for key in
+                       ("start_offset_months", "ird_months", "construction_months")]
+            if any(value is None or value < 0 or value != int(value) for value in numbers):
+                raise ValueError("Аренда ЗУ: в книгу не переданы даты ввода всех очередей")
+        if len(phase_refs) > len(phase_land):
+            raise ValueError("Аренда ЗУ: даты ввода не соответствуют очередям")
     root = ET.Element(_tag("worksheet"))
     views = ET.SubElement(root, _tag("sheetViews"))
     view = ET.SubElement(views, _tag("sheetView"), {"workbookViewId": "0"})
@@ -201,13 +224,16 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                       "width": str(width), "customWidth": "1"})
     data = ET.SubElement(root, _tag("sheetData"))
     rows: dict[int, ET.Element] = {}
+    addresses: dict[int, set[str]] = {}
 
     def put(n: int, coord: str, value: Any = None, **kw: Any) -> None:
         if n not in rows:
             rows[n] = ET.SubElement(data, _tag("row"), {"r": str(n)})
-        if any(c.get("r") == coord for c in rows[n]):
+            addresses[n] = set()
+        if coord in addresses[n]:
             raise ValueError(f"Аренда ЗУ: адрес {coord} задан дважды")
         _cell(rows[n], coord, value, **kw)
+        addresses[n].add(coord)
 
     mode = str(inputs.get("land_rent_mode") or "unspecified")
     preset = None
@@ -222,7 +248,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     base_kind = str(inputs.get("land_rent_base_kind") or "cadastral_percent")
     base_key = "land_rent_cadastral_mln" if base_kind == "cadastral_percent" else "land_rent_annual_base_mln"
     settings = ((8, "Режим расчёта", displayed_mode, "input_text"),
-                (9, "База начисления, млн ₽", _numeric(inputs.get(base_key)), "input"),
+                (9, "База начисления, млн ₽", _numeric(result.get("base_value_mln", inputs.get(base_key))), "input"),
                 (10, "Начало аренды по договору", _serial(result.get("regime_start") or inputs.get("land_rent_regime_start")), "input_date"),
                 (11, "После последнего заданного года", "Повтор последней ставки" if preset else TAILS.get(str(inputs.get("land_rent_tail_rule") or "unknown"), "Не задана"), "input_text"),
                 (12, "Первый год и ВРИ", RELATIONS.get(str(inputs.get("land_rent_first_year_relation") or "regular_only"), "Не задано"), "input_text"))
@@ -233,11 +259,16 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     if isinstance(source, dict):
         source = source.get("label") or source.get("text") or str(source)
     put(1, "A1", BLOCK_TITLE)
-    put(2, "A2", "Аренда земли: годовой расчёт и план оплаты — отдельно от платы за ВРИ. Жёлтые ячейки редактируются. Начисление — расчётная конвенция; сроки оплаты — по договору. После ввода аренда не считается прекращённой.")
+    put(2, "A2", "Аренда земли: годовой расчёт и план оплаты — отдельно от платы за ВРИ. Жёлтые ячейки редактируются. Начисление — расчётная конвенция; сроки оплаты — по договору. " +
+        ("Жильё: аренда после ввода до регистрации по редактируемому сценарию; удерживаемые нежилые объекты — весь операционный срок. Это не подтверждение прекращения договора." if exposure_mode else
+         "Земля выходит из инвестиционного расчёта по датам очередей; это не подтверждение прекращения договора." if phased else
+         "После ввода аренда не считается прекращённой."))
     for n, label in ((3, "Месяц"), (4, "Исходное начисление, млн ₽"),
                      (5, "Неполные интервалы"), (6, "Денежный поток с фактом, млн ₽" if history_mode else "Плановый платёж, млн ₽"),
-                     (13, "Основание ставок"), (14, "Начало расчёта"), (15, "Ввод; граница исключается"),
-                     (16, "Последний заданный год"), (17, "Расчёт до ввода полный"),
+                     (13, "Основание ставок"), (14, "Начало расчёта"),
+                     (15, "Аренда долей до; граница исключается" if exposure_mode else "Ввод; граница исключается"),
+                     (16, "Последний заданный год"),
+                     (17, "Начисление по сроку аренды полное" if exposure_mode else "Расчёт до ввода полный"),
                      (18, "Начислено по ставкам: полный итог, млн ₽"), (19, "Денежный поток: известная часть, млн ₽"), (20, "Конвенция")):
         put(n, f"A{n}", label)
     put(13, "B13", str(source), style=styles["input_text"])
@@ -248,7 +279,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         # The formula is completed below, once the queue rows are known: a
         # queue's rent-only exit date may end the calculation later or earlier.
         put(15, "B15", formula=rve_formula, style=styles["date"])
-        put(15, "K15", "Ввод очередей — в таблице очередей ниже; одна общая дата не задаётся")
+        put(15, "K15", "Ввод и дата выхода из аренды указаны отдельно в таблице ниже" if exposure_mode else
+            "Ввод очередей — в таблице очередей ниже; одна общая дата не задаётся")
         put(15, "L15", None)
     else:
         put(15, "B15", formula=f'IF(COUNT($L$15)=1,$L$15,{rve_formula})', style=styles["date"])
@@ -265,8 +297,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     vat = result.get("vat_treatment") or inputs.get("land_rent_vat_treatment")
     put(18, "I18", {"taxable": "Облагается НДС", "public_exempt": "Без НДС: публичный собственник"}.get(vat, "Не уточнён"), style=styles["input_text"])
     is_mo = mode == "mo_housing_new_2026"
-    extra = ((8, "После ввода", "Отдельный режим; здесь не рассчитан", "amount"),
-             (9, "Полнота после ввода", "Обязательство не считается прекращённым", "amount"),
+    extra = ((8, "После ввода", "Регистрация жилья или выход из владения объектом" if exposure_mode else
+              "Выход долей по датам очередей" if phased else "Отдельный режим; здесь не рассчитан", "amount"),
+             (9, "Основание границы расчёта" if phased else "Полнота после ввода", "Допущение инвестиционного расчёта" if phased else "Обязательство не считается прекращённым", "amount"),
              (10, "Подтверждённое прекращение", _serial(inputs.get("land_rent_termination_date")) if _serial(inputs.get("land_rent_termination_date")) is not None else inputs.get("land_rent_termination_date"), "input_date"),
              (12, "Первый год целиком в ВРИ подтверждён", "Да" if inputs.get("land_rent_first_year_confirmed") is True else "Нет", "input_text"),
              (13, "База", {"annual_amount":"Годовая сумма договора", "cadastral_percent":"Кадастровая стоимость"}.get(base_kind,"Не распознана"), "input_text"),
@@ -292,6 +325,12 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(14, "I14", "Собственность" if inputs.get("land_right", "ownership") == "ownership" else "Аренда")
     put(15, "H15", "Публикация источника")
     put(15, "I15", str(result.get("source_url") or "По документам проекта"))
+    put(15, "M15", "После ввода до регистрации, мес. · сценарное допущение")
+    from developaid_land_rent import registration_months
+    put(15, "N15", registration_months(inputs) if inputs.get("land_rent_registration_months") in (None, "") else inputs["land_rent_registration_months"], style=styles["input"])
+    put(15, "O15", "land_rent_registration_months")
+    put(16, "M16", "Даты выхода объектов: в колонке I таблицы ниже")
+    put(16, "N16", "land_rent_exposure_exit_dates")
     origins = inputs.get("_field_origin") if isinstance(inputs.get("_field_origin"), dict) else {}
     origin = result.get("base_origin") or origins.get("inputs.land_rent_cadastral_mln")
     if isinstance(origin, dict):
@@ -299,7 +338,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     origin_label = str(origin or "Источник базы не указан")
     if base_kind == "annual_amount":
         origin_label = "Годовая сумма по договору"
-    seeded_base = _numeric(inputs.get(base_key))
+    seeded_base = _numeric(result.get("base_value_mln", inputs.get(base_key)))
     put(19, "H19", "Источник базы начисления")
     if seeded_base is None:
         put(19, "I19", origin_label)
@@ -309,7 +348,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(11, "E11", "Горизонт расчёта")
     put(11, "F11", formula=project_end_formula or rve_formula, style=styles["date"])
     put(17, "E17", "Ручной график сходится")
-    put(18, "E18", "Расчёт после ввода полный")
+    put(18, "E18", "Выход всех долей учтён" if phased else "Расчёт после ввода полный")
     put(19, "E19", "Исходная таблица без ошибок")
     pre_first, pre_end = FIRST_YEAR_ROW, FIRST_YEAR_ROW + YEARS - 1
     pay_first, pay_end = pre_end + 4, pre_end + 503
@@ -325,11 +364,16 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     phase_end = phase_first + phase_count - 1
     g_month_row = phase_end + 2
     phase_month_first = g_month_row + 2
+    phase_stride = 10 if exposure_mode else 5
+    cash_summary_first = phase_month_first + phase_stride * phase_count + 1
     # Each phase allocates the existing monetary year/month cells on their
     # exact intervals. Never redistribute an already aggregated month: rates
     # or the excluded first year may change within it.
-    phase_segment_first = phase_month_first + 5 * phase_count + 3
+    phase_segment_first = cash_summary_first + 6
+    development_segment_first = phase_segment_first + phase_count * (YEARS + 2)
     cutoff = 'IF(COUNT($F$10)=1,MIN($F$10,$B$15),$B$15)'
+    cadastral_gate = (f'OR($F$13<>"Кадастровая стоимость",COUNT($B${switch_row})=0,$B${switch_row}>={cutoff},'
+                      f'AND(COUNT($B${target_row})=1,$B${target_row}>0))')
 
     def g_phase(t: str, r: int) -> str:
         """Cumulative base × days of one queue from the project start to t."""
@@ -473,6 +517,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
              'OR($B$12="Первый год отдельно от ВРИ",AND($B$12="Первый год полностью включён в ВРИ",$F$12="Да")),'
              f'COUNT($B${phase_first}:$B${phase_end})={phase_count},COUNTIF($B${phase_first}:$B${phase_end},"<0")=0,'
              f'ABS(SUM($B${phase_first}:$B${phase_end})-1)<0.000000001)')
+    if exposure_mode and any(not item.get("retained") for item in land_exposures):
+        valid = f'AND({valid},COUNT($N$15)=1,$N$15>=0,$N$15<=120,$N$15=ROUND($N$15,0))'
     put(20, "H20", "Условия расчёта")
     put(20, "I20", formula=(f'IF(OR($B$8="Не применяется",$I$14="Собственность"),"Не требуются",'
         f'IF(IFERROR({valid},0),"Заданы","Не полны"))'))
@@ -493,13 +539,15 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(12, "N12", formula=live_years)
     raw_complete = f'AND({valid},{coverage},$F$19="Да",$N$12=1,SUM(D7:{last_col}7)=0)'
     put(17, "B17", formula=f'IF(OR($B$8="Не применяется",$I$14="Собственность"),1,IF({raw_complete},1,0))')
-    put(18, "F18", formula=f'IF(OR(OR($B$8="Не применяется",$I$14="Собственность"),{final}<=MAX($B$15,$B$10)),1,0)')
+    after_coverage = (f'COUNT($D${phase_first}:$D${phase_end})={phase_count}' if phased else
+                      f'{final}<=MAX($B$15,$B$10)')
+    put(18, "F18", formula=f'IF(OR(OR($B$8="Не применяется",$I$14="Собственность"),{after_coverage}),1,0)')
     put(18, "B18", formula=f'IF(AND(B17=1,F18=1),SUM(D4:{last_col}4),"Не рассчитано полностью")', style=styles["amount"])
     put(19, "B19", formula=f"SUM(D6:{last_col}6)", style=styles["amount"])
     put(17, "K17", "Начислено по ставкам: известная часть, млн ₽")
     put(17, "L17", formula=f"SUM(D4:{last_col}4)", style=styles["amount"])
     put(18, "K18", "Денежный поток определён полностью")
-    put(18, "L18", formula=f'IF(OR($L$8="Старый импорт: аренда и ВРИ не разделены",SUM(D5:{last_col}5)>0,{premium_gate}=0,{conditions_gate}=0,{regime_gate}=0),0,1)')
+    put(18, "L18", formula=f'IF(OR($L$8="Старый импорт: аренда и ВРИ не разделены",SUM(D5:{last_col}5)>0,{premium_gate}=0,{conditions_gate}=0,{regime_gate}=0,{cadastral_gate}=0),0,1)')
 
     for c, label in enumerate(("Год режима", "Начало года", "Конец года", "Ставка, %", "Применённая ставка, %", "Дни периода", "Дни года", "Известная сумма, млн ₽", "Заданный год"), 1):
         put(21, f"{_col(c)}21", label)
@@ -570,16 +618,52 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
             put(row, f"B{row}", amount/1e6, style=styles["amount"])
             put(row, f"C{row}", "Факт из классифицированного импорта")
     switch = result.get("cadastral_switch") if isinstance(result.get("cadastral_switch"), dict) else None
+    change = result.get("cadastral_change") if isinstance(result.get("cadastral_change"), dict) else switch
+    cadastral_estimate = result.get("cadastral_estimate") if isinstance(result.get("cadastral_estimate"), dict) else {}
+    estimate_parcels = [p for p in cadastral_estimate.get("parcels", []) if isinstance(p, dict)]
+    use_estimate = cadastral_estimate.get("applied") is True and bool(estimate_parcels)
+    saved_mo_estimate = (cadastral_estimate.get("region") or inputs.get("vri_region")) == "mo"
+    target_origin = result.get("target_cadastral_origin") or (switch or {}).get("origin") or {}
+    target_kind = result.get("target_cadastral_kind") or (target_origin.get("value_type") if isinstance(target_origin, dict) else None)
     target_seed = switch["target_mln"] if switch else _numeric(inputs.get("land_rent_cadastral_target_mln"))
-    put(block-2, f"A{block-2}", "ОЧЕРЕДИ И СМЕНА ВРИ — земля очереди выходит из аренды при её вводе; со дня смены ВРИ аренда считается от новой кадастровой стоимости")
-    put(target_row, f"A{target_row}", "Кадастровая стоимость после смены ВРИ, млн ₽")
-    put(target_row, f"B{target_row}", target_seed, style=styles["input"])
-    put(switch_row, f"A{switch_row}", "Дата смены ВРИ (дата платы за смену ВРИ)")
-    put(switch_row, f"B{switch_row}", _serial(switch["date"]) if switch else None, style=styles["input_date"])
+    put(block-2, f"A{block-2}",
+        "ОБЪЕКТЫ, ОЧЕРЕДИ И СМЕНА ВРИ — доля аренды учитывается до регистрации жилья или выхода из владения; дата ввода показана отдельно" if exposure_mode else
+        "ОЧЕРЕДИ И СМЕНА ВРИ — земля очереди выходит из аренды при её вводе; со дня смены ВРИ аренда считается от новой кадастровой стоимости")
+    target_label = ("Официальная новая КС из ЕГРН, млн ₽" if target_kind == "official_egrn" else
+                    "Расчётная будущая КС, млн ₽" if use_estimate or target_kind == "estimate" else
+                    "КС после смены ВРИ, введённая пользователем, млн ₽")
+    if not use_estimate:
+        if target_kind == "official_egrn" and target_seed is not None:
+            put(target_row, f"A{target_row}", formula=(f'IF(AND(COUNT(B{target_row})=1,'
+                f'ABS(B{target_row}-{target_seed})<0.000000001),"{target_label}",'
+                '"КС после смены ВРИ, изменённая вручную, млн ₽")'))
+        else:
+            put(target_row, f"A{target_row}", target_label)
+    # The formula is attached below after the parcel-table coordinates are
+    # known. A confirmed manual / official total never becomes this formula.
+    if not use_estimate:
+        put(target_row, f"B{target_row}", target_seed, style=styles["input"])
+    origin_text = target_origin.get("text") if isinstance(target_origin, dict) else str(target_origin)
+    origin_label = str(origin_text or "Источник новой КС не указан")
+    if target_seed is not None and not use_estimate:
+        escaped_origin = origin_label.replace('"', '""')
+        put(target_row, f"C{target_row}", formula=(f'IF(AND(COUNT(B{target_row})=1,'
+            f'ABS(B{target_row}-{target_seed})<0.000000001),"{escaped_origin}","Изменено вручную в этой книге")'))
+    elif not use_estimate:
+        put(target_row, f"C{target_row}", origin_label)
+    put(target_row, f"D{target_row}", str(target_origin.get("source_date") or "Дата источника не указана")
+        if isinstance(target_origin, dict) else "Дата источника не указана")
+    put(switch_row, f"A{switch_row}", "Дата применения новой кадастровой базы")
+    put(switch_row, f"B{switch_row}", _serial(change.get("date")) if change else None, style=styles["input_date"])
+    put(switch_row, f"C{switch_row}", (change or {}).get("basis") or
+        ("Сценарная дата; подтвердите дату применения новой КС" if (change or {}).get("estimated") else
+         "Дата применения новой КС; размер платы и льгота её не отменяют"))
     put(switch_eff, f"A{switch_eff}", "Новая кадастровая стоимость применяется с")
     put(switch_eff, f"B{switch_eff}", formula=(f'IF(AND(COUNT($B${target_row})=1,$B${target_row}>0,COUNT($B${switch_row})=1,'
         f'$F$13="Кадастровая стоимость"),$B${switch_row},2958465)'), style=styles["date"])
-    put(switch_eff, f"C{switch_eff}", "31.12.9999 — смены ВРИ в расчёте нет")
+    put(switch_eff, f"C{switch_eff}", formula=(f'IF(AND(COUNT(B{switch_row})=1,'
+        f'OR(COUNT(B{target_row})=0,B{target_row}<=0)),"Будущая КС неизвестна: старая база сохранена только для предварительной оценки",'
+        '"31.12.9999 означает отсутствие применённого перехода на новую базу")'))
     put(target_eff, f"A{target_eff}", "База после смены ВРИ в расчёте, млн ₽")
     put(target_eff, f"B{target_eff}", formula=f'IF(COUNT($B${target_row})=1,$B${target_row},$B$9)', style=styles["amount"])
     put(regime_row, f"A{regime_row}", "Дата начала аренды взята из договора")
@@ -591,26 +675,50 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
     put(g_hi_row, f"A{g_hi_row}", "База × дни аренды к концу расчёта")
     put(g_hi_row, f"B{g_hi_row}", formula=g(cutoff), style=styles["amount"])
     basis = str(result.get("phase_share_basis") or "")
-    headers = ["Очередь", "Доля участка", "Ввод очереди", "Земля выходит из аренды",
+    headers = ["Объект / очередь" if exposure_mode else "Очередь", "Доля участка",
+               "Ввод объекта" if exposure_mode else "Ввод очереди", "Аренда доли до" if exposure_mode else "Земля выходит из аренды",
                "Начислено, млн ₽", "Оплачено, млн ₽", "База × дни к концу расчёта"]
     if phased:
         headers += [{"area": "Площадь участка очереди, га"}.get(basis, "Общая площадь объектов очереди, м²"),
                     "Аренда доли до — вручную", "Основание доли"]
     for c, label in enumerate(headers, 1):
         put(phase_first-1, f"{_col(c)}{phase_first-1}", label)
+    if phased and len(phase_refs) < phase_count:
+        # v4 has four financing blocks, but the common-parcel rent keeps all
+        # five source queues and their independent editable dates. Only cash
+        # attribution is folded into the fourth CAPEX/CF, never the dates.
+        for col, label in (("K", "Сдвиг старта очереди, мес."),
+                           ("L", "До разрешения, мес."), ("M", "Строительство, мес.")):
+            put(phase_first-1, f"{col}{phase_first-1}", label)
     if phased:
         # Граница всего расчёта — последняя фактическая дата выхода доли
         # (колонка D, как rve движка): ручная дата последней очереди может
         # быть и раньше общей даты. D ссылается на rve_formula, не на B15.
         next(c for c in rows[15] if c.get("r") == "B15").find(_tag("f")).text = (
             f"MAX($D${phase_first}:$D${phase_end})")
-    metres = [phase_land[p].get("site_area_ha" if basis == "area" else "total_area") if phased else None
+    metres = [phase_land[p].get("total_area" if exposure_mode else "site_area_ha" if basis == "area" else "total_area") if phased else None
               for p in range(phase_count)]
     phase_cash_rows = []
     for p in range(phase_count):
         r = phase_first + p
-        put(r, f"A{r}", f"Очередь {p+1}" if phased else "Весь участок")
-        if phased:
+        put(r, f"A{r}", str(phase_land[p].get("name") or phase_land[p].get("id")) if exposure_mode else f"Очередь {p+1}" if phased else "Весь участок")
+        if exposure_mode:
+            own_formulas = exposure_formulas[phase_land[p]["id"]]
+            share_formula = own_formulas["share"]
+            if share_formula == "auto":
+                phase_id = int(phase_land[p].get("phase_index",0))
+                own_rows = [phase_first+i for i,item in enumerate(phase_land) if int(item.get("phase_index",0))==phase_id]
+                phase_rows_by_id = {int(item.get("phase_index",0)):phase_first+i for i,item in reversed(list(enumerate(phase_land)))}
+                area_sum = "SUM("+",".join(f"$H${row}" for row in own_rows)+")"
+                if basis == "area":
+                    first = phase_rows_by_id[phase_id]
+                    total = "SUM("+",".join(f"$P${row}" for row in phase_rows_by_id.values())+")"
+                    estimate = f"IFERROR($P${first}/{total}*$H${r}/{area_sum},{float(phase_land[p]['share'])!r})"
+                else:
+                    estimate = f"IFERROR($H${r}/SUM($H${phase_first}:$H${phase_end}),{float(phase_land[p]['share'])!r})"
+                share_formula = estimate
+            put(r, f"B{r}", formula=share_formula, style=styles["amount"])
+        elif phased:
             # Доля — формула метров колонки H; пока метры известны не у всех
             # очередей, стоит предварительная доля расчёта (основание — в J).
             put(r, f"B{r}", formula=(f'IF(AND(COUNT($H${phase_first}:$H${phase_end})={phase_count},'
@@ -618,24 +726,61 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                                      f'{float(phase_land[p]["share"])!r})'), style=styles["amount"])
         else:
             put(r, f"B{r}", formula="1", style=styles["amount"])  # весь участок — одна доля, не ввод
-        put(r, f"C{r}", formula=phase_rve_formulas[p] if phased else "$B$15", style=styles["date"])
+        if exposure_mode:
+            calendar = own_formulas.get("calendar")
+            if calendar:
+                put(r,f"K{r}",calendar["start_offset_months"],style=styles["input"])
+                put(r,f"L{r}",formula=calendar.get("ird_formula"),
+                    value=None if calendar.get("ird_formula") else calendar["ird_months"],style=styles["input"])
+                put(r,f"M{r}",calendar["construction_months"],style=styles["input"])
+                commissioning=f'EDATE(EDATE(EDATE({project_start_formula},K{r}),L{r}),M{r})'
+            else:
+                commissioning = own_formulas["commissioning"]
+        elif phased and p >= len(phase_refs):
+            calendar = phase_calendars[p]
+            put(r, f"K{r}", int(calendar["start_offset_months"]), style=styles["input"])
+            put(r, f"L{r}", formula=calendar.get("ird_formula"),
+                value=None if calendar.get("ird_formula") else int(calendar["ird_months"]),
+                style=styles["input"])
+            put(r, f"M{r}", int(calendar["construction_months"]), style=styles["input"])
+            commissioning = f'EDATE(EDATE(EDATE({project_start_formula},K{r}),L{r}),M{r})'
+        else:
+            commissioning = phase_refs[p] if phased else "$B$15"
+        put(r, f"C{r}", formula=commissioning, style=styles["date"])
         # The queue commissioned last holds its land up to the common cutoff
         # (developaid_land_rent.phase_release); a rent-only date in I wins.
-        put(r, f"D{r}", formula=(f'IF(COUNT(I{r})=1,I{r},IF(C{r}=MAX($C${phase_first}:$C${phase_end}),{rve_formula},MIN(C{r},{rve_formula})))'
+        common_rve = (f'MAX({rve_formula},$C${phase_first}:$C${phase_end})'
+                      if phased and len(phase_refs) < phase_count and result.get("housing_applicable", True)
+                      else rve_formula)
+        exit_formula = (str(own_formulas["lease_exit"]).replace("{commissioning}",f"$C${r}")
+            .replace("{last_delivery}",f'$B${phase_month_first+phase_stride*p+9}')) if exposure_mode else None
+        exposure_exit = (f'IF(COUNT($F$10)=1,MIN($F$10,IF(COUNT(I{r})=1,I{r},IF(COUNT($L$15)=1,$L$15,{exit_formula}))),'
+                         f'IF(COUNT(I{r})=1,I{r},IF(COUNT($L$15)=1,$L$15,{exit_formula})))') if exposure_mode else None
+        put(r, f"D{r}", formula=(exposure_exit if exposure_mode else f'IF(COUNT(I{r})=1,I{r},IF(C{r}=MAX($C${phase_first}:$C${phase_end}),{common_rve},MIN(C{r},{common_rve})))'
                                  if phased else "$B$15"), style=styles["date"])
         put(r, f"G{r}", formula="IFERROR(" + g_phase(cutoff, r) + ",0)", style=styles["amount"])
         if phased:
-            typed = phase_land[p].get("rve") if phase_land[p].get("release_origin") == "manual" else None
+            typed = phase_land[p].get("manual_exit") if exposure_mode else phase_land[p].get("rve") if phase_land[p].get("release_origin") == "manual" else None
             put(r, f"H{r}", float(metres[p]) if metres[p] is not None else None, style=styles["input"])
             put(r, f"I{r}", _serial(typed) if typed else None, style=styles["input_date"])
             put(r, f"J{r}", str(result.get("phase_share_basis_text") or ""))
+            if exposure_mode:
+                put(r,f"P{r}",phase_land[p].get("phase_site_area_ha"),style=styles["input"])
         if phased:
-            base = phase_month_first + 5 * p
+            base = phase_month_first + phase_stride * p
             put(r, f"E{r}", formula=f"SUM(D{base+3}:{last_col}{base+3})", style=styles["amount"])
             put(r, f"F{r}", formula=f"SUM(D{base+4}:{last_col}{base+4})", style=styles["amount"])
             for k, label in enumerate(("база × дни к началу месяца", "база × дни к концу месяца",
                                        "доля начисления месяца", "начисление, млн ₽", "платёж, млн ₽")):
-                put(base+k, f"A{base+k}", f"Очередь {p+1}: {label}")
+                who = (phase_land[p].get("name") or phase_land[p]["id"]) if exposure_mode else f"Очередь {p+1}"
+                put(base+k, f"A{base+k}", f"{who}: {label}")
+            if exposure_mode:
+                for offset,label in ((5,"начислено в стоимость разработки"),(6,"оплачено в стоимость разработки"),
+                                     (7,"операционная аренда: оплачено"),(8,"операционная аренда: начислено")):
+                    put(base+offset,f"A{base+offset}",f'{phase_land[p].get("name") or phase_land[p]["id"]}: {label}')
+                if own_formulas.get("last_delivery"):
+                    put(base+9,f"A{base+9}","Дата последней передачи по графику продаж")
+                    put(base+9,f"B{base+9}",formula=f'MAX(D{base+9}:{last_col}{base+9})',style=styles["date"])
             phase_cash_rows.append(base + 4)
         else:
             put(r, f"E{r}", formula="$L$17", style=styles["amount"])
@@ -649,7 +794,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         if not phased:
             continue
         for p in range(phase_count):
-            r, base = phase_first + p, phase_month_first + 5 * p
+            r, base = phase_first + p, phase_month_first + phase_stride * p
             put(base, f"{col}{base}", formula="IFERROR(" + g_phase(f"{col}$3", r) + ",0)", style=styles["amount"])
             put(base+1, f"{col}{base+1}", formula="IFERROR(" + g_phase(f"MIN(EDATE({col}$3,1),{cutoff})", r) + ",0)", style=styles["amount"])
             first = phase_segment_first + p * (YEARS + 2)
@@ -658,6 +803,17 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
             put(base+2, f"{col}{base+2}", formula=f'IF({col}$4>0,{col}{base+3}/{col}$4,$B${r})')
             put(base+4, f"{col}{base+4}", formula=(f'IF(AND($F$16="Ручной график",$F$17=1),'
                 f'{col}$6*IF($L$17>0,$E${r}/$L$17,$B${r}),{col}$6*{col}{base+2})'), style=styles["amount"])
+            if exposure_mode:
+                dev_first = development_segment_first + p * (YEARS + 2)
+                put(base+5,f"{col}{base+5}",formula=f'SUM({col}{dev_first}:{col}{dev_first+YEARS-1})',style=styles["amount"])
+                put(base+6,f"{col}{base+6}",formula=(f'IF(AND($F$16="Ручной график",$F$17=1),'
+                    f'{col}{base+4}*IF($E${r}>0,SUM($D${base+5}:${last_col}${base+5})/$E${r},1),'
+                    f'IF({col}{base+3}>0,{col}{base+4}*{col}{base+5}/{col}{base+3},{col}{base+4}))'),style=styles["amount"])
+                put(base+7,f"{col}{base+7}",formula=f'{col}{base+4}-{col}{base+6}',style=styles["amount"])
+                put(base+8,f"{col}{base+8}",formula=f'{col}{base+3}-{col}{base+5}',style=styles["amount"])
+                delivery_formulas = exposure_formulas[phase_land[p]["id"]].get("last_delivery")
+                if delivery_formulas:
+                    put(base+9,f"{col}{base+9}",formula=f'IF({delivery_formulas[index]}>0,{col}$3,0)',style=styles["date"])
             matrix = _col(10 + index)
             for year in range(YEARS):
                 n, dest = pre_first + year, first + year
@@ -672,10 +828,34 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                 amount = f'{matrix}{n}'
                 put(dest, f'{col}{dest}', formula=(f'IF(AND(COUNT({amount})=1,{total}>0),'
                     f'{amount}*{own}/{total},0)'), style=styles["amount"])
+                if exposure_mode:
+                    dev_dest = development_segment_first + p*(YEARS+2) + year
+                    own_pre = f'MAX(0,({g_phase(f"MIN({hi},$C${r})",r)})-({g_phase(f"MIN({lo},$C${r})",r)}))'
+                    development = (f'IF({own}>0,{col}{dest}*{own_pre}/{own},0)'
+                                   if phase_land[p].get("retained") or phase_land[p].get("policy") == "income_horizon" else f'{col}{dest}')
+                    put(dev_dest,f'{col}{dev_dest}',formula=development,style=styles["amount"])
                 if index == 0:
                     put(dest, f'A{dest}', f'Очередь {p+1}, год {year+1}: начисление по общему расчёту')
     if layout is not None:
         layout["phase_cash_rows"] = phase_cash_rows
+        layout["phase_cash_phase_indices"] = [int(item.get("phase_index", 0)) for item in land_exposures] if exposure_mode else list(range(phase_count))
+        layout["exposure_rows"] = {item["id"]: {"cash":phase_month_first+phase_stride*i+4,
+            "construction":phase_month_first+phase_stride*i+6,"operating":phase_month_first+phase_stride*i+7,
+            "construction_accrual":phase_month_first+phase_stride*i+5,"operating_accrual":phase_month_first+phase_stride*i+8,
+            "metadata":phase_first+i} for i,item in enumerate(land_exposures)}
+        layout["phase_construction_rows"] = [phase_month_first+phase_stride*i+6 for i in range(phase_count)] if exposure_mode else phase_cash_rows
+    if exposure_mode:
+        fields = {"construction":6,"operating":7,"construction_accrual":5,"operating_accrual":8}
+        for offset,(key,delta) in enumerate(fields.items()):
+            row = cash_summary_first + offset
+            put(row,f"A{row}",{"construction":"Аренда в разработке: платежи","operating":"Операционная аренда: платежи",
+                "construction_accrual":"Аренда в разработке: начислено","operating_accrual":"Операционная аренда: начислено"}[key])
+            put(row,f"B{row}",formula=f'SUM(D{row}:{last_col}{row})',style=styles["amount"])
+            for index in range(months):
+                col=_col(4+index)
+                put(row,f"{col}{row}",formula="SUM("+",".join(f"{col}{phase_month_first+phase_stride*i+delta}" for i in range(phase_count))+")",style=styles["amount"])
+        if layout is not None:
+            layout["cash_rows"] = {"total":6,**{key:cash_summary_first+offset for offset,key in enumerate(fields)}}
     put(pay_first-2, f"A{pay_first-2}", "РУЧНОЙ ГРАФИК ОПЛАТЫ — сумма должна совпасть с известной полной потребностью")
     for c, label in enumerate(("Месяц от старта", "Дата платежа", "Сумма / доля", "Единица: млн ₽ или %", "Сумма, млн ₽", "Месяц платежа", "Ошибка строки"), 1):
         put(pay_first-1, f"{_col(c)}{pay_first-1}", label)
@@ -701,6 +881,12 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         put(n, f"E{n}", formula=f'IF(COUNT(C{n})=0,0,IF(D{n}="%",SUM($D$4:${last_col}$4)*C{n}/100,C{n}))', style=styles["amount"])
         put(n, f"F{n}", formula=f'IF(COUNT(A{n})=1,B{n}-DAY(B{n})+1,0)', style=styles["date"])
         put(n, f"G{n}", formula=f'IF(AND(COUNT(A{n})=0,COUNT(C{n})=0),0,IF(AND(COUNT(A{n})=1,A{n}>=0,A{n}<=1200,A{n}=ROUND(A{n},0),COUNT(C{n})=1,C{n}>=0,B{n}>=$B$14,B{n}<$F$11,OR(D{n}="%",D{n}="млн ₽")),0,1))')
+        put(n,f"H{n}",formula=f'IF(AND(COUNT(A{n})=1,A{n}>=0,A{n}<=1200,A{n}=ROUND(A{n},0),COUNT(C{n})=1,C{n}>0,OR(D{n}="%",D{n}="млн ₽")),EDATE(B{n}-DAY(B{n})+1,1),0)',style=styles["date"])
+    horizon_cell = next(c for c in rows[11] if c.get("r")=="F11")
+    horizon_cell.find(_tag("f")).text=f'MAX({project_end_formula or rve_formula},IF($F$16="Ручной график",MAX(H{pay_first}:H{pay_end}),0))'
+    if layout is not None:
+        layout["cash_horizon_cell"] = "F11"
+        layout["payment_horizon_range"] = f"H{pay_first}:H{pay_end}"
     put(17, "F17", formula=(f'IF(AND({raw_complete},$F$20="Да",COUNT(C{pay_first}:C{pay_end})>0,SUM(G{pay_first}:G{pay_end})=0,OR(COUNTIF(D{pay_first}:D{pay_end},"%")=0,AND(COUNTIF(D{pay_first}:D{pay_end},"%")=COUNT(C{pay_first}:C{pay_end}),ABS(SUMIF(D{pay_first}:D{pay_end},"%",C{pay_first}:C{pay_end})-100)<=0.0000001)),ABS(SUM(E{pay_first}:E{pay_end})-SUM($D$4:${last_col}$4))<=0.0000005),1,0)'))
     for index in range(months):
         col, matrix = _col(4 + index), _col(10 + index)
@@ -712,7 +898,8 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         put(4, f"{col}4", formula=f'SUM({matrix}{pre_first}:{matrix}{pre_end})', style=styles["amount"])
         active = f'AND({col}3<$B$15,EDATE({col}3,1)>$B$14)'
         put(7, f"{col}7", formula=f'IF(OR($B$8="Не применяется",$I$14="Собственность"),0,IF(AND({active},OR({valid}=0,$N$12=0)),1,COUNTIF({matrix}{pre_first}:{matrix}{pre_end},"Не рассчитано")))')
-        unknown = f'{col}7+IF(AND(AND($B$8<>"Не применяется",$I$14<>"Собственность"),MAX(0,MIN(EDATE({col}3,1),{final})-MAX({col}3,$B$15,$B$10))>0),1,0)'
+        unknown = (f'{col}7' if phased else
+                   f'{col}7+IF(AND(AND($B$8<>"Не применяется",$I$14<>"Собственность"),MAX(0,MIN(EDATE({col}3,1),{final})-MAX({col}3,$B$15,$B$10))>0),1,0)')
         if history_mode == "legacy_combined":
             unknown = f'IF(AND({col}3<$L$9,EDATE({col}3,1)>$B$14),1,{unknown})'
         put(5, f"{col}5", formula=unknown)
@@ -723,8 +910,92 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
             cash = f'IF(AND({col}3>=$L$10,{col}3<=$L$11),SUMIF($A${actual_first}:$A${actual_end},{col}3,$B${actual_first}:$B${actual_end}),{cash})'
         put(6, f"{col}6", formula=cash, style=styles["amount"])
         put(21, f"{matrix}21", formula=f'{col}3', style=styles["date"])
-    put(7, "A7", "Неопределённые интервалы до ввода")
+    put(7, "A7", "Неопределённые интервалы аренды" if exposure_mode else "Неопределённые интервалы до ввода")
     put(6, "B6", formula='IF(OR($B$8="Не применяется",$I$14="Собственность"),"Не применяется",IF(AND(F16="Ручной график",F17=1),"По заданному графику","Плановое начисление; сроки оплаты — по договору"))')
+    # Keep the estimate's inspectable parameters below the existing calendars.
+    # It is a scenario of the land value, independent of the VRI fee. Empty
+    # parameters produce an empty result rather than a zero-valued parcel.
+    if estimate_parcels:
+        estimate_title = max(rows) + 3
+        estimate_first = estimate_title + 6
+        estimate_last = estimate_first + len(estimate_parcels) - 1
+        put(estimate_title, f"A{estimate_title}", "РАСЧЁТНАЯ БУДУЩАЯ КС — оценка, не новая запись ЕГРН")
+        put(estimate_title + 1, f"A{estimate_title+1}", (
+            "МО: сохранённая расчётная КС каждого участка из применённого расчёта ВРИ; площадь и УПКС показаны справочно, их округление не меняет сохранённую сумму. Для изменения оценки правьте колонку D."
+            if saved_mo_estimate else str(cadastral_estimate.get("formula") or
+                "КСрасч = Σ (площадь участка, м² × целевой земельный УПКС, ₽/м²)")))
+        methodology = cadastral_estimate.get("methodology") if isinstance(cadastral_estimate.get("methodology"), dict) else {}
+        put(estimate_title + 2, f"A{estimate_title+2}", str(methodology.get("text") or
+            "Сценарная оценка; официальный результат определяет уполномоченное бюджетное учреждение и вносится в ЕГРН."))
+        put(estimate_title + 3, f"A{estimate_title+3}", "Официальный источник методики")
+        put(estimate_title + 3, f"B{estimate_title+3}", str(methodology.get("url") or "Источник методики не указан"))
+        put(estimate_title + 4, f"A{estimate_title+4}", "Методика проверена на дату")
+        put(estimate_title + 4, f"B{estimate_title+4}", str(methodology.get("as_of") or "Дата проверки методики не указана"))
+        for col, label in enumerate(("Арендуемый участок", "Площадь участка, м²", "Земельный УПКС, ₽/м²",
+                                    "Расчётная КС, млн ₽", "Источник земельного УПКС", "Дата источника",
+                                    "Целевой ВРИ / группа оценки", "Территория показателя / модель оценки"), 1):
+            put(estimate_first-1, f"{_col(col)}{estimate_first-1}", label)
+        for row, parcel in enumerate(estimate_parcels, estimate_first):
+            put(row, f"A{row}", str(parcel.get("number") or "Участок не указан"))
+            put(row, f"B{row}", _numeric(parcel.get("area_sqm")), style=styles["amount" if saved_mo_estimate else "input"])
+            put(row, f"C{row}", _numeric(parcel.get("upks_rub_sqm")), style=styles["amount" if saved_mo_estimate else "input"])
+            if saved_mo_estimate:
+                put(row, f"D{row}", _numeric(parcel.get("target_mln")), style=styles["input"])
+            else:
+                put(row, f"D{row}", formula=(f'IF(AND(COUNT(B{row}:C{row})=2,B{row}>0,C{row}>0),'
+                    f'B{row}*C{row}/1000000,"")'), style=styles["amount"])
+            put(row, f"E{row}", str(parcel.get("source") or "Источник показателя не указан"))
+            put(row, f"F{row}", str(parcel.get("source_date") or "Дата источника не указана"))
+            put(row, f"G{row}", str(parcel.get("target_use") or "Целевой ВРИ / группа не указаны"))
+            put(row, f"H{row}", str(parcel.get("valuation_territory") or "Территория показателя не указана"))
+        if use_estimate:
+            put(target_row, f"B{target_row}", formula=(f'IF(COUNTIF(D{estimate_first}:D{estimate_last},">0")='
+                f'{len(estimate_parcels)},ROUND(SUM(D{estimate_first}:D{estimate_last}),6),"")'), style=styles["amount"])
+            matches_estimate = (f'AND(COUNT(B{target_row})=1,COUNTIF(D{estimate_first}:D{estimate_last},">0")='
+                f'{len(estimate_parcels)},ABS(B{target_row}-ROUND(SUM(D{estimate_first}:D{estimate_last}),6))<0.000000001)')
+            put(target_row, f"A{target_row}", formula=(f'IF(OR(B{target_row}="",{matches_estimate}),'
+                '"Расчётная будущая КС, млн ₽","КС после смены ВРИ, изменённая вручную, млн ₽")'))
+            escaped_origin = origin_label.replace('"', '""')
+            put(target_row, f"C{target_row}", formula=(f'IF(OR(B{target_row}="",{matches_estimate}),'
+                f'"{escaped_origin}","Изменено вручную в этой книге")'))
+        if layout is not None:
+            layout["cadastral_parameter_rows"] = list(range(estimate_first, estimate_last+1))
+    if layout is not None:
+        layout["cadastral_target_row"] = target_row
+        layout["cadastral_change_row"] = switch_row
+    # Explicit semantic input map: secondary strategy sheets share contract
+    # terms, but never another strategy's shares, commissioning or exit dates.
+    input_cells = {coord:kind for kind,coords in {
+        "number": ["B9","L20","N15",f"B{target_row}",*[f"A{n}" for n in range(pre_first,pre_end+1)],
+                   *[f"D{n}" for n in range(pre_first,pre_end+1)],
+                   *[f"A{n}" for n in range(pay_first,pay_end+1)], *[f"C{n}" for n in range(pay_first,pay_end+1)]],
+        "date": ["B10","F10","I8","L15",f"B{switch_row}"],
+        "text": ["B8","B11","B12","B13","F12","F13","F14","F16","F19","F20",
+                 "I9","I10","I11","I12","I18","L16","L19",f"B{regime_row}",
+                 *[f"D{n}" for n in range(pay_first,pay_end+1)]]}.items() for coord in coords}
+    if is_mo:
+        input_cells.update({f"{column}{n}":"number" for column in ("A","B") for n in range(index_first,index_end+1)})
+    if estimate_parcels:
+        # Every strategy reads the same parcel inputs. Its commissioning,
+        # lease exit and forward-valuation horizon remain its own calendar.
+        input_cells.update({f"{column}{n}": "number"
+            for column in (("D",) if saved_mo_estimate else ("B", "C"))
+            for n in range(estimate_first, estimate_last + 1)})
+        input_cells.update({f"{column}{n}": "text" for column in ("E", "F", "G", "H")
+            for n in range(estimate_first, estimate_last + 1)})
+    if layout is not None:
+        layout["input_cells"] = input_cells
+    if master_terms_sheet:
+        quoted = master_terms_sheet.replace("'", "''")
+        for row in rows.values():
+            for cell in row:
+                coord=cell.get("r")
+                if coord not in input_cells:
+                    continue
+                ref=f"'{quoted}'!{coord}"
+                cell.attrib.pop("t",None)
+                cell[:] = []
+                ET.SubElement(cell,_tag("f")).text=(f'IF(COUNT({ref})=1,{ref},"")' if input_cells[coord] in ("number","date") else f'IF({ref}="","",{ref})')
     data[:] = sorted(data, key=lambda r: int(r.get("r", "0")))
     for row in data:
         row[:] = sorted(row, key=lambda c: (len(re.match(r"[A-Z]+", c.get("r")).group()), re.match(r"[A-Z]+", c.get("r")).group()))
@@ -745,7 +1016,10 @@ def apply(content: bytes, inputs: dict[str, Any], result: dict[str, Any], *,
           project_start_formula: str, rve_formula: str,
           phase_shares: list[float], project_end_formula: str | None = None,
           hostvri_amount_formula: str | None = None,
-          phase_rve_formulas: list[str] | None = None) -> bytes:
+          phase_rve_formulas: list[str] | None = None,
+          phase_calendars: list[dict[str, Any]] | None = None,
+          phase_capex_groups: list[list[int]] | None = None,
+          exposure_formulas: dict[str, dict[str, str]] | None = None) -> bytes:
     """Add one project schedule and distribute it once across active phases.
 
     With several queues on the parcel each CAPEX row takes its queue's own
@@ -755,8 +1029,15 @@ def apply(content: bytes, inputs: dict[str, Any], result: dict[str, Any], *,
     text in the rent row; known partial slices still enter the existing
     numeric CAPEX/CF totals.
     """
-    if len(phase_shares) > 4 or any(not math.isfinite(v) or v < 0 for v in phase_shares) or not math.isclose(sum(phase_shares), 1.0, abs_tol=1e-9):
+    if (any(isinstance(v, bool) or not isinstance(v, (int,float)) or not math.isfinite(v) or v < 0 for v in phase_shares)
+            or not math.isclose(sum(phase_shares), 1.0, abs_tol=1e-9)):
         raise ValueError("Аренда ЗУ: доли очередей не образуют единый проектный поток")
+    groups = phase_capex_groups if phase_capex_groups is not None else [[p] for p in range(len(phase_shares))]
+    flat = [p for group in groups for p in group]
+    if (len(groups) > len(CAPEX_ROWS) or any(not group for group in groups)
+            or any(type(p) is not int for p in flat)
+            or sorted(flat) != list(range(len(phase_shares)))):
+        raise ValueError("Аренда ЗУ: очереди должны попасть в CAPEX ровно один раз")
     with zipfile.ZipFile(io.BytesIO(content)) as original:
         parts = {name: original.read(name) for name in original.namelist()}
     if SHEET_PATH in parts:
@@ -766,10 +1047,12 @@ def apply(content: bytes, inputs: dict[str, Any], result: dict[str, Any], *,
     layout: dict[str, Any] = {}
     parts[SHEET_PATH] = build_sheet(inputs, result, styles,
         project_start_formula=project_start_formula, rve_formula=rve_formula, project_end_formula=project_end_formula,
-        hostvri_amount_formula=hostvri_amount_formula, phase_rve_formulas=phase_rve_formulas, layout=layout)
-    phase_rows = layout.get("phase_cash_rows") or []
-    if phase_rows and len(phase_rows) > len(CAPEX_ROWS):
-        raise ValueError("Аренда ЗУ: очередей больше, чем строк CAPEX")
+        hostvri_amount_formula=hostvri_amount_formula, phase_rve_formulas=phase_rve_formulas,
+        phase_calendars=phase_calendars, exposure_formulas=exposure_formulas, layout=layout)
+    phase_rows = layout.get("phase_construction_rows") or layout.get("phase_cash_rows") or []
+    cash_phase_indices = layout.get("phase_cash_phase_indices") or list(range(len(phase_rows)))
+    if phase_rows and (len(cash_phase_indices) != len(phase_rows) or set(cash_phase_indices) != set(range(len(phase_shares)))):
+        raise ValueError("Аренда ЗУ: строки оплаты не соответствуют долям очередей")
     rels = ET.fromstring(parts["xl/_rels/workbook.xml.rels"])
     rid_to_path = {r.get("Id"): r.get("Target", "").lstrip("/") for r in rels}
     wb = ET.fromstring(parts["xl/workbook.xml"])
@@ -788,16 +1071,19 @@ def apply(content: bytes, inputs: dict[str, Any], result: dict[str, Any], *,
     capex = ET.fromstring(parts[paths["CAPEX"]])
     data = capex.find(_tag("sheetData"))
     for phase, row_number in enumerate(CAPEX_ROWS):
-        share = phase_shares[phase] if phase < len(phase_shares) else 0.0
+        group = groups[phase] if phase < len(groups) else []
+        share = sum(phase_shares[p] for p in group)
         if phase_rows:
-            share = 1 if phase < len(phase_rows) else 0
-        own = f"'{SHEET}'!{{col}}{phase_rows[phase]}" if phase < len(phase_rows) else f"'{SHEET}'!{{col}}6*{share}"
+            share = 1 if group else 0
+        own = ("SUM(" + ",".join(f"'{SHEET}'!{{col}}{row}" for row,index in zip(phase_rows,cash_phase_indices) if index in group) + ")"
+               if phase_rows and group else f"'{SHEET}'!{{col}}6*{share}")
         row = data.find(f"{_tag('row')}[@r='{row_number}']")
         if row is not None and len(row):
             raise ValueError(f"Аренда ЗУ: строка CAPEX {row_number} уже занята")
         if row is None:
             row = ET.SubElement(data, _tag("row"), {"r": str(row_number)})
-        _cell(row, f"A{row_number}", f"Аренда ЗУ · очередь {phase+1}: план оплаты; неизвестная часть отдельно")
+        label = ", ".join(str(p+1) for p in group) if group else str(phase+1)
+        _cell(row, f"A{row_number}", f"Аренда ЗУ · {'очереди' if len(group)>1 else 'очередь'} {label}: план оплаты; неизвестная часть отдельно")
         _cell(row, f"B{row_number}", formula=(f'IF({share}=0,0,IF(\'{SHEET}\'!$B$17=1,SUM(D{row_number}:GA{row_number}),'
             f'IF(SUM(D{row_number}:GA{row_number})<>0,SUM(D{row_number}:GA{row_number}),"Не рассчитано")))'), style=styles["amount"])
         _cell(row, f"C{row_number}", "млн ₽")

@@ -22,6 +22,7 @@ MAX_EVENTS = 256
 MAX_EVENT_BYTES = 128 * 1024
 HASH = re.compile(r'[0-9a-f]{64}\Z')
 _NAMESPACE = contextvars.ContextVar('contract_identity_namespace', default=None)
+_HELD_NATIVE_LOCKS = contextvars.ContextVar('contract_identity_native_locks', default=frozenset())
 
 
 class IdentityProblem(ValueError):
@@ -239,7 +240,17 @@ def decode_log(project, raw):
                 or previous_time is not None and when < previous_time):
             raise IdentityProblem('Целостность журнала уточнений не подтверждена.', 503)
         payload = event['payload']
-        if event['action'] == 'confirm':
+        if event['action'] == 'correct_sources':
+            import developaid_contract_correction as correction
+            correction.validate_payload(payload)
+            ids = {member['raw_id'] for member in payload['members']}
+            if any(ids & {m['raw_id'] for m in value['payload']['members']} for value in active.values()):
+                raise IdentityProblem('В журнале пересекаются действующие уточнения.', 503)
+            if any(ids & pair and ids != pair for pair in historical_pairs):
+                raise IdentityProblem('Карточки исторических уточнений не объединены в цепочку.', 503)
+            historical_pairs.append(ids)
+            active[event['event_id']] = event
+        elif event['action'] == 'confirm':
             if not isinstance(payload, dict) or set(payload) != {'members', 'anchor_id', 'canonical_number', 'note',
                                                                'inventory_sha256', 'reviewed_archives', 'inventory_cut'}:
                 raise IdentityProblem('Реквизиты решения не подтверждены.', 503)

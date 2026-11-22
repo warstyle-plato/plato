@@ -72,6 +72,36 @@ def _nonres(name: str) -> Callable[[Any], dict]:
     return lambda core: nonres_scenario(core, NONRES_BOOKS[name])
 
 
+def _lease(factory: Callable[[Any], dict], **updates: Any) -> Callable[[Any], dict]:
+    """Synthetic lease terms; no uploaded source book is opened."""
+    def build(core: Any) -> dict:
+        spec = factory(core)
+        spec["inputs"].update({
+            "land_right": "lease", "land_rights_cost_mln": 0,
+            "land_rent_mode": "manual", "land_rent_cadastral_mln": 100,
+            "land_rent_cadastral_target_mln": 150,
+            "land_rent_regime_start": spec["inputs"]["project_start"],
+            "land_rent_rates": [{"year": 1, "rate_pct": 1}],
+            "land_rent_tail_rule": "repeat_last",
+            "land_rent_vat_treatment": "public_exempt",
+            "land_rent_registration_months": 3,
+            **updates,
+        })
+        return spec
+    return build
+
+
+def _hotel_lease(core: Any) -> dict:
+    import hotel_presets
+
+    inputs = hotel_presets.apply_preset(copy.deepcopy(core.DEFAULT_INPUTS), "hotel1")
+    inputs.update(project_kind="hotel", project_start="2027-01-01",
+                  ird_months=12, construction_months=12,
+                  hotel_hold_years=5, hotel_exit_mode="hold")
+    factory = lambda _core: {"inputs": inputs, "tep": copy.deepcopy(core.TEP_DEFAULT), "phasing": {}}
+    return _lease(factory)(core)
+
+
 PROJECTS: dict[str, tuple[str, str, Callable[[Any], dict]]] = {
     # имя: (вид книги, что это, вводные)
     "default": ("v4", "Жильё одной очередью (эталон default)", _golden("default")),
@@ -83,6 +113,11 @@ PROJECTS: dict[str, tuple[str, str, Callable[[Any], dict]]] = {
     "office_rent": ("office", "Офис без ДДУ: аренда с выходом", _golden("office_rent")),
     "nonres_retail_sports_ddu": ("office", "ТЦ и ФОК по ДДУ", _nonres("nonres_retail_sports_ddu")),
     "nonres_parking_ddu": ("office", "Наземный паркинг по ДДУ", _nonres("nonres_parking_ddu")),
+    "housing_lease_registration": ("v4", "Жильё: аренда до первых регистраций",
+                                    _lease(_golden("default"))),
+    "office_lease_retained": ("office", "Офис: аренда земли при удержании",
+                              _lease(_office("income"), offices_exit_mode="hold")),
+    "hotel_lease_retained": ("hotel", "Гостиница: аренда земли весь срок эксплуатации", _hotel_lease),
 }
 
 # Известные расхождения методики, по которым есть решение и PR, но он ещё не
@@ -341,6 +376,42 @@ def _office_lines(book: Any) -> list[Line]:
     return lines
 
 
+def _hotel_lines(book: Any) -> list[Line]:
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(limit, 20000))
+    try:
+        return _hotel_lines_at_depth(book)
+    finally:
+        sys.setrecursionlimit(limit)
+
+
+def _hotel_lines_at_depth(book: Any) -> list[Line]:
+    import hotel_workbook as hw
+    # Export and the independent checker use the same dependency ordering;
+    # the checker still recalculates the genuine formulas, not cached values.
+    ev = hw.evaluate(book)
+    dimensions = {label for key, label, _where in hw.CHECKS
+                  if key.startswith("irr_") or key in ("pbp_years", "dpbp_years", "dscr_min")}
+    sheet = book[hw.CHECK_SHEET]
+    lines = []
+    for row in range(3, sheet.max_row + 1):
+        if sheet[f"F{row}"].data_type != "f":
+            continue
+        label = str(sheet[f"A{row}"].value or "")
+        actual = ev.cell(hw.CHECK_SHEET, f"B{row}") if sheet[f"B{row}"].value is not None else None
+        expected = sheet[f"C{row}"].value
+        ratio = label in dimensions
+        scale = 1 if ratio else MLN
+        line = Line("Гостиница: " + label,
+                    actual / scale if _num(actual) else actual,
+                    expected / scale if _num(expected) else expected,
+                    ratio=ratio)
+        verdict = ev.cell(hw.CHECK_SHEET, f"F{row}")
+        line.verdict_ok = verdict in ("сходится", "—")  # type: ignore[attr-defined]
+        lines.append(line)
+    return lines
+
+
 # --- сборка и сверка ------------------------------------------------------------
 
 def build(core: Any, name: str) -> tuple[bytes, dict, dict]:
@@ -365,13 +436,14 @@ def check(core: Any, name: str, tamper: Callable[[Any], None] | None = None,
     content, meta, consolidated = built or build(core, name)
     result = Result(name, title, kind)
     book = openpyxl.load_workbook(io.BytesIO(content))
-    actual = "office" if meta.get("nonres_book") else "v4"
+    actual = "hotel" if meta.get("hotel_book") else "office" if meta.get("nonres_book") else "v4"
     if actual != kind:
         result.mismatches.append(Line("вид книги", actual, kind))
         return result
     if tamper:
         tamper(book)
-    lines = _v4_lines(core, book, consolidated) if kind == "v4" else _office_lines(book)
+    lines = (_v4_lines(core, book, consolidated) if kind == "v4" else
+             _hotel_lines(book) if kind == "hotel" else _office_lines(book))
     result.checked = len(lines)
     for line in lines:
         ok = getattr(line, "verdict_ok", None)
@@ -405,7 +477,16 @@ def tamper_office_revenue(book: Any) -> None:
     sheet[f"C{row}"] = f"={str(sheet[f'C{row}'].value).lstrip('=')}*1.01"
 
 
-TAMPERS = {"v4": tamper_v4_reserve, "office": tamper_office_revenue}
+def tamper_hotel_revenue(book: Any) -> None:
+    """A changed hotel price must disagree with its canonical engine snapshot."""
+    import hotel_workbook as hw
+
+    cell = book[hw.INPUTS_SHEET][f"C{hw._ROWS['adr']}"]
+    cell.value = float(cell.value) * 1.01
+
+
+TAMPERS = {"v4": tamper_v4_reserve, "office": tamper_office_revenue,
+           "hotel": tamper_hotel_revenue}
 
 
 # --- вывод ------------------------------------------------------------------------

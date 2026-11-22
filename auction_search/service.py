@@ -23,6 +23,7 @@ class AuctionSearchService:
 
     def __init__(self, adapters: Iterable[AuctionPlatformAdapter]):
         self.adapters = list(adapters)
+        self.last_selection_checks: dict[str, dict] = {}
         self.last_quality_report: dict[str, int] = {
             "seen": 0,
             "accepted": 0,
@@ -93,6 +94,15 @@ class AuctionSearchService:
             quality = catalogue_quality(lot)
             assessed.append((lot, screening, quality))
         self.last_quality_report = self._quality_report(assessed)
+        self.last_selection_checks = {
+            lot.source.lot_url: {
+                "state": "collected" if self.in_main_selection(screen, quality) else "excluded",
+                "reason": ("Есть в основной подборке" if self.in_main_selection(screen, quality)
+                           else "; ".join(quality.get("reasons") or screen.get("exclusion_reasons")
+                                          or ["Не прошёл условия основной подборки"])),
+            }
+            for lot, screen, quality in assessed
+        }
         if include_noise:
             return lots
         return [lot for lot, screen, quality in assessed if self.in_main_selection(screen, quality)]

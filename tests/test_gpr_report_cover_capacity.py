@@ -26,7 +26,8 @@ def _normal(text):
 
 
 def _cover_model(tmp_path, monkeypatch, variant, credit):
-    state = copy.deepcopy(monitor.build(PROJECT, CUT)['schedule']['readiness'])
+    source_view = monitor.build(PROJECT, CUT)
+    native_gantt = report.gantt(source_view, {})
     monkeypatch.setattr(monitor, '_SNAPSHOT_DIR', tmp_path / 'other-monitor')
     monkeypatch.setenv('DATA_DIR', str(tmp_path / 'other-data'))
     if variant == 'budget':
@@ -36,7 +37,9 @@ def _cover_model(tmp_path, monkeypatch, variant, credit):
         from test_management_report_analytics import _full
         built = _full()
     built['end'] = CUT
-    built['gantt']['readiness'] = state
+    # Keep one native source/cut/scope, rather than grafting a readiness state
+    # onto another fixture's now source-bound work-date DTO.
+    built['gantt'] = copy.deepcopy(native_gantt)
     if credit != 'missing':
         native_credit = _built(monkeypatch)
         built['credit_due'] = (_with_the_increase(native_credit) if credit == 'extra'
@@ -52,10 +55,17 @@ def test_full_cover_notes_and_page2_keep_their_normal_font(saved, tmp_path, monk
     built = _cover_model(tmp_path, monkeypatch, variant, credit)
     before = copy.deepcopy(built)
     items = report.tiles(built)
-    assert len(items) == (13 if variant == 'budget' else 14)
+    # The independent paid card remains visible when the FM is unavailable.
+    assert len(items) == (14 if variant == 'budget' else 15)
     assert len([item for item in items if item.get('group') == 'gpr_readiness']) == 2
     assert len([item for item in items if item.get('group') == 'additional_funding']) == 1
     assert not any(item.get('group') == 'admin_expenses_cash' for item in items)
+    summary = report._report_gpr_summary(built)
+    readiness = next(item for item in items if item.get('group') == 'gpr_readiness'
+                     and item['label'] != summary['forecast_label'])
+    cover_items = [item for item in items if item is not readiness]
+    assert sum(item['label'] == summary['forecast_label'] for item in cover_items) == 1
+    assert summary['progress'] is not None and summary['value'] == readiness['value']
     body = report.render_html(built)
     heading = "<h2 class='block' id='block-build'>"
     # Print the genuine cover at normal A4 width independently of later
@@ -67,23 +77,34 @@ def test_full_cover_notes_and_page2_keep_their_normal_font(saved, tmp_path, monk
         (tmp_path / f'{variant}-{credit}-{name}.pdf').write_bytes(raw)
         pdf = pymupdf.open(stream=raw, filetype='pdf')
         cover = _normal(pdf[0].get_text())
-        for item in items:
+        for item in cover_items:
             for key in ('label', 'value', 'note'):
                 assert _normal(item[key]) in cover, (name, item['label'], key)
+        assert _normal(readiness['label']) not in cover
         for item in built['findings']:
+            if item['topic'] in {'Стройка', 'Срок', 'Корпуса', 'Натуральный факт', 'Отстающие работы'}:
+                continue  # GPR now has its own three compact blocks after the cover.
             assert _normal(item['text']) in cover, (name, item['topic'])
         assert any(hit.y0 < 120 for hit in pdf[1].search_for('Стройка'))
         spans = [span for block in pdf[0].get_text('dict')['blocks'] if 'lines' in block
                  for line in block['lines'] for span in line['spans']]
         title = next(span for span in spans if span['text'].startswith('Сводка по проекту'))
         assert title['size'] == pytest.approx(15, abs=.05), (name, title['size'])
-        value = next(span for span in spans if span['text'] == '40,5%')
-        assert value['size'] == pytest.approx(15, abs=.05), (name, value['size'])
+        if name == 'full':
+            text = _normal(' '.join(page.get_text() for page in pdf))
+            assert _normal(summary['readiness_text']) in text
+            readiness_spans = [span for page in pdf for block in page.get_text('dict')['blocks']
+                               if 'lines' in block for line in block['lines'] for span in line['spans']
+                               if readiness['value'] in span['text']]
+            assert readiness_spans and min(span['size'] for span in readiness_spans) >= 9-.05
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=str(chromium_or_skip()))
         page = browser.new_page(viewport={'width': 703, 'height': 1000})
         page.set_content(report_pdf.document(body, style=report.REPORT_STYLE, title='Synthetic width'))
         page.emulate_media(media='print')
+        paragraph = page.locator('[data-gpr-block=forecast]>p').filter(has_text=summary['readiness_text'])
+        assert paragraph.count() == 1 and paragraph.is_visible()
+        assert paragraph.evaluate('(e)=>parseFloat(getComputedStyle(e).fontSize)') >= 12
         assert page.evaluate('document.documentElement.scrollWidth<=document.body.clientWidth+1')
         if credit != 'missing':
             cells = page.locator('table.credit-due :is(th,td)')

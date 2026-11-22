@@ -25,6 +25,7 @@ reference only and never classifies money.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import math
 import re
 from typing import Any
@@ -154,10 +155,12 @@ def payments(path: Any, cut: dt.date) -> tuple[list[dict] | None, list[str]]:
     if path is None:
         return None, ["Реестр платежей РСС не загружен; оплаты по договорам не показаны."]
     try:
-        rows = actuals.read_payments(path, include_incomplete=True).get("rows") or []
+        rows = actuals.read_payments(path, include_incomplete=True,
+                                    include_contract_allocation=True).get("rows") or []
     except (KeyError, ValueError, OSError):
         return None, ["Реестр платежей в выбранном снимке РСС не прочитан; оплаты по договорам не показаны."]
     out, undated = [], 0
+    source_key = hashlib.sha256(str(Path(path).resolve()).encode()).hexdigest()
     for row in rows:
         day = _day(row.get("date"))
         if day is not None and day > cut:
@@ -177,7 +180,22 @@ def payments(path: Any, cut: dt.date) -> tuple[list[dict] | None, list[str]]:
                     "amount": amount, "date": day,
                     "advance_label": "аванс" in _norm(row.get("purpose")),
                     "source": {"label": "Реестр платежей РСС", "filename": Path(path).name,
+                               "payment_source_key": source_key,
                                "sheet": actuals._PAYMENTS_SHEET, "row": row.get("source_row")}})
+        allocation = row.get('contract_allocation')
+        if allocation is not None:
+            purpose = _norm(allocation.get('purpose'))
+            out.append({'contractor': allocation.get('contractor') or '',
+                        'contract': allocation.get('contract') or '',
+                        'contract_date': None, 'date': day, 'amount': amount,
+                        'advance_label': True if purpose == 'аванс' else
+                            False if purpose in {'выполнение', 'гу'} else None,
+                        'source': {'label': 'Распределение платежа по договору в РСС',
+                                   'kind': 'contract_allocation', 'filename': Path(path).name,
+                                   'payment_source_key': source_key,
+                                   'sheet': actuals._PAYMENTS_SHEET, 'row': row.get('source_row'),
+                                   'cells': allocation['source_cells'],
+                                   'header_roles': allocation['header_roles']}})
     warnings = ([f"В реестре платежей {undated} строк без даты платежа; итог оплаты по подходящим договорам неизвестен."]
                 if undated else [])
     return out, warnings
@@ -206,7 +224,44 @@ def advance(row: dict, paid_rows: list[dict] | None, *, reference_key,
     related = [(payment, payment_identity(payment, reference_key=reference_key))
                for payment in paid_rows]
     related = [(payment, key) for payment, key in related if compatible(key)]
-    result["sources"] = [payment["source"] for payment, _ in related if payment.get("source")]
+    source_observations = [payment['source'] for payment, _ in related if payment.get('source')]
+    # L/M observations are a second attribution level of the same cash row.
+    # They never enter a confirmed paid amount without the legal date.
+    allocations = [p for p, key in related if (p.get('source') or {}).get('kind') == 'contract_allocation'
+                   and all(key[:2]) and key[:2] == identity[:2]]
+    if allocations:
+        result.update(allocation_recorded_total=None, allocation_recorded_count=0)
+    if allocations and all(p.get('amount') is not None and p.get('date') is not None for p in allocations):
+        result.update(allocation_recorded_total=math.fsum(p['amount'] for p in allocations),
+                      allocation_recorded_count=len(allocations))
+    # Both levels can identify the same contract. They describe one source
+    # cash cell, including when its legal identity is incomplete. Correlate
+    # only the reader's explicit source key and coordinates, never amounts or
+    # matching names alone. Keep each observed identity intact.
+    grouped = {}
+    for index, (payment, key) in enumerate(related):
+        source = payment.get('source') or {}
+        token, sheet, number = source.get('payment_source_key'), source.get('sheet'), source.get('row')
+        origin = (token, sheet, number) if (isinstance(token, str) and re.fullmatch(r'[0-9a-f]{64}', token)
+                  and sheet == 'Реестр платежей' and type(number) is int and number > 0) else ('unproven', index)
+        grouped.setdefault(origin, []).append((payment, key))
+    correlated, conflicting_cash = [], False
+    for group in grouped.values():
+        levels = {(p.get('source') or {}).get('kind') == 'contract_allocation' for p, _ in group}
+        if levels != {False, True}:
+            correlated.extend(group)
+            continue
+        chosen = max(group, key=lambda pair: (all(pair[1]), all(pair[1][:2]),
+                     sum(bool(part) for part in pair[1]),
+                     (pair[0].get('source') or {}).get('kind') != 'contract_allocation'))
+        if any((p.get('amount'), p.get('date')) != (chosen[0].get('amount'), chosen[0].get('date')) for p, _ in group):
+            conflicting_cash = True
+            chosen = (dict(chosen[0], amount=None, date=None), chosen[1])
+        correlated.append(chosen)
+    related = correlated
+    if conflicting_cash:
+        result['allocation_recorded_total'] = None
+    result["sources"] = source_observations
     if identity_counts is not None and identity_counts.get(identity, 0) != 1:
         return dict(result, unmatched_candidates=len(related),
                     unmatched_amount=(math.fsum(p["amount"] for p, _ in related)
@@ -224,7 +279,8 @@ def advance(row: dict, paid_rows: list[dict] | None, *, reference_key,
                                     if unresolved and all(p.get("amount") is not None for p in unresolved) else None))
     if unresolved:
         missing_date = any(not p.get("contract_date") for p in unresolved)
-        return dict(result, reason=f"Ещё {len(unresolved)} подходящих строк реестра платежей "
+        return dict(result, reason=("Наблюдения одной строки платежа противоречат друг другу. " if conflicting_cash else "")
+                    + f"Ещё {len(unresolved)} подходящих строк реестра платежей "
                     + ("без даты договора" if missing_date else "с неполными реквизитами, датой платежа или суммой")
                     + "; итог оплаты и неотработанный аванс неизвестны. Проверьте исходные строки.")
     paid = confirmed

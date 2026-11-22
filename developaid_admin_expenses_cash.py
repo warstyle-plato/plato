@@ -45,10 +45,19 @@ def total(values):
     return sum(known,Decimal(0)) if known and len(known)==len(values) else None
 
 
-def fm_budget(data):
+def fm_budget(data, meta=None):
     from openpyxl import load_workbook
     from openpyxl.utils.cell import coordinate_from_string,column_index_from_string
     leaves,headers,units=source._cells(data)
+    import developaid_finance_units as finance_units
+    resolved=finance_units.resolve(units,meta,hashlib.sha256(data).hexdigest())
+    declaration=(meta if isinstance(meta,dict) else {}).get('money_unit')
+    declared=(isinstance(declaration,dict) and declaration.get('basis')=='owner_declaration'
+              and declaration.get('source_sha256')==hashlib.sha256(data).hexdigest()
+              and isinstance(declaration.get('unit'),str) and declaration['unit'] in finance_units.UNITS)
+    if declared and resolved.get('state')!='observed':raise source.SourceProblem('unit_ambiguous')
+    factor=int(finance_units.UNITS[resolved['recognized_unit']]) if declared else FACTOR
+    basis='owner_declaration' if declared else 'existing_native_finmodel_contract'
     sums={k:total(number(r['cells'][k]['cached_value']) for r in leaves) for k in ('total','fact','plan')}
     columns={k:column_index_from_string(coordinate_from_string(ref)[0])-1 for k,ref in headers.items()}
     parent=None;tax=[];all_tax_codes=[]
@@ -58,7 +67,7 @@ def fm_budget(data):
             code=str(cells[2].value or '').strip().rstrip('.')
             if code!='2.4' and not(code=='2.4.5' or code.startswith('2.4.5.')):continue
             row={'code':code,'row':index,'cells':{k:f'{coordinate_from_string(headers[k])[0]}{index}' for k in columns},
-                 **{k:scalar(number(source._raw(cells[c])['cached_value'])*FACTOR) if number(source._raw(cells[c])['cached_value']) is not None else None for k,c in columns.items()}}
+                 **{k:scalar(number(source._raw(cells[c])['cached_value'])*factor) if number(source._raw(cells[c])['cached_value']) is not None else None for k,c in columns.items()}}
             if code=='2.4':
                 if parent is not None:raise source.SourceProblem('codes_ambiguous')
                 parent=row
@@ -66,14 +75,14 @@ def fm_budget(data):
     tax_leaves=[r for r in tax if not any(c.startswith(r['code']+'.') for c in all_tax_codes)]
     tax_known=len(set(all_tax_codes))==len(all_tax_codes)
     taxes={k:(scalar(total(number(r[k]) for r in tax_leaves)) if tax_leaves else 0.0) if tax_known else None for k in sums}
-    normalized={k:scalar(v*FACTOR) if v is not None else None for k,v in sums.items()}
+    normalized={k:scalar(v*factor) if v is not None else None for k,v in sums.items()}
     all_children={k:scalar(number(normalized[k])+number(taxes[k])) if normalized[k] is not None and taxes[k] is not None else None for k in sums}
     differences={k:scalar(number(parent[k])-number(all_children[k])) if parent and parent[k] is not None and all_children[k] is not None else None for k in sums}
     return {'budget':normalized['total'],'fm_columns_context_only':normalized,'taxes_separate':taxes,
         'parent_2_4':parent,'all_child_leaf_sum_including_tax':all_children,'parent_minus_all_children':differences,
         'parent_minus_non_tax_leaves':{k:scalar(number(parent[k])-number(normalized[k])) if parent and parent[k] is not None and normalized[k] is not None else None for k in sums},
         'leaf_count':len(leaves),'cells':{k:[r['cells'][k]['cell'] for r in leaves] for k in sums},
-        'factor_to_rubles':FACTOR,'unit_basis':'existing_native_finmodel_contract','raw_unit_evidence':units,
+        'factor_to_rubles':factor,'unit_basis':basis,'raw_unit_evidence':units,'unit_evidence':resolved,
         'budget_definition':'non-tax leaf2.4; parent is diagnostic only; financing excluded'}
 
 
@@ -301,7 +310,7 @@ def for_project(project,cut):
             if any(identity.get(k)!=v for k,v in namespace.items()):raise ValueError('finance_namespace_changed')
         except Exception:fm=None;errors['fm']='unavailable'
         if fm is not None:
-            try:budget=fm_budget(fm)
+            try:budget=fm_budget(fm,meta)
             except Exception:errors['fm_budget']='unavailable'
         try:
             rss,_,rss_id=rss_source._rss_copy(project,day.isoformat())
@@ -394,29 +403,23 @@ def funding_base_for_limit(funding, model):
 
 
 def funding_summary(base, model, money):
-    """Observed cash is context, never an attestation of remaining funding need.
-
-    The native cash producer does not attest payment coverage since project
-    start. Even a complete observed period cannot turn its balance into need.
-    Without cash data, keep the existing, separately named bank calculation.
-    """
+    """Show an available bank calculation; keep AHR cash context separate."""
     base = number(base)
     balance = number(model.get('balance_after_observed_payments'))
-    if not _has_cash_observation(model):
-        return {'amount': scalar(max(Decimal(0), base)) if base is not None else None,
-                'scope': 'bank_only',
-                'note': 'Сумма без уточнения АХР: остаток АХР пока не рассчитан.'}
     note = (f'АХР: остаток после учтённых оплат — {money(scalar(balance))}. '
-            if balance is not None else 'Остаток АХР после учтённых оплат пока не рассчитан. ')
-    note += 'Полнота оплат с начала проекта не подтверждена; общая потребность пока не определена.'
-    return {'amount': None, 'scope': 'unconfirmed_total', 'note': note}
+            if balance is not None else 'Остаток АХР после учтённых оплат не рассчитан. ')
+    if base is not None:
+        return {'amount': scalar(max(Decimal(0), base)), 'scope': 'bank_only',
+                'note': note + 'Потребность по смете банка показана отдельно от остатка АХР.'}
+    return {'amount': None, 'scope': 'unconfirmed_total',
+            'note': note + 'Не определена базовая потребность без уже включённых в неё АХР.'}
 
 
 def render_funding(summary, details_html):
     amount = summary['amount']
     esc = lambda v: html.escape(str(v))
     value = money(amount, compact=True) if amount is not None else 'нет данных'
-    label = 'Потребность по смете банка' if summary.get('scope') == 'bank_only' else 'Потребность в допфинансировании'
+    label = summary.get('label') or ('Потребность по смете банка' if summary.get('scope') == 'bank_only' else 'Потребность в допфинансировании')
     return (f'<div class="additional-funding"><small>{esc(label)}</small>'
             f'<div style="font-size:20px;font-weight:700">{esc(value)}</div>'
             f'<p>{esc(summary["note"])}</p></div>'
@@ -426,7 +429,7 @@ def render_funding(summary, details_html):
 def tiles(model):
     notes={'budget':'По сохранённой ФМ; налоги отдельно.',
            'paid_observed_net':'Известная часть оплат по загруженным источникам.',
-           'balance_after_observed_payments':'Промежуточный остаток; полнота оплат не подтверждена.',
+           'balance_after_observed_payments':'Остаток после оплат, учтённых за выбранный период.',
            'observed_overspend':'По учтённым оплатам; без добавления в бюджет.'}
     return [{'label':label,'value':money(model.get(key),compact=True),'note':notes[key],
              'group':'admin_expenses_cash','tone':'missing' if model.get(key)is None else ''}for key,label in FIELDS]

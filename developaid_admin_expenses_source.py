@@ -33,7 +33,7 @@ MAX_HEADER_CELLS = MAX_HEADER_ROWS * MAX_COLUMNS
 MAX_UNIT_TOKENS = 64
 FIELDS = (("total", "итого"), ("fact", "факт"), ("plan", "план"))
 _UNIT = re.compile(r"(?<![\w])(?:(?P<scale>тыс\.?|тысяч(?:ах|и|а)?|млн\.?|миллион(?:ах|ов|а|ы)?)"
-                   r"\s{0,8})?(?:руб(?:лей|ля|ль|ли|\.)?|р\.|₽)(?![\w])", re.I)
+                   r"\s{0,8})?(?:руб(?:лей|лях|ля|ль|ли|\.)?|р\.|₽)(?![\w])", re.I)
 _NUMERIC_TEXT = re.compile(r"[+-]?(?:[0-9]+(?:[.,][0-9]*)?|[.,][0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
 _QUANTITY = (r"(?:[+-]?[0-9]{1,12}(?:[ \u00a0\u202f][0-9]{3}){0,6}"
              r"(?:[.,][0-9]{1,6})?(?:\s{0,8}/\s{0,8}[0-9]{1,8})?"
@@ -358,6 +358,8 @@ def capture(project, cut, *, runtime):
             raise
         except Exception:
             raise SourceProblem("workbook_unreadable") from None
+        import developaid_finance_units as finance_units
+        result['unit_evidence'] = finance_units.resolve(result['unit_evidence'], meta, source['sha256'])
         result["state"] = "ok"
     _, again_meta, again_source = _copy(project)
     if any(source[key] != again_source[key] for key in ("sha256", "namespace_sha256", "aliases_sha256")) \
@@ -392,6 +394,8 @@ def capture_saved_snapshot(project, *, runtime):
     except Exception:
         raise SourceProblem('workbook_unreadable') from None
     observation = units.pop('_observability', None)
+    import developaid_finance_units as finance_units
+    units = finance_units.resolve(units, meta, source['sha256'])
     result = {'schema': 1, 'purpose': SAVED_PURPOSE, 'scope': 'raw_saved_snapshot',
         'state': 'raw_saved_snapshot_read', 'captured_at': dt.datetime.now(dt.timezone.utc).isoformat(),
         'runtime': {key: str(runtime.get(key) or '')[:64] for key in ('version', 'commit')},

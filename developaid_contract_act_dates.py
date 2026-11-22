@@ -25,11 +25,21 @@ import developaid_contract_acts as acts_in_card
 # Only an explicit act number: «КС-2 № 3», «Акт № 3» or a label that is the number alone («№ 3»).
 # «Период № 3», «Этап № 2» and the date of «КС-2 от 15.03.2026» are no act numbers.
 _NUMBER = re.compile(r"КС\s*-?\s*2\b[^№\d]*№\s*(\d+)|\bакт\w*\s+№\s*(\d+)|^\s*№\s*(\d+)\s*$", re.I)
+_COMPACT_NUMBER = re.compile(r"КС\s*[-–—]?\s*2\s*[-–—]\s*(\d+)", re.I)
 _QUANTITY = 1e-6
+
+
+def compact_number(label) -> str | None:
+    """An entire compact KS-2 heading («КС2-1»); never a date or a text mention."""
+    match = _COMPACT_NUMBER.fullmatch(str(label or "").strip())
+    return (match[1].lstrip("0") or "0") if match else None
 
 
 def number(label) -> str | None:
     """The act number of a KS-6a period label («КС-2 № 3» → "3"); None for a period named otherwise."""
+    compact = compact_number(label)
+    if compact is not None:
+        return compact
     match = _NUMBER.search(str(label or ""))
     return next(g for g in match.groups() if g).lstrip("0") or "0" if match else None
 
@@ -115,7 +125,7 @@ def resolve(found: dict | None, records: list[dict]) -> dict | None:
     for work in found.get("unread") or []:
         for period in work.get("periods") or []:
             n = number(period["label"]) if not period.get("end") else None
-            if n and (period.get("quantity") or period.get("amount")):
+            if n and (period.get("quantity") or period.get('material_quantity') or period.get("amount")):
                 labels.setdefault(n, period["label"])
     chosen = acts_in_card.in_force(records)
     dates = {n: _dates(n, chosen["acts"], found.get("summary_acts") or [], chosen["notes"]) for n in labels}
@@ -136,9 +146,15 @@ def resolve(found: dict | None, records: list[dict]) -> dict | None:
         result["items"].append({"item": work["item"], "number": work["number"], "name": work["name"],
                                 "unit": work["unit"], "plan_quantity": work.get("plan_quantity")})
         result["acts"].extend({"number": work["number"], "name": work["name"], "unit": work["unit"],
-                               "quantity": period.get("quantity") or None, "act_amount": period.get("amount"),
+                               "quantity": period.get("quantity"), "act_amount": period.get("amount"),
+                               "quantity_material": period.get('material_quantity'),
+                               "basis": period.get('basis') or work.get('basis') or 'work',
+                               "amount_components": {'work': period.get('work_amount'),
+                                                     'material': period.get('material_amount'),
+                                                     'total': period.get('amount')},
                                "start": period["start"], "end": period["end"], "label": period["label"],
                                "item": work["item"], "dated_by": period.get("dated_by") or "",
+                               "preliminary": period.get("preliminary", False),
                                "source": period.get("source") or work.get("source") or {}} for period in dated)
     result["works"] = len(result["items"])
     return result
@@ -152,7 +168,7 @@ def _dated(work: dict, dates: dict):
         return work.get("reason") or "", None
     out = []
     for period in periods:
-        if not period.get("quantity") and not period.get("amount"):
+        if not period.get("quantity") and not period.get('material_quantity') and not period.get("amount"):
             continue  # A sum without a volume is dated too and goes to review in the fact.
         if period.get("end"):
             out.append(period)
@@ -161,7 +177,8 @@ def _dated(work: dict, dates: dict):
         if row is None or not row["end"]:
             why = row["reason"] if row else "период назван не номером акта КС-2"
             return f"Период «{period['label']}» без даты: {why}. Его объём в факт не входит.", None
-        out.append({**period, "start": row["start"], "end": row["end"], "dated_by": row["basis"]})
+        out.append({**period, "start": row["start"], "end": row["end"], "dated_by": row["basis"],
+                    "preliminary": row["start"] is None})
     total = sum(p["quantity"] for p in periods if p.get("quantity"))
     if abs(total - work["reported_quantity"]) > max(_QUANTITY, abs(work["reported_quantity"]) * 1e-7):
         return (f"Объёмы периодов КС-6а в сумме {total:g}, а накопительный итог работы — "

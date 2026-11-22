@@ -167,6 +167,12 @@ def vri_relief(x: dict[str, Any], gross: float,
     """
     gross = max(0.0, float(gross or 0.0))
     basis = vri_relief_basis(x)
+    # Очередь получила долю уже очищенной платы проекта, включая зачёт
+    # переданных метров. Исходный зачёт хранится в её вводных для раскрытия,
+    # но повторно эту долю не уменьшает. Один пользовательский режим master
+    # такого происхождения не доказывает: нужен маркер обёртки очередей.
+    if basis == "master" and x.get("_vri_relief_applied_at_project") is True:
+        return 0.0, gross
     if basis == "percent":
         relief = gross * max(0.0, min(100.0, n(x, "vri_relief_pct", 0.0))) / 100.0
     elif basis == "amount":
@@ -284,6 +290,29 @@ def vri_obligation_date(x: dict[str, Any], permit: date) -> tuple[date, str, boo
     if mode == "at_rns":
         return permit, "Оценочная дата — в дату РнС", True
     return add_months(permit, -1), "Оценочная дата — за месяц до РнС", True
+
+
+def vri_cadastral_change_date(x: dict[str, Any], permit: date) -> date | None:
+    """Дата новой кадастровой базы аренды, независимо от платы и льгот.
+
+    Отдельное решение об изменении ВРИ не связано с флагом оплаты старых
+    проектов. Пока это решение не задано, положительная исходная плата или
+    сохранённое требование смены ВРИ подтверждают событие. Подтверждённая
+    дата применения новой КС имеет приоритет; пока её нет, расчёт использует
+    сценарную дату. Неверная дата не заменяется другой датой молча.
+    """
+    change = x.get("land_rent_vri_change")
+    if change is False:
+        return None
+    if change is not True and not (vri_payment_active(x) or x.get("vri_required") is True):
+        return None
+    raw = x.get("land_rent_cadastral_change_date")
+    if raw not in (None, ""):
+        try:
+            return d(raw)
+        except (TypeError, ValueError):
+            return None
+    return vri_obligation_date(x, permit)[0]
 
 
 def _vri_settings(x: dict[str, Any], permit: date, amount: float = 0.0) -> dict[str, Any]:

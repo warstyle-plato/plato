@@ -69,6 +69,8 @@ def bot(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_PLATO_STAGE_DIR", tmp_path)
     monkeypatch.setattr(engine, "_telegram_token", lambda: "123:test")
     monkeypatch.setattr(engine, "_telegram_allowed_user_ids", lambda: set())
+    from document_protocol_stub import compatible_document_core
+    compatible_document_core(monkeypatch, engine)
     monkeypatch.setattr(document_intake, "extract_text",
                         lambda _data, name: {"text": TEXT, "pages": 4, "filename": name})
     monkeypatch.setattr(engine, "plato_answer",
@@ -113,7 +115,9 @@ def test_the_first_message_is_a_card_and_asks_nothing(bot):
     assert "Чего нет в тизере" in card["text"]
     assert "Вопрос 1" not in card["text"], "первый шаг уже спрашивает"
     assert "offices_gba_sqm" not in card["text"], "в карточке ключ вместо подписи"
-    assert [b["callback_data"] for b in _buttons(card)] == ["intake_questions"]
+    shown = [b["callback_data"] for b in _buttons(card)]
+    intake_id = engine._telegram_dialog_get(CHAT)["intake"]["id"]
+    assert shown == [engine._telegram_intake_callback_data(intake_id, "questions")]
     assert not bot.parcels, "расчёт участка начался без кнопки"
 
 
@@ -155,6 +159,23 @@ def test_the_button_carries_exactly_the_card(bot):
     assert not bot.parcels, "расчёт начался до кнопки"
 
 
+def test_an_unadmitted_core_keeps_the_ready_card_without_signing_or_starting_calculation(bot, monkeypatch):
+    import document_intake_protocol as protocol
+    monkeypatch.delenv(protocol.ADMISSION_ENV)
+    monkeypatch.setattr(engine, '_telegram_session', lambda *a, **k: pytest.fail('held handoff must not sign a session'))
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "synthetic.pdf")
+    _press("intake_questions")
+    _press(_buttons(bot[-1])[0]["callback_data"])
+    _press(_buttons(bot[-1])[0]["callback_data"])
+    _press(_buttons(bot[-1])[1]["callback_data"])
+    assert "Итог разбора перед расчётом" in bot[-1]["text"]
+    assert protocol.UNAVAILABLE_MESSAGE in bot[-1]["text"]
+    assert not _buttons(bot[-1]) and not bot.parcels
+    dialog = engine._telegram_dialog_get(CHAT)
+    queue = engine._intake_queue_load(dialog['intake']['id'], request=engine._telegram_agent_request(CHAT))
+    assert queue['index'] == len(queue['cards']) and len(queue['answers']) == 3
+
+
 def test_a_skip_and_a_stop_are_answers_and_say_so(bot):
     engine._telegram_handle_intake_document(CHAT, b"%PDF", "svetly.pdf")
     _press("intake_questions")
@@ -162,7 +183,8 @@ def test_a_skip_and_a_stop_are_answers_and_say_so(bot):
     assert any("Пропущено" in m["text"] for m in bot[-2:])
     engine._telegram_handle_dialog_text(CHAT, "стоп")
     assert "Итог разбора перед расчётом" in bot[-1]["text"]
-    assert _buttons(bot[-1])[0]["text"] == "Всё верно, считать"
+    assert "Предварительный расчёт" in bot[-1]["text"]
+    assert _buttons(bot[-1])[0]["text"] == "Считать без неуточнённых обязательств"
 
 
 def test_the_dialogue_survives_the_other_worker(bot):
@@ -207,6 +229,7 @@ def test_long_final_card_after_elite_answer_is_complete_and_keeps_the_calculate_
     queue['notes'] = [('Синтетическое пояснение ' + str(i) + ': ' + 'проверить & сверить <значение> 😀 ' * 12)
                       for i in range(24)]
     engine._intake_queue_save(queue)
+    engine._telegram_intake_ask_next(CHAT, engine._telegram_dialog_get(CHAT))
     original_send = engine._telegram_send_message
 
     def validate_send(chat_id, text, **kwargs):
@@ -242,10 +265,12 @@ def test_calc_menu_can_return_to_the_saved_intake_without_reloading_the_document
     saved = engine._telegram_dialog_get(CHAT)['intake']['id']
     engine._TELEGRAM_DIALOGS.pop(CHAT, None)
     engine._telegram_calc_menu(CHAT)
-    assert any(b.get('callback_data') == 'intake_questions' for b in _buttons(bot[-1]))
-    _press('intake_questions')
+    resume = next(b for b in _buttons(bot[-1]) if b.get('callback_data', '').startswith('intake2_questions:'))
+    assert resume['callback_data'] == engine._telegram_intake_callback_data(saved, 'questions')
+    _press(resume['callback_data'])
     assert 'Итог разбора перед расчётом' in bot[-1]['text']
-    assert _buttons(bot[-1])[0]['text'] == 'Всё верно, считать'
+    assert 'Предварительный расчёт' in bot[-1]['text']
+    assert _buttons(bot[-1])[0]['text'] == 'Считать без неуточнённых обязательств'
     assert engine._telegram_dialog_get(CHAT)['intake']['id'] == saved
 
 
@@ -279,12 +304,15 @@ def test_long_first_card_keeps_its_complete_text_before_the_questions_button(bot
         return original_send(chat_id, text, **kwargs)
     monkeypatch.setattr(engine, '_telegram_send_message', validate_send)
     engine._telegram_handle_intake_document(CHAT, b'%PDF', 'synthetic.pdf')
-    parts = bot[1:]
+    first_card = next(i for i, message in enumerate(bot) if 'Что я прочитал в тизере' in message['text'])
+    assert first_card > 0 and all(not _buttons(message) for message in bot[:first_card])
+    parts = bot[first_card:]
     assert len(parts) > 1
     assert 'Что я прочитал в тизере' in parts[0]['text']
     assert 'Первое чтение 23' in ''.join(p['text'] for p in parts)
     assert all(not _buttons(p) for p in parts[:-1])
-    assert _buttons(parts[-1])[0]['callback_data'] == 'intake_questions'
+    intake_id = engine._telegram_dialog_get(CHAT)['intake']['id']
+    assert _buttons(parts[-1])[0]['callback_data'] == engine._telegram_intake_callback_data(intake_id, 'questions')
     assert not bot.parcels
 
 
@@ -329,7 +357,7 @@ def test_another_region_is_counted_with_our_defaults_and_the_card(bot, monkeypat
     _press("intake_questions")
     engine._telegram_handle_dialog_text(CHAT, "стоп")
     button = _buttons(bot[-1])[0]
-    assert button["text"] == "Всё верно, считать"
+    assert button["text"] == "Считать без неуточнённых обязательств"
     url = button["web_app"]["url"]
     assert "mode=intake" in url
     session = _session(url)
@@ -387,8 +415,9 @@ def test_a_50_number_without_glavapu_is_not_guessed(bot, monkeypatch):
     _press("intake_questions")
     engine._telegram_handle_dialog_text(CHAT, "стоп")
     button = _buttons(bot[-1])[0]
-    assert button.get("callback_data") == "intake_region" and "web_app" not in button
-    _press("intake_region")
+    assert button.get("callback_data") == engine._telegram_intake_callback_data(
+        engine._telegram_dialog_get(CHAT)['intake']['id'], 'region') and "web_app" not in button
+    _press(button["callback_data"])
     url = _buttons(bot[-1])[0]["web_app"]["url"]
     assert "mode=intake" not in url and _session(url)["cad"] == [number]
 
@@ -457,7 +486,13 @@ def test_foreign_chat_web_identity_and_forged_bot_claim_cannot_read_or_answer_in
     assert denied.value.status_code == 403
     # A different Telegram chat cannot answer even after obtaining an intake ID.
     foreign_dialog = copy.deepcopy(dialog)
-    engine._telegram_dialog_save(CHAT + 1, foreign_dialog)
+    # A copied owner/source revision must be refused, never resurrected.
+    with pytest.raises(RuntimeError, match="Шаг уже изменился"):
+        engine._telegram_dialog_save(CHAT + 1, foreign_dialog)
+    assert engine._intake_queue_path(intake_id).read_bytes() == before
+    # A fresh foreign-chat fixture knows only the document ID. The queue ACL
+    # must still reject it before any answer or private read.
+    engine._telegram_dialog_save(CHAT + 1, {"step": "await_intake_answer", "intake": {"id": intake_id}})
     engine._telegram_handle_update({"callback_query": {
         "id": "", "data": "intake_opt:0:0", "from": {"id": CHAT + 1},
         "message": {"chat": {"id": CHAT + 1, "type": "private"}}}})
@@ -472,7 +507,7 @@ def test_foreign_chat_web_identity_and_forged_bot_claim_cannot_read_or_answer_in
         response = client.post("/agent/document/card", json=body)
         assert response.status_code == 403
         assert "own.pdf" not in response.text
-        response = client.post("/agent/document/answer", json={**body,
+        response = client.post("/agent/document/qualified-v1/answer", json={**body,
             "index": 0, "action": "answer", "choice": 0})
         assert response.status_code == 403
     assert engine._intake_queue_path(intake_id).read_bytes() == before

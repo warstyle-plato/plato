@@ -87,10 +87,11 @@ def test_the_manual_template_error_reaches_the_person():
         core._telegram_send_message = original_send
         core._telegram_download_document = original_download
 
-    assert len(replies) == 1
-    assert "Не удалось принять ручной ТЭП" in replies[0]
-    assert "/template" in replies[0]
-    assert "0,0000 га" not in replies[0], "сводка из нулей — не ответ"
+    assert replies[0].startswith('<b>Файл принят')
+    failures = [text for text in replies if 'Не удалось принять ручной ТЭП' in text]
+    assert len(failures) == 1
+    assert "/template" in failures[0]
+    assert all('0,0000 га' not in text for text in replies), "сводка из нулей — не ответ"
 
 
 def test_a_real_glavapu_file_still_passes():

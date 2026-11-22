@@ -460,6 +460,7 @@ function projectCadastral(){
 }
 
 function projectStorePayload(){
+ normalizeMoVriRegion();
  return {payload:{inputs,tep:persistedTep(tep),phasing,scenario:scenarioSelect.value||'base'},
   summary:projectSummaryForStore(),cadastral:projectCadastral()};
 }
@@ -815,6 +816,9 @@ function renderOpenedProjectButton(){
 }
 
 function forgetTerritoryState(){
+ resetMoTerritoryDraft();
+ const resultError=document.getElementById('telegramResultError');
+ if(resultError&&typeof resultError.remove==='function')resultError.remove();
  cadastralAnalysis=null;landLookup=null;otherRegionPending=null;landScreeningLast=null;LAND_MAP=null;
  calcWentWithoutContour=false;
  glavapuImport=null;moResult=null;
@@ -860,8 +864,9 @@ function applyProjectSnapshot(data){
  // чужие числа в тот проект, из которого их уже не достать — истории версий у
  // хранилища нет. Кто открыл проект по-настоящему, скажет об этом следом.
  openedProject=null;
+ renderCalculationQualification(null);
  forgetTerritoryState();
- inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.inputs||{});
+ inputs=Object.assign(cloneValue(INPUT_DEFAULT),cloneValue(data.inputs||{}));
  if(inputs._partial_tep)partialTepInvalidateResult();
  tep=cloneValue(TEP_DEFAULT);
  Object.entries(data.tep||{}).forEach(([key,values])=>{
@@ -1076,9 +1081,9 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'profileState','profileAskedOnResult','calcRequiresLogin','accessUseFree','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'projectsCards','projectsSortRestored',
- 'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
+ 'telegramResultSent','telegramCalcOverrides','telegramOverridesReviewRequired','telegramEditSubmitting','telegramFinishing','telegramQualificationSession',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence','krtSiteRun','krtSiteBusy','glavapuScenarioRun','strategyCompareRound','landContourPending',
+ 'landScreeningRun','tepRunSequence','krtSiteRun','krtSiteBusy','glavapuScenarioRun','moVriReliefRun','moTerritoryEpoch','moCalculateRun','strategyCompareRound','landContourPending',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
  'PROJECT_KIND_WHERE','LAND_MAP_VIEWS','demoBlockNames','landRentRedrawQueued','landRentNeedsRedraw'];
@@ -1249,6 +1254,7 @@ function resetAll(){
  // участка.
  forgetTerritoryState();
  rates=[];
+ resetMoVriRelief();
  scenarioSelect.value='base';
  renderInputs();renderTep();renderStoredGlavapu();renderScenarioNote();syncProjectClassSelector();syncProjectKindSelector();
  resetTepControls();

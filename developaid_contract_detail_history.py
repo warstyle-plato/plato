@@ -15,11 +15,15 @@ import json
 import math
 import re
 
+import developaid_contract_stage_profile as stage_profile
+from developaid_contract_act_dates import compact_number
+
 _SCOPES = ('object_scope', 'system_scope', 'site_scope')
 _PLAN = ('plan_quantity', 'planned_amount', 'planned_work_amount',
          'planned_material_amount', 'planned_cost_split', 'planned_work_amount_basis',
          'planned_amount_basis')
 _FACTS = ('quantity', 'material_quantity', 'amount', 'work_amount', 'material_amount')
+_ACT_PERIOD = re.compile(r'^(?:кс\s*-?\s*2|акт)\s*№\s*(\d+(?:\s*[/.-]\s*\d+)*)$', re.I)
 _MESSAGES = {
     'identity': 'Не подтверждены полный состав работы, единица, год или непротиворечивый контекст источника.',
     'provenance': 'Не подтверждены дата наблюдения, архив или отпечаток исходного файла.',
@@ -43,7 +47,8 @@ def _norm(value):
 def normalize_unit(value):
     text = _norm(value).replace('²', '2').replace('³', '3')
     return {'м^2': 'м2', 'м^3': 'м3', 'м.кв.': 'м2', 'кв.м': 'м2',
-            'м.куб.': 'м3', 'куб.м': 'м3', 'пог.м': 'м', 'п.м': 'м'}.get(text, text)
+            'м.куб.': 'м3', 'куб.м': 'м3', 'пог.м': 'м', 'п.м': 'м',
+            'штук': 'шт', 'смен': 'смена', 'чел-час': 'человеко-час'}.get(text, text)
 
 
 def _number(value):
@@ -172,6 +177,111 @@ def _period_value(period):
         period.get('amount_split') is True, period.get('amount_basis') or 'unspecified')
 
 
+def _act_period(period):
+    match = _ACT_PERIOD.fullmatch(_norm(period.get('label')))
+    if match is None:
+        return compact_number(period.get('label'))
+    return re.sub(r'\d+', lambda m: str(int(m[0])), re.sub(r'\s+', '', match[1]))
+
+
+def _nonempty_period(period):
+    return any(_number(period.get(field)) not in (None, 0) for field in _FACTS)
+
+
+def _native_fact(view, field):
+    value = _number(view.get(field))
+    return value if value is not None else _number(view.get('reported_'+field))
+
+
+def _deferred_act_view(view):
+    """A dated-source observation awaiting its explicitly named acts is not missing source data."""
+    if not view.get('undated_periods'):
+        return False
+    undated = [p for p in view.get('undated_periods') or [] if _nonempty_period(p)]
+    if not all(_act_period(p) for p in undated):
+        return False
+    periods = [_prepare_period(p, view) for p in [*(view.get('periods') or []), *undated]]
+    for field, quantity in (('completed_quantity', 'quantity'), ('completed_amount', 'amount')):
+        native = _native_fact(view, field)
+        values = [_number(p.get(quantity)) for p in periods]
+        if native is None or any(v is None for v in values) \
+                or abs(math.fsum(values)-native) > max(1e-6, abs(native)*1e-7):
+            return False
+    return True
+
+
+def _prepare_period(original, view):
+    period = copy.deepcopy(original)
+    # A positive component price and its explicit zero amount attest zero
+    # execution independently of the other component's quantity.
+    for quantity, amount, planned in (('quantity', 'work_amount', 'planned_work_amount'),
+                                       ('material_quantity', 'material_amount', 'planned_material_amount')):
+        if _number(period.get(quantity)) is None and _number(period.get(amount)) == 0 \
+                and (_number(view.get(planned)) or 0) > 0:
+            period[quantity] = 0.0
+            period[quantity+'_basis'] = 'Нулевой объём подтверждён нулевой суммой при положительной цене компонента.'
+    return period
+
+
+def _undated_history(records):
+    """Deduplicate identical named acts only across versions of the same native workbook.
+
+    Labels do not supply dates. A changed quantity or component amount stays a
+    conflict; a new act remains separate. Original observations stay attached.
+    """
+    buckets, unmatched, problems, families = {}, [], [], {}
+    for record in records:
+        view, provenance = record['view'], record['provenance']
+        family = (('proved_statement', record['statement_family']) if record.get('statement_family')
+                  else _place(view)[:2])
+        for original in view.get('undated_periods') or []:
+            if not _nonempty_period(original):
+                continue
+            period = _prepare_period(original, view)
+            act = _act_period(period)
+            if act is None or not all(family) or not _valid_provenance(provenance):
+                unmatched.append(dict(period, selected_source=copy.deepcopy(provenance)))
+                continue
+            buckets.setdefault((family, act), []).append((record, period))
+            families.setdefault(act, set()).add(family)
+    if any(len(values) > 1 for values in families.values()):
+        problems.append('overlap')
+    result = list(unmatched)
+    for observations in buckets.values():
+        source_keys = [(r['provenance']['snapshot_id'], r['provenance']['file_sha256'], _place(r['view']))
+                       for r, _ in observations]
+        values = {_period_value(p) for _, p in observations}
+        if len(values) != 1 or len(source_keys) != len(set(source_keys)):
+            problems.append('conflict' if len(values) != 1 else 'duplicate')
+            result.extend(dict(copy.deepcopy(p), selected_source=copy.deepcopy(r['provenance']))
+                          for r, p in observations)
+            continue
+        record, period = max(observations, key=lambda pair: (
+            pair[0]['provenance']['source_date'], _digest(pair[0]['provenance'])))
+        selected = dict(copy.deepcopy(period), selected_source=copy.deepcopy(record['provenance']))
+        selected['history_sources'] = _unique([
+            dict(copy.deepcopy(r['provenance']), period=copy.deepcopy(p)) for r, p in observations])
+        result.append(selected)
+    return result, problems
+
+
+def _confirmed_deferred_totals(newest, dated, undated, problems):
+    """Keep native totals only when each selected quantity/amount reconciles to that native observation."""
+    if not undated or set(problems)-{'undated'} or any(_act_period(p) is None for p in undated):
+        return {}
+    periods = [*dated, *undated]
+    totals = {}
+    for field, quantity in (('completed_quantity', 'quantity'), ('completed_amount', 'amount'),
+                             ('material_quantity', 'material_quantity')):
+        native = _native_fact(newest['view'], field)
+        values = [_number(p.get(quantity)) for p in periods]
+        if native is None or any(v is None for v in values):
+            continue
+        if abs(math.fsum(values)-native) <= max(1e-6, abs(native)*1e-7):
+            totals[field] = native
+    return totals if all(f in totals for f in ('completed_quantity', 'completed_amount')) else {}
+
+
 def _view_values(view):
     return (tuple(view.get(field) for field in _PLAN),
             tuple(_number(view.get(field)) for field in (
@@ -229,6 +339,34 @@ def _history(record):
     return dict(copy.deepcopy(record['provenance']), view=copy.deepcopy(record['original_view']))
 
 
+def _incomplete_identity(record):
+    """Name a repeated observation without certifying its quantities or scope.
+
+    Absent fields stay absent. Conflicting scope evidence and malformed context
+    are part of this key so different unknown observations cannot look equal.
+    """
+    identity, _ = record['identity']
+    ledger, view = record['ledger'], record['view']
+    quantity = _number(view.get('plan_quantity')) if not identity[1] else None
+    if not identity[2] or not (identity[1] or quantity is not None or identity[8]):
+        return None
+    evidence = tuple(tuple(sorted({_norm(item.get('raw')) for item in
+                     (ledger.get('scope_evidence') or {}).get(field, [])
+                     if isinstance(item, dict) and _norm(item.get('raw'))})) for field in _SCOPES)
+    malformed = tuple(_digest(view.get(field)) if not _headings(view.get(field))[1] else ''
+                      for field in ('section_path', 'context_headings'))
+    return ('incomplete', _digest(identity), quantity, evidence, malformed)
+
+
+def _source_row_identity(record, ordinal):
+    """Only identical workbook bytes prove a repeat of an otherwise unnamed row."""
+    provenance, place = record['provenance'], _place(record['view'])
+    if _valid_provenance(provenance) and place[1] and type(place[2]) is int and place[2] > 0:
+        return ('source_row', provenance['file_sha256'], place[1:],
+                _digest((record['identity'][0], record['ledger'].get('scope_evidence'))))
+    return ('unresolved', ordinal)
+
+
 def _project(records, cut, identity, identity_valid):
     records = sorted(records, key=lambda record: (
         str(record['provenance']['source_date'] or ''), _digest(record['provenance'])))
@@ -246,6 +384,7 @@ def _project(records, cut, identity, identity_valid):
         # Aggregation consumers already exclude is_group; no group total is
         # composed with a different archive's leaves here.
         result['detail_history_state'] = 'group'
+        result['snapshot_date'] = newest['provenance']['source_date']
         result['periods'] = [dict(copy.deepcopy(period),
             selected_source=copy.deepcopy(newest['provenance']),
             history_sources=[dict(copy.deepcopy(newest['provenance']), period=copy.deepcopy(period))])
@@ -295,15 +434,18 @@ def _project(records, cut, identity, identity_valid):
             result[field] = None
         result['planned_cost_split'] = False
 
-    candidates, undated = {}, []
+    candidates = {}
+    undated, undated_problems = _undated_history(records)
+    for code in undated_problems:
+        problem(code)
+    if undated:
+        problem('undated')
     for record in records:
         view = record['view']
         if not view.get('is_group') and any(_number(view.get(field)) is None
-                                          for field in ('completed_quantity', 'completed_amount')):
+                                          for field in ('completed_quantity', 'completed_amount')) \
+                and not _deferred_act_view(view):
             problem('incomplete')
-        for period in view.get('undated_periods') or []:
-            undated.append(dict(copy.deepcopy(period), selected_source=copy.deepcopy(record['provenance'])))
-            problem('undated')
         valid_periods = 0
         for period in view.get('periods') or []:
             first, last = _day(period.get('date_start')), _day(period.get('date_end'))
@@ -318,11 +460,11 @@ def _project(records, cut, identity, identity_valid):
                             for field in ('amount', 'quantity', 'material_quantity'))):
                 continue  # A reconciled empty cell group is not execution.
             candidates.setdefault(_period_key(period), []).append((record, period))
-        known_zero = (_number(view.get('completed_quantity')) == 0
-                      and _number(view.get('completed_amount')) == 0)
+        known_zero = (_native_fact(view, 'completed_quantity') == 0
+                      and _native_fact(view, 'completed_amount') == 0)
         if not valid_periods and not known_zero and not view.get('is_group'):
             problem('undated')
-    result['undated_periods'] = _unique(undated)
+    result['undated_periods'] = undated
     selected = []
     for key, observations in sorted(candidates.items()):
         days = [record['provenance']['source_date'] for record, _ in observations]
@@ -364,23 +506,27 @@ def _project(records, cut, identity, identity_valid):
     result['quantity_date'] = max((period['date_end'] for period in selected), default=None)
     result['future_periods_excluded'] = any(record['view'].get('future_periods_excluded') is True
                                             for record in records)
+    deferred_totals = _confirmed_deferred_totals(newest, selected, undated, problems)
+    if undated and not deferred_totals and all(_deferred_act_view(r['view']) for r in records):
+        problem('incomplete')
     result['detail_history_state'] = 'unknown' if problems else 'known'
     known = result['detail_history_state'] == 'known'
-    known_zero = not selected and all(_number(record['view'].get('completed_quantity')) == 0
-                                     and _number(record['view'].get('completed_amount')) == 0
-                                     for record in records)
+    known_zero = not selected and not undated and all(_native_fact(record['view'], 'completed_quantity') == 0
+                                     and _native_fact(record['view'], 'completed_amount') == 0 for record in records)
     result['quantity_basis'] = ('По сохранённым датированным периодам; для повторяющегося периода '
                                 'использовано последнее подтверждённое наблюдение.' if known else
                                 'Объединённая история требует сверки; исходные сведения сохранены отдельно.')
     if known and known_zero:
         result['quantity_basis'] = ('Нулевой итог подтверждён исходной проверкой ведомости; '
                                     'непустых датированных периодов нет.')
+    elif deferred_totals:
+        result['quantity_basis'] = 'Периоды названы номерами актов КС-2; даты выполнения проверяются по документам актов.'
     for field, period_field in (('completed_quantity', 'quantity'), ('completed_amount', 'amount'),
                                 ('material_quantity', 'material_quantity')):
         values = [_number(period.get(period_field)) for period in selected]
         result[field] = (math.fsum(values) if known and values and all(value is not None for value in values)
                          else 0.0 if known and known_zero and field != 'material_quantity' else None)
-        result['reported_'+field] = None
+        result['reported_'+field] = deferred_totals.get(field)
     split = known and bool(selected) and all(period.get('amount_split') is True
         and _number(period.get('work_amount')) is not None
         and _number(period.get('material_amount')) is not None for period in selected)
@@ -412,7 +558,8 @@ def _compatible_scope(left, right):
     return all(any(node == candidate for candidate in remaining) for node in short)
 
 
-def compose(sources, cut):
+@stage_profile.stage('detail_history')
+def compose(sources, cut, *, statement_families=None):
     """Compose one contract's detail history without mutating any input.
 
     ``history_sources`` stores full input views with archive/file provenance.
@@ -423,18 +570,32 @@ def compose(sources, cut):
     day = _day(cut)
     if day is None:
         raise ValueError('Укажите действительную дату среза в формате ГГГГ-ММ-ДД.')
-    buckets, warnings = {}, []
-    ordinal = 0
+    buckets, warnings, observations = {}, [], []
+    places = {}
     for ledger, views in sources:
         source_day = _day(ledger.get('source_date'))
         if source_day and source_day > day:
             warnings.append('Накопительный источник позже даты среза не включён в историю.')
             continue
         for record in _records(ledger, views):
+            if statement_families:
+                from developaid_monitor_statement_union import _source as source_key
+                record['statement_family'] = statement_families.get(source_key(record['provenance']['source']))
             identity, valid = record['identity']
-            key = identity if valid else ('unresolved', ordinal)
-            ordinal += 1
-            buckets.setdefault(key, (identity, valid, []))[2].append(record)
+            key = identity if valid else _incomplete_identity(record)
+            observations.append((key, record))
+            if key is not None and not valid:
+                provenance, place = record['provenance'], _place(record['view'])
+                source_key = key, provenance['snapshot_id'], provenance['file_sha256'], place[1]
+                places.setdefault(source_key, set()).add(place[2])
+    # Two equal captions in one source are not proof of one work. For those
+    # ambiguous names only re-uploading the same workbook row can coalesce.
+    ambiguous = {key[0] for key, rows in places.items() if len(rows) > 1}
+    for ordinal, (key, record) in enumerate(observations):
+        identity, valid = record['identity']
+        if key is None or (not valid and key in ambiguous):
+            key = _source_row_identity(record, ordinal)
+        buckets.setdefault(key, (identity, valid, []))[2].append(record)
     # Filling absent header or row location fields does not prove independent work.
     # Keep both original observations, but do not add their plans or facts.
     # Two explicitly different non-empty scopes remain distinct. Checking
