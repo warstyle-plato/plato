@@ -4418,7 +4418,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     raw_reconciliation = (limit.get("reconciliation") or
                           (limit.get("own_money") or {}).get("reconciliation") or {}).get(
                               "observation_scope") == "raw_saved_sources"
-    from developaid_funding_reconciliation import chapter_disclosure_notes
+    from developaid_funding_reconciliation import chapter_disclosure_notes, display_rows as reconciliation_display_rows
 
     chapter_notes = chapter_disclosure_notes(limit, _rub) if raw_reconciliation else {}
     sections = ((limit.get("budget_composition") or {}).get("sections") or []) if need else []
@@ -4484,8 +4484,13 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                         note = " ".join(filter(None, (note, _payment_total_gap_note(reconciliation))))
                     add(row["label"], row.get("prefix", "") + _rub(row["value"]) if row["value"] is not None else None, note)
                 elif row["key"] == "calculated_additional":
-                    add_need(row["label"], "" if chapter_notes.get("need_bridge") else row["note"],
-                             reconciliation=reconciliation)
+                    note = row["note"]
+                    if chapter_notes.get("need_bridge"):
+                        generated = next(item["note"] for item in reconciliation_display_rows(reconciliation)
+                                         if item["key"] == "calculated_additional")
+                        if note == generated:
+                            note = ""
+                    add_need(row["label"], note, reconciliation=reconciliation)
         else:
             add("Оплачено с начала проекта", _rub(own["paid"]),
                 f"из них кредитом {_rub(own['borrowed'])}, своими деньгами {_rub(own['own_paid'])}")
