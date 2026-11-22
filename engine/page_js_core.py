@@ -380,18 +380,31 @@ function renderNonresStrategy(r){
 // Отчёт проекта без жилья (`report.object_report`): вёрстку выбирает движок
 // (`report_layout.kind`), разделы и строки собирает он же — страница печатает.
 // Чувствительность и календарь — общие разделы, заголовки — из движка.
-const OBJECT_SHARED_SECTIONS={sensitivity:'rsSensitivity',calendar:'rsCalendar'};
+const OBJECT_SHARED_SECTIONS={phases:'rsPhases',sensitivity:'rsSensitivity',calendar:'rsCalendar'};
+// Move the original housing components, keeping their IDs, renderers and
+// controls. Restore before rebuilding so repeated calculations and switching
+// project types never discard a shared node or create duplicate IDs.
+const reportComponentHomes=new Map();
+function restoreReportComponents(){
+ reportComponentHomes.forEach((anchor,node)=>{anchor.after(node);anchor.remove()});
+ reportComponentHomes.clear();
+}
+function mountReportComponent(node,slot){
+ if(!node||!slot)return;
+ const anchor=document.createComment('report component');node.before(anchor);
+ reportComponentHomes.set(node,anchor);slot.replaceWith(node);
+}
 function objectReportOf(r){
  const layout=reportLayout(r),rep=((r||{}).report||{}).object_report||{};
  return layout.object_frame&&(rep.sections||[]).length?rep:null;
 }
 function objectSection(r,key){const rep=objectReportOf(r);return rep?(rep.sections.find(s=>s.key===key)||null):null}
 function objectRowsHtml(rows,cls){
- return `<table class="nonres-strategy ${cls||'object-rows'}"><tbody>${(rows||[]).map(row=>`<tr${row.unit==='section'?' class="section"':''}><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}</tbody></table>`;
+ return `<table class="metric-table metric-compact ${cls||'object-rows'}"><tbody>${(rows||[]).map(row=>`<tr${row.unit==='section'?' class="section"':''}><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}</tbody></table>`;
 }
 function objectYearsHtml(block){
  const cols=block.columns||[];
- return `<div class="scroll"><table class="object-years"><thead><tr>${cols.map(c=>`<th>${escapeHtml(c[1])}</th>`).join('')}</tr></thead><tbody>${
+ return `<div class="scroll"><table class="metric-table metric-compact object-years"><thead><tr>${cols.map(c=>`<th>${escapeHtml(c[1])}</th>`).join('')}</tr></thead><tbody>${
   (block.years||[]).map(y=>`<tr>${cols.map(c=>`<td>${c[2]==='text'?escapeHtml(String(y[c[0]])):nonresCell({unit:c[2],value:y[c[0]]})}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 function objectRefHtml(block,section){
@@ -416,34 +429,15 @@ function objectRefHtml(block,section){
 }
 // Charts consume the same block rows as the adjacent table and PDF.
 function objectChartsHtml(block){
- const colors=['#2b6475','#a76828'];
  return (block.charts||[]).map(chart=>{
-  const rows=chart.rows||block.years||[],fields=chart.fields||[],mult=chart.multiplier??1;
-  const vals=rows.flatMap(r=>fields.map(f=>r[f[0]]==null?0:Number(r[f[0]])*mult));
-  const max=Math.max(0,...vals),min=Math.min(0,...vals),span=max-min||1;
-  const title=escapeHtml(chart.title||''),fmt=v=>Number(Math.abs(v)<1e-8?0:v).toLocaleString('ru-RU',{maximumFractionDigits:2});
-  if(chart.horizontal){
-   return `<figure class="object-chart"><figcaption>${title}</figcaption>${rows.map(r=>{
-    const v=Number(r.value)*mult,p=Math.abs(v)/Math.max(Math.abs(min),Math.abs(max),1)*100;
-    return `<div class="object-bar-row"><span>${escapeHtml(r.label)}</span><span class="object-bar-track"><span style="display:block;width:${p}%;height:14px;background:${v<0?colors[1]:colors[0]}"></span></span><b>${escapeHtml(fmt(v))}</b></div>`;
-   }).join('')}</figure>`;
-  }
-  const W=560,H=210,L=90,T=15,R=25,B=42,x=i=>L+(W-L-R)*(rows.length>1?i/(rows.length-1):0.5),y=v=>T+(max-v)/span*(H-T-B);
-  let svg=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${title}"><title>${title}</title>`;
-  [min,(max+min)/2,max].forEach(v=>{svg+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="#ddd"/><text x="${L-5}" y="${y(v)+4}" text-anchor="end" font-size="11">${escapeHtml(fmt(v))}</text>`});
-  fields.forEach((f,k)=>{
-   const points=rows.map((r,i)=>r[f[0]]==null?null:[x(i),y(Number(r[f[0]])*mult)]);
-   // Null values break a line; they are not zero occupancy or zero price.
-   let segment=[];const flush=()=>{if(segment.length)svg+=`<polyline points="${segment.join(' ')}" fill="none" stroke="${colors[k%colors.length]}" stroke-width="2"/>`;segment=[]};
-   points.forEach(p=>{if(p)segment.push(p.join(','));else flush()});flush();
-   rows.forEach((r,i)=>{if(r[f[0]]!=null)svg+=`<circle cx="${x(i)}" cy="${y(Number(r[f[0]])*mult)}" r="2.5" fill="${colors[k%colors.length]}"><title>${escapeHtml(r.month||'')}: ${escapeHtml(f[1])} ${escapeHtml(fmt(Number(r[f[0]])*mult))} ${escapeHtml(chart.unit||'')}</title></circle>`});
-  });
-  [...new Set([0,Math.floor((rows.length-1)/2),rows.length-1])].filter(i=>i>=0).forEach(i=>{svg+=`<text x="${x(i)}" y="${H-15}" text-anchor="${i===0?'start':i===rows.length-1?'end':'middle'}" font-size="11">${escapeHtml(rows[i].month||'')}</text>`});
-  svg+='</svg>';
-  return `<figure class="object-chart"><figcaption>${title}</figcaption>${svg}<div>${fields.map((f,k)=>`<span style="color:${colors[k%colors.length]};margin-right:15px">● ${escapeHtml(f[1])}</span>`).join('')}</div></figure>`;
+  const rows=chart.rows||block.years||[],fields=chart.fields||[];
+  if(chart.horizontal)return `<div class="expense-bars">${expenseBarsHtml(rows)}</div>`;
+  return `<figure class="sales-period-chart"><figcaption>${escapeHtml(chart.title||'')}</figcaption><div class="chart" style="height:auto" data-report-chart="${escapeHtml(JSON.stringify({rows,fields,unit:chart.unit||'',multiplier:chart.multiplier??1}))}"></div>${fields.length>1?`<div class="hint">${fields.map((f,k)=>`<span style="color:${k?'#888':'#202020'}">● ${escapeHtml(f[1])}</span>`).join(' · ')}</div>`:''}</figure>`;
  }).join('');
 }
 function objectBlockHtml(block,section){
+ if(block.ui_children)return `<div data-report-children="${escapeHtml(block.ui_children)}"></div>`;
+ if(block.ui_ref)return `<div data-report-component="${escapeHtml(block.ui_ref)}"></div>`;
  if(block.ref)return objectRefHtml(block,section);
  if(block.kind==='verdict'&&section.verdict){
   const v=section.verdict;
@@ -451,14 +445,19 @@ function objectBlockHtml(block,section){
  }
  const t=block.title?`<div class="section-title">${escapeHtml(block.title)}</div>`:'';
  const note=block.note?`<p class="object-note">${escapeHtml(block.note)}</p>`:'';
+ if(block.kind==='group'){
+  const body=(block.blocks||[]).map(b=>objectBlockHtml(b,section)).join('');
+  return block.details?`<details class="card"><summary>${escapeHtml(block.title)}</summary>${body}</details>`:`<div class="card">${t}${note}${body}</div>`;
+ }
  const table=block.years?objectYearsHtml(block):objectRowsHtml(block.rows);
  const charts=objectChartsHtml(block);
- const body=block.kind==='monthly_plan'?`<div class="object-plan-charts">${charts}</div><details><summary>Помесячные значения и изменения цены</summary>${table}</details>`:charts?`<div class="object-chart-table"><div>${charts}</div>${table}</div>`:table;
+ const body=block.kind==='monthly_plan'?`<div class="report-2col sales-period-charts">${charts}</div><details><summary>Помесячные значения и изменения цены</summary>${table}</details>`:charts?`<div class="report-2col"><div>${charts}</div>${table}</div>`:table;
  return `<div class="card" data-kind="${escapeHtml(block.kind||'rows')}">${t}${note}${body}</div>`;
 }
 function renderObjectReport(r){
  const box=document.getElementById('objectReport');
  if(!box)return;
+ releaseSalesPeriodCharts(box);restoreReportComponents();
  const rep=objectReportOf(r);
  document.querySelectorAll('[data-layout]').forEach(el=>{el.hidden=rep?el.dataset.layout!=='object':el.dataset.layout==='object'});
  Object.entries(OBJECT_SHARED_SECTIONS).forEach(([key,id])=>{
@@ -468,12 +467,24 @@ function renderObjectReport(r){
   const s=rep&&rep.sections.find(x=>x.key===key);
   title.textContent=s?s.title:title.dataset.housingTitle;
  });
- document.getElementById('rsObj-assumptions')?.remove();
- box.innerHTML=rep?rep.sections.filter(s=>!OBJECT_SHARED_SECTIONS[s.key]).map(s=>
-  `<div class="report-section object-report" id="rsObj-${escapeHtml(s.key)}" data-section="${escapeHtml(s.key)}"><div class="report-section-title">${escapeHtml(s.title)}</div>${
-   (s.blocks||[]).map(b=>objectBlockHtml(b,s)).join('')}</div>`).join(''):'';
- const assumptions=document.getElementById('rsObj-assumptions'),calendar=document.getElementById('rsCalendar');
- if(assumptions&&calendar){calendar.after(assumptions);assumptions.dataset.layout='object'}
+ box.innerHTML=rep?rep.sections.map(s=>OBJECT_SHARED_SECTIONS[s.key]
+  ?`<div data-report-section="${escapeHtml(s.key)}"></div>`
+  :`<div class="report-section object-report" id="rsObj-${escapeHtml(s.key)}" data-section="${escapeHtml(s.key)}"><div class="report-section-title">${escapeHtml(s.title)}</div>${
+   s.key==='summary'?'<div class="report-2col">'+(s.blocks||[]).slice(0,2).map(b=>objectBlockHtml(b,s)).join('')+'</div>'+(s.blocks||[]).slice(2).map(b=>objectBlockHtml(b,s)).join(''):(s.blocks||[]).map(b=>objectBlockHtml(b,s)).join('')}</div>`).join(''):'';
+ if(rep){
+  box.querySelectorAll('[data-report-chart]').forEach(target=>renderSalesPeriodChart(target,JSON.parse(target.dataset.reportChart)));
+  box.querySelectorAll('[data-report-children]').forEach(slot=>{
+   const source=document.getElementById(slot.dataset.reportChildren);
+   [...(source?.children||[])].filter(n=>!n.classList.contains('report-section-title')).forEach(node=>{
+    const place=document.createElement('div');slot.append(place);mountReportComponent(node,place);
+   });
+  });
+  box.querySelectorAll('[data-report-component]').forEach(slot=>mountReportComponent(document.getElementById(slot.dataset.reportComponent)?.closest('.card'),slot));
+  box.querySelectorAll('[data-report-section]').forEach(slot=>{
+   const node=document.getElementById(OBJECT_SHARED_SECTIONS[slot.dataset.reportSection]);
+   mountReportComponent(node,slot);if(node)node.hidden=false;
+  });
+ }
  // Таблицы кредита и собственного участия рисуют свои функции во все свои
  // ящики — и в ящики раздела «Финансирование» этой вёрстки.
  renderNonresFinancing(r);

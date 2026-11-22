@@ -165,18 +165,15 @@ _OBJECT_FRAME_SECTIONS = (
     ("owner", "Экономика собственника"), ("sensitivity", "Чувствительность"),
     ("calendar", "Календарь"),
 )
+# Housing and nonresidential projects share one information architecture.
+_HOUSING_REPORT_SECTIONS = (
+    ("site", "Участок и продукт"), ("summary", "Итог"), ("phases", "Очереди проекта"),
+    ("expenses", "Расходы"), ("income", "Доходы"), ("finance", "Финансирование"),
+    ("sensitivity", "Чувствительность"), ("calendar", "Календарный план"),
+)
 REPORT_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
-    REPORT_KIND_HOUSING: (
-        ("site", "Участок и продукт"), ("summary", "Итог"), ("phases", "Очереди проекта"),
-        ("expenses", "Расходы"), ("income", "Доходы"), ("finance", "Финансирование"),
-        ("sensitivity", "Чувствительность"), ("calendar", "Календарный план"),
-    ),
-    REPORT_KIND_OBJECT: (
-        ("decision", "Решение"), ("object", "Объект и участок"), ("income", "Доходы"),
-        ("strategy", "Цены и продажи во времени"), ("costs", "Затраты"),
-        ("finance", "Финансирование"), ("owner", "Экономика собственника"),
-        ("comparison", "Сравнение стратегий"), ("sensitivity", "Чувствительность"),
-        ("calendar", "Календарь"), ("assumptions", "Допущения и ограничения")),
+    REPORT_KIND_HOUSING: _HOUSING_REPORT_SECTIONS,
+    REPORT_KIND_OBJECT: _HOUSING_REPORT_SECTIONS,
     REPORT_KIND_HOTEL: _OBJECT_FRAME_SECTIONS,
 }
 
@@ -804,24 +801,80 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     sections["calendar"] = {"brief": brief, "calendar": calendar,
                             "blocks": [{"ref": "calendar", "title": "Календарный план объекта"}]}
 
-    # Disclosures are prepared once alongside the authoritative calculation.
+    # Same sections and card order as housing; preserve object-specific data
+    # as details inside the corresponding shared group, never extra sections.
     from office_results import blocks as office_disclosure_blocks
     disclosure_income, disclosure_sales, disclosure_assumptions = office_disclosure_blocks(
         report.get("office_results") or {})
-    sections["income"]["blocks"] = disclosure_income + sections["income"]["blocks"]
-    sections["strategy"]["blocks"] = disclosure_sales + sections["strategy"]["blocks"]
-    sections["comparison"] = {"brief": [_row("Критерий", "NPV проекта при сопоставимых условиях; см. сравнение стратегий", "text")], "blocks": []}
-    # strategy_compare attaches its ref later using the section key.
-    sections["assumptions"] = {"brief": [_row("Статус", "Расчётный план; исходные цены и динамика раскрыты по продуктам", "text")], "blocks": disclosure_assumptions}
+    pnl_block = {**owner_blocks[0], "title": "Экономика проекта"}
+    parameters = {**sections["decision"]["blocks"][1], "title": "Ключевые параметры"}
+    investment = [sections["decision"]["blocks"][0], *sections["decision"]["blocks"][2:]]
+    cost_blocks = [b for b in sections["costs"]["blocks"] if b.get("kind") != "unit_economics"]
+    # The same five columns and area bases that the housing table renders.
+    unit_items = report.get("unit_economics") or []
+    unit_block = {"title": "Удельная экономика", "kind": "unit_economics", "ui_ref": "unitEconomicsTable",
+                  "items": unit_items,
+                  "columns": [["label", "Показатель", "text"], ["total", "Всего", "rub"],
+                              ["per_base_th", "тыс. ₽/м² своей базы", "th"],
+                              ["base_label", "База", "text"],
+                              ["second_base", "тыс. ₽/м² прод.", "th"]],
+                  "years": [{**i, "base_label": "м² " + TERMS[i["base"]].genitive if i.get("base") in TERMS else "—",
+                             "second_base": i.get("per_saleable_th") if i.get("base") != UNIT_BASE_SALEABLE else None}
+                            for i in unit_items], "widths": [48, 28, 30, 34, 30]}
+    structure = {**disclosure_income[0], "title": "Структура выручки"}
+    sales = {"title": "Темпы и цены продаж", "kind": "group", "blocks": disclosure_sales}
+    strategy = {"title": "Нежильё — стратегия реализации", "kind": "group",
+                "blocks": sections["strategy"]["blocks"]}
+    detailed_costs = {"title": "Структура затрат по статьям", "kind": "group", "blocks": cost_blocks[1:]}
+    tax_labels = {"core": "Общие затраты вне объектов",
+                  **{o.key: o.group_label for o in standalone_objects_report_order()},
+                  **{p["key"]: p.get("label") or p["key"] for p in report.get("products") or []}}
+    tax_rows = [_row("Маржа: " + tax_labels.get(k, "продукт без подписи (" + k + ")"), v, "rub")
+                for k, v in (finance.get("tax_margin_by_product") or {}).items()
+                if abs(float(v or 0)) > 0.5]
+    deduction = finance.get("financing_tax_deductions", finance.get("financing_cost"))
+    vat = finance.get("vat")
+    profit_tax = finance.get("profit_tax")
+    tax_rows += [_row("Вычет: проценты и банковские комиссии", -deduction if deduction is not None else None, "rub"),
+                 _row("Итоговая прибыль до налога", finance.get("profit_before_tax"), "rub"),
+                 _row("Вычет из базы: НДС к уплате", -vat if vat is not None else None, "rub"),
+                 _row("Налог на прибыль", profit_tax, "rub")]
+    if finance.get("tax_loss_unused") is not None and finance["tax_loss_unused"] > 0.5e6:
+        tax_rows.append(_row("Убыток, не зачтённый к концу проекта", finance["tax_loss_unused"], "rub"))
+    tax_rows += [_row("НДС к уплате", vat, "rub"),
+                 _row("Итого налоги", profit_tax + vat if profit_tax is not None and vat is not None else None, "rub")]
+    summary_section = {**sections["decision"],
+                       "blocks": [pnl_block, parameters, unit_block,
+                                  {"title": "Инвестиционное решение", "kind": "group", "details": True,
+                                   "blocks": investment},
+                                  {"title": "Допущения и ограничения", "kind": "group", "details": True,
+                                   "blocks": disclosure_assumptions}]}
+    phase_count = int(summary.get("phase_count") or 1)
+    grouped = {
+        "site": sections["object"],
+        "summary": summary_section,
+        "phases": {"brief": [], "blocks": [], "shared": True, "applicable": phase_count > 1},
+        "expenses": {**sections["costs"], "blocks": [{**cost_blocks[0], "ui_ref": "expenseStructureChart"}, detailed_costs]},
+        "income": {**sections["income"], "blocks": [structure, *disclosure_income[1:], strategy, sales,
+                     {"title": "Налоговая база по реализованным продуктам", "rows": tax_rows},
+                     {"title": "Доходы объектов — подробности", "kind": "group", "details": True,
+                      "blocks": income_blocks}]},
+        "finance": {**sections["finance"], "brief": [*sections["finance"]["brief"], *returns], "blocks": [
+            {"kind": "group", "ui_children": "rsFinance", "blocks": sections["finance"]["blocks"]},
+            *[{**b, "pdf_extra": True} for b in owner_blocks[1:]]]},
+        "sensitivity": sections["sensitivity"],
+        "calendar": sections["calendar"],
+    }
     return {"kind": REPORT_KIND_OBJECT,
-            "sections": [{"key": key, "title": title, **sections[key]}
+            "sections": [{"key": key, "title": title, **grouped[key]}
                          for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}
 
 
 def project_kind_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
-    """Тип проекта без жилья и остаток жилья во вводных — одни строки на
-    отчёт объекта и PDF. Остаток берётся из свода (`project_kind_leftovers`),
-    а не считается заново, и помечен как не вошедший в расчёт."""
+    """Тип проекта и принятый паркинг для страницы и PDF.
+
+    Исключённые жилые вводные остаются диагностикой расчёта, а не строкой отчёта.
+    """
     kind = str(summary.get("project_kind") or "")
     if kind not in PROJECT_KINDS_WITHOUT_HOUSING:
         return []
@@ -831,10 +884,6 @@ def project_kind_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
         " — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет"), "text")]
     for line in summary.get("project_kind_parking") or []:
         rows.append(_row("Паркинг", str(line), "text"))
-    left = [str(item) for item in (summary.get("project_kind_leftovers") or [])]
-    if left:
-        rows.append(_row("Осталось от жилья во вводных",
-                         "; ".join(left) + " — в расчёт не входит", "text"))
     return rows
 
 

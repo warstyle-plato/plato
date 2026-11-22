@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
+import education_ncs
 
 RATE_SOURCE = "https://mosreg.ru/download/document/1366988"
 METHOD_SOURCE = "https://mosoblpravo.ru/postanovlenie/2026/08/07/n-932-pp/"
@@ -56,7 +57,8 @@ def catalog() -> dict:
             "investment_types": [{"key": k, "label": v[0], "rub_per_sqm": v[1]}
                                  for k, v in INVESTMENT_TYPES.items()],
             "rate_source": RATE_SOURCE, "method_source": METHOD_SOURCE,
-            "rates_date": "2026-08-07", "rates_vat": "без НДС"}
+            "rates_date": "2026-08-07", "rates_vat": "без НДС",
+            "education_ncs": education_ncs.catalog()}
 
 
 def estimate(config: dict, *, inputs: dict, tep: dict, social_needs: dict | None = None,
@@ -92,8 +94,11 @@ def estimate(config: dict, *, inputs: dict, tep: dict, social_needs: dict | None
                 need = number(row.get("required_places"), "нормативную потребность", required=False)
                 if need is None:
                     need = number((social_needs or {}).get(kind), "нормативную потребность по РНГП")
+                mode = row.get("valuation_mode") or ("manual" if row.get("rub_per_place") not in (None, "") else "ncs")
                 planned = number(row.get("planned_places"), "проектную мощность", required=False)
                 if planned is None:
+                    if mode == "ncs":
+                        raise ValueError("Для НЦС укажите полную проектную мощность одного здания.")
                     planned = number(inputs.get(kind + "_places"), "проектную мощность")
                 surplus = max(Decimal(0), planned - need)
                 qualifies = planned > need * Decimal("1.1")
@@ -109,13 +114,21 @@ def estimate(config: dict, *, inputs: dict, tep: dict, social_needs: dict | None
                     amount = Decimal(0)
                     out["formula"] = "Превышение не больше 10%: уменьшение по этому основанию не рассчитано"
                 else:
-                    rate = number(row.get("rub_per_place"), "стоимость одного засчитываемого места", required=False)
-                    if rate is None:
-                        rate = number(inputs.get(kind + "_cost_mln_per_place"), "стоимость места в проекте") * 1000000
-                        out["notes"].append("Ставка взята из бюджета проекта; это оценка, а не нормативная ставка МО для Ксу*.")
-                        out["valuation_basis"] = "Ставка строительства из проекта"
-                    else:
+                    if mode == "manual":
+                        rate = number(row.get("rub_per_place"), "стоимость одного засчитываемого места")
+                        if row.get("valuation_mode") == "manual" and not str(row.get("valuation_basis") or "").strip():
+                            raise ValueError("Укажите документ или источник отдельного расчёта стоимости места.")
                         out["valuation_basis"] = str(row.get("valuation_basis") or "Ставка места введена пользователем")
+                    elif mode == "ncs":
+                        observed = education_ncs.rate(kind, row.get("ncs_table"), planned)
+                        rate = observed.pop("rate")
+                        out["ncs"] = observed
+                        out["source"] = observed["source_url"]
+                        out["valuation_basis"] = ("НЦС 81-02-03-2026, таблица " + observed["table"]
+                            + "; мощность объекта " + str(planned) + " мест; цены на 01.01.2026, МО, без НДС")
+                        out["notes"].append(observed["method"])
+                    else:
+                        raise ValueError("Выберите источник стоимости места: НЦС или отдельная ставка.")
                     amount = eligible * rate
                     out.update(unit_rate_rub=float(rate), formula=f"{eligible} мест × {rate} ₽/место")
             elif kind == "resettlement":

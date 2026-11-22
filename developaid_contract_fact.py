@@ -33,6 +33,7 @@ import re
 
 import developaid_contract_schedule_links as links
 import developaid_contract_acts as contract_acts
+from developaid_contract_act_dates import compact_number
 from developaid_monitor_contracts import _norm
 from developaid_monitor_statement_union import _unit
 
@@ -306,6 +307,9 @@ def from_acts(performed: dict | None) -> list[dict]:
 
 
 def _period_act(label):
+    compact = compact_number(label)
+    if compact is not None:
+        return contract_acts.edition({'number': compact})
     match = re.fullmatch(r'\s*(?:(?:акт\s+)?КС\s*-?\s*2|акт)?\s*№\s*(\d+(?:\s*[/.-]\s*\d+)*)\s*',
                          str(label or ''), re.I)
     return contract_acts.edition({'number': match[1]}) if match else None

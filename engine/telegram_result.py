@@ -87,9 +87,9 @@ def _telegram_object_sections(layout: dict[str, Any]) -> str:
         lines = [f"<b>{index}. {html.escape(str(section.get('title') or ''))}</b>"]
         for row in section.get("brief") or []:
             label = html.escape(str(row.get("label") or ""))
-            if section.get("key") == "decision" and row.get("label") == "Вывод":
+            if section.get("key") in ("decision", "summary") and row.get("label") == "Вывод":
                 lines.append(f"• <b>{html.escape(str(row.get('value') or ''))}</b>")
-            elif section.get("key") == "decision" and row.get("label") == "Основание":
+            elif section.get("key") in ("decision", "summary") and row.get("label") == "Основание":
                 lines.append(f"• {html.escape(str(row.get('value') or ''))}")
             else:
                 lines.append(f"• {label} — {_telegram_object_value(row)}")

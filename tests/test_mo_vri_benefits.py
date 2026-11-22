@@ -37,12 +37,12 @@ def test_indexed_hotel_and_municipality_uplift_are_explicit_and_do_not_use_old_p
 
 @pytest.mark.parametrize('planned,eligible,amount', [(110, 0, 0), (111, 11, 33000000), (125, 25, 75000000)])
 def test_social_surplus_requires_strictly_more_than_ten_percent(planned, eligible, amount):
-    result = benefits.estimate(config({'kind': 'school', 'required_places': 100}),
+    result = benefits.estimate(config({'kind': 'school', 'required_places': 100, 'rub_per_place': 3000000}),
                                inputs={'school_places': planned, 'school_cost_mln_per_place': 3}, tep={})
     row = result['rows'][0]
     assert row['eligible_places'] == eligible and result['total_rub'] == amount
     if amount:
-        assert 'не нормативная' in ' '.join(row['notes'])
+        assert row['valuation_basis'] == 'Ставка места введена пользователем'
         assert 'Предварительно' in ' '.join(row['notes'])
 
 
@@ -106,7 +106,7 @@ def test_route_computes_the_sum_on_the_server_and_can_estimate_without_a_vri_fee
 
 
 def test_an_applied_social_estimate_recalculates_from_the_original_fee_without_freezing():
-    cfg = config({'kind': 'school', 'required_places': 100})
+    cfg = config({'kind': 'school', 'required_places': 100, 'rub_per_place': 3000000})
     cfg['applied'] = {'gross_rub': 500_000_000, 'net_mln': 425}
     inputs = {'vri_region': 'mo', 'mo_vri_benefits': cfg, 'school_places': 125,
               'school_cost_mln_per_place': 3, 'land_rights_cost_mln': 425}
