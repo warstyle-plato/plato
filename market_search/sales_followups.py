@@ -458,6 +458,7 @@ def poll(where, project, scope, now=None):
             event["eval_basis"] = basis
             result = evaluate(event, contracts, sha, attestation, moment, initial)
             event["evaluation"] = result
+            event["baseline_quality"] = result.get("baseline_quality", event["baseline_quality"])
             key = f"{event['key']}:{event['revision']}"
             if result["state"] == "unknown":
                 event["state"] = "waiting_data"

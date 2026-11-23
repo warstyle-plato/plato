@@ -1,4 +1,4 @@
-"""Owner text is a fixture. Bank data and delivery callbacks are synthetic."""
+"""All public scenarios, identities, bank data and delivery callbacks are synthetic."""
 import datetime as dt
 import multiprocessing
 import pytest
@@ -6,15 +6,15 @@ from market_search import sales_dialogue as dialogue, sales_followups as follow,
 
 STAMP=int(dt.datetime(2026,11,23,18,tzinfo=follow.MOSCOW).timestamp())
 DUE=dt.datetime(2026,11,27,9,tzinfo=follow.MOSCOW)
-OWNER_TEXT=('Добрый вечер Платон Сергеевич!\n1. кв96 сделка не зарегистрировалась, ожидаем 26.11\n'
-            '2. Мм0009/мг переподписание ДДУ\n3. Мм0010/мг переподписание ДДУ')
+SYNTHETIC_REPLY=('Добрый вечер Платон Сергеевич!\n1. кв41 сделка не зарегистрировалась, ожидаем 26.11\n'
+            '2. ММ-ТЕСТ-02 переподписание ДДУ\n3. ММ-ТЕСТ-03 переподписание ДДУ')
 
 
 def setup(where,scope=None):
     scope=scope or dict(chat_id=-10012345,monitor_project='Монитор',sales_project='Продажи',grant_sha256='grant1',link_sha256='link1')
     rows=[dict(contract=name,signed='2026-11-16',product=product,unit=unit,amount=amount,area=100,escrow_paid=0)
-          for name,product,unit,amount in [('ДДУ-96','Квартира','корп.3 кв.96',100_000_000),
-            ('Мм0009/мг','Машиноместо','',10_000_000),('Мм0010/мг','Машиноместо','',9_000_000)]]
+          for name,product,unit,amount in [('ДДУ-ТЕСТ-41','Квартира','корп.7 кв.41',100_000_000),
+            ('ММ-ТЕСТ-02','Машиноместо','',10_000_000),('ММ-ТЕСТ-03','Машиноместо','',9_000_000)]]
     source={'rows':rows};store.save(where,'Продажи',{'contracting':source},'SYNTHETIC.xlsx')
     items=questions._no_money(rows,dt.date(2026,11,23))
     for item in items:item['baseline']['source_sha256']=follow.digest(source)
@@ -23,7 +23,7 @@ def setup(where,scope=None):
     return scope,rows,bid,dialogue.load(where,'Продажи')['batches'][bid]
 
 
-def answer(where,scope,batch,text=OWNER_TEXT,mid=101,candidate=False):
+def answer(where,scope,batch,text=SYNTHETIC_REPLY,mid=101,candidate=False):
     return follow.ingest(where,'Продажи',scope,message_id=mid,reply_to_id=100,quoted=batch['text'],
         text=text,author_id=4242,author='Менеджер',telegram_date=STAMP,candidate=candidate)
 
@@ -166,7 +166,7 @@ def test_native_http_reply_poll_and_no_real_messages(native,monkeypatch):
     main,core,where,scope,sent=native
     batch=next(iter(dialogue.load(where,'Продажи')['batches'].values()))
     msg={'chat':{'id':scope['chat_id'],'type':'supergroup'},'from':{'id':4242,'first_name':'Менеджер'},
-         'message_id':101,'date':STAMP,'text':OWNER_TEXT,
+         'message_id':101,'date':STAMP,'text':SYNTHETIC_REPLY,
          'reply_to_message':{'message_id':100,'text':batch['text'],'from':{'id':123,'is_bot':True}}}
     core._telegram_group_message(msg['chat'],msg)
     assert len(follow.load(where,'Продажи')['events'])==3
@@ -312,7 +312,7 @@ def test_foreign_bot_or_forged_question_does_not_create_even_candidate(native,se
     main,core,where,scope,sent=native
     batch=next(iter(dialogue.load(where,'Продажи')['batches'].values()))
     msg={'chat':{'id':scope['chat_id'],'type':'supergroup'},'from':{'id':4242},'message_id':101,
-         'date':STAMP,'text':OWNER_TEXT,'reply_to_message':{'message_id':100,'text':batch['text'],'from':sender}}
+         'date':STAMP,'text':SYNTHETIC_REPLY,'reply_to_message':{'message_id':100,'text':batch['text'],'from':sender}}
     core._telegram_group_message(msg['chat'],msg)
     assert not follow.load(where,'Продажи')['events'] and not follow.load(where,'Продажи')['deliveries'] and not sent
 
@@ -340,6 +340,7 @@ def test_source_baseline_presence_evidence_allows_delta_without_manual_attest(tm
     follow.poll(tmp_path,'Продажи',scope,DUE)
     data=follow.load(tmp_path,'Продажи');e=next(iter(data['events'].values()))
     assert e['evaluation']['delta']==600_000 and e['evaluation']['baseline_quality']=='observed'
+    assert e['baseline_quality']=='observed'
     text=next(v['text'] for k,v in data['deliveries'].items() if k.startswith('result:'))
     assert '600 000,00 ₽' in text and '100 000 000,00 ₽' in text
 
@@ -388,7 +389,7 @@ def test_native_xlsx_upload_to_reply_to_auto_poll_needs_no_manual_attestation(na
     answer(where,scope,batch,text='1. оплатили')
     book=Workbook();sheet=book.active;sheet.title='Контрактация'
     sheet['A3']='Название проекта:';sheet['E3']='Продажи'
-    values=dict(product='Квартира',unit='корп.3 кв.96',date='16.11.2026',contract='ДДУ-96',
+    values=dict(product='Квартира',unit='корп.7 кв.41',date='16.11.2026',contract='ДДУ-ТЕСТ-41',
                 area=100,amount=100_000_000,units=1,price_per_sqm=1_000_000,escrow_total=100_000_000,
                 payment_variant='100% оплата')
     for column,(key,title) in enumerate(contracting._COLUMNS.items(),1):
@@ -414,13 +415,13 @@ def test_write_ahead_survives_raw_journal_failure_and_duplicate_delivery(native,
     main,core,where,scope,sent=native
     batch=next(iter(dialogue.load(where,'Продажи')['batches'].values()))
     args=dict(chat_id=scope['chat_id'],project='Монитор',action='reply',message_id=101,reply_to_id=100,
-              reply_text=batch['text'],reply_from_id=123,reply_is_bot=True,text=OWNER_TEXT,
+              reply_text=batch['text'],reply_from_id=123,reply_is_bot=True,text=SYNTHETIC_REPLY,
               author_id=4242,author='Менеджер',telegram_date=STAMP,sign=core._web_login_sign('monitor-sales',scope['chat_id']))
     original=dialogue.reply
     monkeypatch.setattr(dialogue,'reply',lambda *a,**k:(_ for _ in ()).throw(RuntimeError('simulated crash after write-ahead')))
     with pytest.raises(RuntimeError):core.internal_monitor_sales_chat(core.SalesChatRequest(**args))
     durable=follow.load(where,'Продажи')
-    assert len(durable['events'])==3 and durable['ingestions'][f"{scope['chat_id']}:101"]['text']==OWNER_TEXT
+    assert len(durable['events'])==3 and durable['ingestions'][f"{scope['chat_id']}:101"]['text']==SYNTHETIC_REPLY
     assert next(iter(durable['events'].values()))['due_at']==DUE.isoformat()
     monkeypatch.setattr(dialogue,'reply',original)
     core.internal_monitor_sales_chat(core.SalesChatRequest(**args))
