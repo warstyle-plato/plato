@@ -342,7 +342,7 @@ def ingest(where, project, scope, *, message_id, reply_to_id, quoted, text, auth
             revision = int(previous.get("revision") or 0) + 1
             for delivery in data["deliveries"].values():
                 if delivery.get("event_key") == event_key and delivery["state"] in ("pending", "claimed"):
-                    delivery["state"] = "cancelled"
+                    delivery.update(state="cancelled", cancel_reason="answer_revision_changed")
             expected = previous.get("event_kind") or question.get("expected_event", "")
             event = {**extract(part, telegram_date, expected), "key": event_key, "question_key": question["key"], "revision": revision,
                      "scope": scope, "question": question, "batch_id": bid,
@@ -369,9 +369,17 @@ def ingest(where, project, scope, *, message_id, reply_to_id, quoted, text, auth
                 label = {"payment": "оплата", "registration": "регистрация", "resigning": "переподписание ДДУ"}.get(event["event_kind"], "указанное событие")
                 reason = ("Уточните точный договор, его дату и помещение: в сохранённом вопросе нет однозначной связи с выгрузкой."
                           if not subject else f"К какой дате ожидается {label}? Укажите дату с годом.")
-                delivery_key = f"deadline:{event_key}:{revision}"
+                same_phase = (previous.get("state") == event["state"]
+                              and previous.get("event_kind") == event["event_kind"]
+                              and previous.get("scope") == scope)
+                delivery_key = (previous.get("deadline_notice_id") if same_phase else None) or f"deadline:{event_key}:{revision}"
+                event["deadline_notice_id"] = delivery_key
+                old_notice = data["deliveries"].get(delivery_key)
+                if old_notice and old_notice["state"] == "cancelled" and old_notice.get("cancel_reason") == "answer_revision_changed":
+                    old_notice["state"] = "pending"
                 _enqueue(where, project, data, scope, delivery_key, f"{_label(question)} (пункт {n}): {reason}", question)
-                data["deliveries"][delivery_key]["event_revision"] = revision
+                if data["deliveries"][delivery_key]["state"] in ("pending", "claimed"):
+                    data["deliveries"][delivery_key]["event_revision"] = revision
             data["events"][event_key] = event
             count += 1
         _save(where, project, data)
@@ -447,18 +455,27 @@ def poll(where, project, scope, now=None):
                 if event["scope"]["chat_id"] == scope["chat_id"]:
                     event["state"] = "cancelled"
                 continue
-            if event["state"] not in ("scheduled", "waiting_data") or moment < dt.datetime.fromisoformat(event["due_at"]):
+            open_issue = event["state"] in ("awaiting_reply", "awaiting_remainder_date")
+            if event["state"] not in ("scheduled", "waiting_data", "awaiting_reply", "awaiting_remainder_date") or moment < dt.datetime.fromisoformat(event["due_at"]):
                 continue
             attestation = data["attestations"].get(digest([sha, event.get("target")]),
                                                  native_attestation(contracts, sha, event.get("target")))
             initial = data["attestations"].get(digest([event.get("baseline_source_sha256"), event.get("target")]), event.get("baseline_evidence", {}))
+            quality_basis = digest([sha, attestation, initial])
+            if open_issue and event.get("quality_basis") == quality_basis:
+                continue
             basis = digest([sha, attestation, initial, moment.date().isoformat()])
             if event["eval_basis"] == basis:
                 continue
             event["eval_basis"] = basis
+            event["quality_basis"] = quality_basis
             result = evaluate(event, contracts, sha, attestation, moment, initial)
             event["evaluation"] = result
             event["baseline_quality"] = result.get("baseline_quality", event["baseline_quality"])
+            if open_issue and result["state"] != "full":
+                if result["state"] in ("partial", "partial_current"):
+                    event["state"] = "awaiting_remainder_date"
+                continue  # new observed facts, without another unsolicited deadline question
             key = f"{event['key']}:{event['revision']}"
             if result["state"] == "unknown":
                 event["state"] = "waiting_data"
@@ -489,7 +506,7 @@ def poll(where, project, scope, now=None):
                              if event.get("event_mode") == "reported_completion" else
                              (f" Регистрацию ожидали {event['event_date']}; {result['registration_state']} "
                               "Ожидание регистрации не является обещанной датой оплаты."))
-                delivery_key = "result:" + key
+                delivery_key = ("closure:" if open_issue else "result:") + key
             _enqueue(where, project, data, scope, delivery_key, f"{_label(event['question'])}: {text}",
                      None if result["state"] == "full" else event["question"])
             data["deliveries"][delivery_key]["event_key"] = event["key"]

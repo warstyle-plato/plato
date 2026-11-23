@@ -464,3 +464,37 @@ def test_same_question_key_in_two_groups_keeps_distinct_scope_state(tmp_path):
     remaining=follow.load(tmp_path,'Продажи')['events'].values()
     assert all(e['state']=='cancelled' for e in remaining if e['scope']['chat_id']==first['chat_id'])
     assert any(e['state']=='scheduled' for e in remaining if e['scope']['chat_id']==second['chat_id'])
+
+
+def test_partial_then_full_without_manager_reply_closes_once(tmp_path):
+    scope,rows,_,batch=setup(tmp_path);answer(tmp_path,scope,batch,text='1. ожидаем оплату 26.11')
+    rows[0].update(escrow_paid=500_000,escrow_observed=True)
+    payload={'rows':rows,'as_of':'2026-11-27','as_of_provenance':'uploader_declared'}
+    store.save(tmp_path,'Продажи',{'contracting':payload},'SYNTHETIC-PARTIAL.xlsx')
+    first=follow.poll(tmp_path,'Продажи',scope,DUE)[0]
+    start=follow.begin(tmp_path,'Продажи',scope,first['id'],first['claim_id'],DUE)
+    follow.receipt(tmp_path,'Продажи',scope,first['id'],start['attempt_id'],900)
+    rows[0]['escrow_paid']=600_000
+    store.save(tmp_path,'Продажи',{'contracting':payload},'SYNTHETIC-NEXT-PARTIAL.xlsx')
+    assert follow.poll(tmp_path,'Продажи',scope,DUE)==[]
+    rows[0]['escrow_paid']=100_000_000
+    store.save(tmp_path,'Продажи',{'contracting':payload},'SYNTHETIC-FULL.xlsx')
+    final=follow.poll(tmp_path,'Продажи',scope,DUE)
+    assert len(final)==1 and final[0]['id'].startswith('closure:')
+    state=follow.load(tmp_path,'Продажи')
+    assert next(iter(state['events'].values()))['state']=='resolved'
+    assert state['deliveries'][first['id']]['state']=='sent'
+    assert follow.poll(tmp_path,'Продажи',scope,DUE)==[]
+
+
+def test_unknown_deadline_is_clarified_once_per_unresolved_phase(tmp_path):
+    scope,_,_,batch=setup(tmp_path);answer(tmp_path,scope,batch,text='1. ожидаем регистрацию')
+    notice=follow.poll(tmp_path,'Продажи',scope,DUE)[0]
+    start=follow.begin(tmp_path,'Продажи',scope,notice['id'],notice['claim_id'],DUE)
+    follow.receipt(tmp_path,'Продажи',scope,notice['id'],start['attempt_id'],900)
+    answer(tmp_path,scope,batch,text='1. Срок пока неизвестен',mid=102)
+    assert follow.poll(tmp_path,'Продажи',scope,DUE)==[]
+    state=follow.load(tmp_path,'Продажи');event=next(iter(state['events'].values()))
+    assert event['revision']==2 and event['state']=='waiting_deadline' and len(event['history'])==1
+    assert len([key for key in state['deliveries'] if key.startswith('deadline:')])==1
+    assert state['deliveries'][notice['id']]['event_revision']==1
