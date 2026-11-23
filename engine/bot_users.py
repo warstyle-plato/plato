@@ -1518,21 +1518,23 @@ def _apply_sales_chat(req: SalesChatRequest, project: str) -> dict[str, Any]:
         # нынешнему проекту. Telegram ID сообщения уникален только ВНУТРИ чата.
         target = where if origin else where / "unattributed"
         key = origin or str(req.chat_id)
+        followup_error = ""
+        if origin:
+            from market_search import sales_followups
+            try:
+                # Write-ahead event + full Telegram provenance before the raw
+                # append: a crash between files cannot silently lose a checkpoint.
+                sales_followups.ingest(where, origin, _sales_followup_scope(project, req.chat_id),
+                    message_id=req.message_id, reply_to_id=req.reply_to_id, quoted=req.reply_text,
+                    text=req.text, author_id=req.author_id, author=req.author, telegram_date=req.telegram_date)
+            except (ValueError, RuntimeError) as exc:
+                followup_error = str(exc)[:160]
         with sales_questions.lock(target, key):
             saved = sales_dialogue.reply(
                 target, key, chat_id=req.chat_id, message_id=req.message_id,
                 reply_to_id=req.reply_to_id, quoted=req.reply_text, text=req.text,
                 author=req.author, author_id=req.author_id, telegram_date=req.telegram_date,
                 allow_legacy=not bool(origin))
-        followup_error = ""
-        if saved and origin:
-            from market_search import sales_followups
-            try:
-                sales_followups.ingest(where, origin, _sales_followup_scope(project, req.chat_id),
-                    message_id=req.message_id, reply_to_id=req.reply_to_id, quoted=req.reply_text,
-                    text=req.text, author_id=req.author_id, author=req.author, telegram_date=req.telegram_date)
-            except (ValueError, RuntimeError) as exc:
-                followup_error = str(exc)[:160]
         return {"sales_project": origin, "reply_saved": saved,
                 "reply_unattributed": not bool(origin), "followup_error": followup_error}
     _site_chat_title_seen(int(req.chat_id or 0), req.title)
@@ -1657,6 +1659,8 @@ def monitor_sales_followups(req: SalesFollowupRequest) -> Any:
                             if item["scope"]["chat_id"] == req.chat_id and item["scope"]["monitor_project"] == project}
                             for kind in ("events", "deliveries")})
                         state["seen"] = [item for item in state["seen"] if item.startswith(str(req.chat_id) + ":")]
+                        state["ingestions"] = {key:item for key,item in state["ingestions"].items()
+                            if item["scope"]["chat_id"] == req.chat_id and item["scope"]["monitor_project"] == project}
                         value = {"scope": scope, "source_sha256": sha,
                                  "state": state,
                                  "batches": {key: batch for key, batch in sales_dialogue.load(where, sales_project)["batches"].items()

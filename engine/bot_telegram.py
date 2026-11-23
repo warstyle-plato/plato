@@ -3547,14 +3547,16 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
         return
     from market_search import sales_followups, salesroom
     if (not original and not (message.get("from") or {}).get("is_bot") and sales_followups.looks_like_answer(text)
+            and not (parsed and parsed.get("contractors"))
             and not salesroom.is_sales_report(text)):
         try:
             result = _sales_chat_store(chat, message, text, taken_at, action="candidate")
-            _telegram_group_seen(chat, "приглашение ответить через Reply подготовлено; обычное сообщение не связано с вопросами"
-                                 if result.get("candidate") else "нет однозначной связи сообщения с вопросами Платона")
+            if result.get("candidate"):
+                _telegram_group_seen(chat, "приглашение ответить через Reply подготовлено; обычное сообщение не связано с вопросами")
+                return
         except Exception:
             _telegram_group_seen(chat, "связь сообщения с вопросами не установлена")
-        return
+            return
     if not parsed or not parsed.get("contractors"):
         from market_search import salesroom
 

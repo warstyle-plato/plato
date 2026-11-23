@@ -51,7 +51,10 @@ def test_owner_points_and_safe_ordinary_candidate(tmp_path):
     ('оплату ждём 26.11.2026','','2026-11-26'),('26.11 и 27.11','payment',None),
     ('если зарегистрируют 26.11','registration',None),('до 02.01','payment',None),
     ('до 21.11','payment',None),('на неделе','payment',None),('26.11.25','payment',None),
-    ('2026-11-26','registration','2026-11-26')])
+    ('2026-11-26','registration','2026-11-26'),('Ожидаем оплату 26.11 млн ₽','payment',None),
+    ('Оплата по договору №26.11','payment',None),('26.11%','payment',None),('26.11 м²','payment',None),
+    ('Договор №2026-11-26','payment',None),('ID A2026-11-26B','payment',None),
+    ('26.11.2026.','payment','2026-11-26')])
 def test_dates(text,kind,date):assert follow.extract(text,STAMP,kind)['event_date']==date
 
 
@@ -59,8 +62,10 @@ def test_bare_date_inherits_only_exact_previous_event(tmp_path):
     scope,_,_,batch=setup(tmp_path);answer(tmp_path,scope,batch)
     data=follow.load(tmp_path,'Продажи');mm=list(data['events'].values())[1]
     delivery=next(x for x in data['deliveries'].values() if x['question']['key']==mm['question_key'])
+    claim=next(x for x in follow.poll(tmp_path,'Продажи',scope,DUE) if x['id']==delivery['id'])
+    permitted=follow.begin(tmp_path,'Продажи',scope,claim['id'],claim['claim_id'],DUE)
+    follow.receipt(tmp_path,'Продажи',scope,claim['id'],permitted['attempt_id'],200)
     b=dialogue.load(tmp_path,'Продажи')['batches'][delivery['batch_id']]
-    dialogue.delivered(tmp_path,'Продажи',scope['chat_id'],delivery['batch_id'],200)
     follow.ingest(tmp_path,'Продажи',scope,message_id=201,reply_to_id=200,quoted=b['text'],text='26.11.2026',author_id=4242,author='Менеджер',telegram_date=STAMP)
     e=follow.load(tmp_path,'Продажи')['events'][mm['key']]
     assert e['revision']==2 and e['event_kind']=='resigning' and e['due_at']==DUE.isoformat()
@@ -370,3 +375,91 @@ def test_nonfinite_reported_baseline_does_not_block_future_current_verification(
     _,e,c,a,_=event_data(tmp_path,paid=100_000_000,baseline=float('nan'),known=False)
     assert e['state']=='scheduled' and e['baseline_paid'] is None
     assert follow.evaluate(e,c,follow.digest(c),a,DUE)['state']=='full'
+
+
+def test_native_xlsx_upload_to_reply_to_auto_poll_needs_no_manual_attestation(native,monkeypatch):
+    import io
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from openpyxl import Workbook
+    from market_search import api,contracting
+    main,core,where,scope,sent=native
+    batch=next(iter(dialogue.load(where,'Продажи')['batches'].values()))
+    answer(where,scope,batch,text='1. оплатили')
+    book=Workbook();sheet=book.active;sheet.title='Контрактация'
+    sheet['A3']='Название проекта:';sheet['E3']='Продажи'
+    values=dict(product='Квартира',unit='корп.3 кв.96',date='16.11.2026',contract='ДДУ-96',
+                area=100,amount=100_000_000,units=1,price_per_sqm=1_000_000,escrow_total=100_000_000,
+                payment_variant='100% оплата')
+    for column,(key,title) in enumerate(contracting._COLUMNS.items(),1):
+        sheet.cell(6,column,title);sheet.cell(7,column,values.get(key))
+    data=io.BytesIO();book.save(data);book.close()
+    monkeypatch.setenv('MARKET_CABINET_KEY','SYNTHETIC-CABINET')
+    app=FastAPI();api.install(app);client=TestClient(app)
+    response=client.post('/cabinet/contracting',params={'project':'Продажи','escrow_as_of':'2026-11-23'},
+                        headers={'X-Market-Key':'SYNTHETIC-CABINET'},content=data.getvalue())
+    assert response.status_code==200,response.text
+    current=store.load(where,'Продажи')['sources']['contracting']['data']
+    assert current['as_of_provenance']=='uploader_declared' and current['rows'][0]['escrow_observed']
+    now=dt.datetime.fromtimestamp(STAMP,follow.MOSCOW)+dt.timedelta(minutes=1)
+    monkeypatch.setattr(follow,'_now',lambda value=None:now if value is None else value.astimezone(follow.MOSCOW))
+    # This fixture checks completion reported on23, so the source cut23 is sufficient.
+    main._deliver_sales_followups()
+    state=follow.load(where,'Продажи');event=next(iter(state['events'].values()))
+    assert event['state']=='resolved' and not state['attestations']
+    assert len(sent)==1 and '100 000 000,00 ₽' in sent[0][1]
+
+
+def test_write_ahead_survives_raw_journal_failure_and_duplicate_delivery(native,monkeypatch):
+    main,core,where,scope,sent=native
+    batch=next(iter(dialogue.load(where,'Продажи')['batches'].values()))
+    args=dict(chat_id=scope['chat_id'],project='Монитор',action='reply',message_id=101,reply_to_id=100,
+              reply_text=batch['text'],reply_from_id=123,reply_is_bot=True,text=OWNER_TEXT,
+              author_id=4242,author='Менеджер',telegram_date=STAMP,sign=core._web_login_sign('monitor-sales',scope['chat_id']))
+    original=dialogue.reply
+    monkeypatch.setattr(dialogue,'reply',lambda *a,**k:(_ for _ in ()).throw(RuntimeError('simulated crash after write-ahead')))
+    with pytest.raises(RuntimeError):core.internal_monitor_sales_chat(core.SalesChatRequest(**args))
+    durable=follow.load(where,'Продажи')
+    assert len(durable['events'])==3 and durable['ingestions'][f"{scope['chat_id']}:101"]['text']==OWNER_TEXT
+    assert next(iter(durable['events'].values()))['due_at']==DUE.isoformat()
+    monkeypatch.setattr(dialogue,'reply',original)
+    core.internal_monitor_sales_chat(core.SalesChatRequest(**args))
+    assert len(next(iter(dialogue.load(where,'Продажи')['batches'].values()))['replies'])==1
+    assert len(follow.load(where,'Продажи')['events'])==3
+
+
+def test_completion_registration_text_does_not_invent_a_promised_date(tmp_path):
+    scope,rows,_,batch=setup(tmp_path);answer(tmp_path,scope,batch,text='1. зарегистрировали')
+    rows[0].update(escrow_paid=100_000_000,escrow_observed=True)
+    source={'rows':rows,'as_of':'2026-11-23','as_of_provenance':'uploader_declared'}
+    store.save(tmp_path,'Продажи',{'contracting':source},'SYNTHETIC-COMPLETION.xlsx')
+    follow.poll(tmp_path,'Продажи',scope,dt.datetime.fromtimestamp(STAMP,follow.MOSCOW))
+    text=next(v['text'] for k,v in follow.load(tmp_path,'Продажи')['deliveries'].items() if k.startswith('result:'))
+    assert 'В ответе сообщили о регистрации' in text and 'Регистрацию ожидали' not in text
+
+
+def test_native_construction_report_keeps_priority_over_answer_candidate(native,monkeypatch):
+    import developaid_monitor_daily as daily
+    main,core,where,scope,sent=native
+    text=('Добрый день.\n1. Первый : Итр- 1чел., Рабочие - 6 чел.\n'
+          '2. Второй:ИТР- 11чел.;\nРабочие - 50чел.;\nПримечание: регистрация и оплата документов ожидаются.')
+    assert len(daily.parse_daily_report(text)['contractors'])==2 and follow.looks_like_answer(text)
+    calls=[];candidates=[]
+    monkeypatch.setattr(core,'_site_chat_store',lambda chat,text,date,**kw:calls.append((chat,text,date)) or {'bound':'Монитор'})
+    monkeypatch.setattr(core,'_sales_chat_store',lambda *a,**kw:candidates.append(kw) or {'candidate':False})
+    chat={'id':scope['chat_id'],'type':'supergroup'}
+    core._telegram_group_message(chat,{'chat':chat,'from':{'id':4242},'message_id':999,'date':STAMP,'text':text})
+    assert len(calls)==1 and calls[0][1]==text and not candidates and not sent
+
+
+def test_same_question_key_in_two_groups_keeps_distinct_scope_state(tmp_path):
+    first,_,_,batch1=setup(tmp_path)
+    second=dict(first,chat_id=-10023456)
+    _,_,_,batch2=setup(tmp_path,second)
+    answer(tmp_path,first,batch1);answer(tmp_path,second,batch2)
+    events=follow.load(tmp_path,'Продажи')['events']
+    assert len(events)==6
+    follow.stop(tmp_path,'Продажи',first['chat_id'])
+    remaining=follow.load(tmp_path,'Продажи')['events'].values()
+    assert all(e['state']=='cancelled' for e in remaining if e['scope']['chat_id']==first['chat_id'])
+    assert any(e['state']=='scheduled' for e in remaining if e['scope']['chat_id']==second['chat_id'])

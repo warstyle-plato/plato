@@ -21,7 +21,7 @@ from . import sales_dialogue, sales_questions, sales_store
 
 MOSCOW = dt.timezone(dt.timedelta(hours=3))
 _POINT = re.compile(r"(?m)^\s*(\d+)[.)](?!\d)[ \t]*")
-_DATE = re.compile(r"(?<!\d)(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?(?!\d|\.\d)")
+_DATE = re.compile(r"(?<!\w)(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?(?!\w|\.\d)")
 
 
 def digest(value):
@@ -53,6 +53,11 @@ def _event_id(scope, question_key):
     return f"{scope['chat_id']}:{question_key}"
 
 
+def _calendar_token(text, start, end):
+    return not (re.match(r"\s*(?:млн\b|тыс\b|руб\w*|₽|%|м[²2](?!\w)|кв\.?\s*м\b|га\b|кг\b|шт\b)", text[end:], re.I)
+                or re.search(r"(?:№|номер|идентификатор|id|дду|договор)\s*[-:]?\s*$", text[:start], re.I))
+
+
 def _day(value):
     try:
         return dt.date.fromisoformat(value) if isinstance(value, str) and len(value) == 10 else None
@@ -71,7 +76,7 @@ def _path(where, project):
 def load(where, project):
     path = _path(where, project)
     if not path.exists():
-        return {"project": project, "events": {}, "deliveries": {}, "attestations": {}, "seen": []}
+        return {"project": project, "events": {}, "deliveries": {}, "attestations": {}, "seen": [], "ingestions": {}}
     try:
         value = json.loads(path.read_text())
         if value["project"] != project or any(not isinstance(value[k], dict)
@@ -88,6 +93,9 @@ def load(where, project):
                     raise ValueError("scope")
         if any(not isinstance(item, dict) for item in value["attestations"].values()):
             raise ValueError("attestation")
+        value.setdefault("ingestions", {})
+        if not isinstance(value["ingestions"], dict) or any(not isinstance(item, str) for item in value["seen"]):
+            raise ValueError("ingestion shape")
         return value
     except Exception as exc:
         raise RuntimeError("Не читается журнал отложенного контроля продаж.") from exc
@@ -197,8 +205,12 @@ def extract(text, telegram_date, expected_event=""):
     dates = []
     try:
         for hit in _DATE.finditer(text):
+            if not _calendar_token(text, hit.start(), hit.end()):
+                return out
             dates.append((dt.date(int(hit[3]) if hit[3] else anchor.year, int(hit[2]), int(hit[1])), hit[0]))
-        for hit in re.finditer(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)", text):
+        for hit in re.finditer(r"(?<!\w)\d{4}-\d{2}-\d{2}(?!\w)", text):
+            if not _calendar_token(text, hit.start(), hit.end()):
+                return out
             dates.append((dt.date.fromisoformat(hit[0]), hit[0]))
         for word, offset in (("послезавтра", 2), ("завтра", 1)):
             if re.search(r"(?<!\w)" + word + r"(?!\w)", text, re.I):
@@ -252,8 +264,9 @@ def _enqueue(where, project, data, scope, key, text, question=None, trusted_mark
     batch_id = ""
     if question:
         item = dict(question, text=text)
-        batch_id = sales_dialogue.prepare(where, project, scope["chat_id"], [item], _now().date().isoformat())
         text = sales_questions.message([item])
+        batch_id = digest([scope, key, text])
+        question = item
     elif not trusted_markup:
         text = html.escape(text)
     data["deliveries"][key] = {"id": key, "scope": scope, "text": text, "state": "pending",
@@ -264,6 +277,9 @@ def _enqueue(where, project, data, scope, key, text, question=None, trusted_mark
 def ingest(where, project, scope, *, message_id, reply_to_id, quoted, text, author_id,
            author, telegram_date, candidate=False):
     """Only core-verified Reply may attach events. Ordinary candidates never do."""
+    if (message_id <= 0 or author_id <= 0 or telegram_date <= 0 or not text.strip()
+            or not candidate and (reply_to_id <= 0 or not sales_dialogue.is_question(quoted))):
+        return {"events": 0, "candidate": False}
     with sales_questions.lock(where, project):
         data = load(where, project)
         seen = f"{scope['chat_id']}:{message_id}"
@@ -303,6 +319,9 @@ def ingest(where, project, scope, *, message_id, reply_to_id, quoted, text, auth
             _save(where, project, data)
             return {"events": 0, "candidate": True}
         parts = _parts(text, len(batch["questions"]))
+        data["ingestions"][seen] = {"scope": scope, "batch_id": bid, "text": text, "quoted": quoted,
+            "message_id": message_id, "reply_to_id": reply_to_id, "author_id": author_id,
+            "author": author, "telegram_date": telegram_date, "provenance": "verified_telegram_reply"}
         invitation = data["deliveries"].get(f"candidate:{bid}")
         if invitation and invitation["state"] in ("pending", "claimed"):
             invitation["state"] = "cancelled"
@@ -464,8 +483,11 @@ def poll(where, project, scope, now=None):
                          "unchanged": "Сумма не изменилась. Уточните, пожалуйста, следующий срок оплаты.",
                          "decreased": "Сумма уменьшилась. Уточните, пожалуйста, причину изменения и следующий срок."}[result["state"]]
                 if event["event_kind"] == "registration":
-                    text += (f" Регистрацию ожидали {event['event_date']}; {result['registration_state']} "
-                             "Ожидание регистрации не является обещанной датой оплаты.")
+                    text += ((f" В ответе сообщили о регистрации; {result['registration_state']} "
+                              "Сообщение о регистрации не подтверждает факт оплаты.")
+                             if event.get("event_mode") == "reported_completion" else
+                             (f" Регистрацию ожидали {event['event_date']}; {result['registration_state']} "
+                              "Ожидание регистрации не является обещанной датой оплаты."))
                 delivery_key = "result:" + key
             _enqueue(where, project, data, scope, delivery_key, f"{_label(event['question'])}: {text}",
                      None if result["state"] == "full" else event["question"])
@@ -523,6 +545,9 @@ def begin(where, project, scope, delivery_id, claim_id, now=None):
                 event.update(state="scheduled", eval_basis="")
                 _save(where, project, data)
                 return {"authorized": False}
+        if item["batch_id"]:
+            sales_dialogue.prepare(where, project, scope["chat_id"], [item["question"]],
+                                   _now(now).date().isoformat(), batch_id=item["batch_id"])
         item.update(state="attempted", attempt_id=uuid.uuid4().hex, attempted_at=_now(now).timestamp())
         _save(where, project, data)
         return {"authorized": True, "attempt_id": item["attempt_id"], "text": item["text"],
