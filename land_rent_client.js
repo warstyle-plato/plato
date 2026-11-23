@@ -160,7 +160,8 @@ function landRentSet(key,value){
  // A cleared cadastral value goes back to the sum from ЕГРН.
  const refill=LAND_RENT_AUTO_FIELDS.includes(key)&&value==null;
  if(refill)delete fieldOrigins()['inputs.'+key];else markFieldManual('inputs.'+key);
- landRentRefresh(refill||['land_rent_mode','land_rent_base_kind','land_rent_first_year_relation','land_rent_payment_mode','land_rent_contract_date','land_rent_vri_change','land_rent_cadastral_target_kind'].includes(key));
+ if(key==='land_right')refreshGroupPeeks();
+ landRentRefresh(refill||['land_right','land_rent_mode','land_rent_base_kind','land_rent_first_year_relation','land_rent_payment_mode','land_rent_contract_date','land_rent_vri_change','land_rent_cadastral_target_kind'].includes(key));
 }
 function landRentManualRates(){
  return Array.isArray(inputs.land_rent_rates)?inputs.land_rent_rates:[];
@@ -499,6 +500,11 @@ function renderLandRentEditor(){
  const detail=(key,label)=>{const box=document.createElement('details');box.className='lr-detail';box.dataset.landRentDetail=key;box.open=open.has(key);const summary=document.createElement('summary');summary.textContent=label;box.appendChild(summary);advanced.appendChild(box);return box};
  const lead=note(root,'Аренда до регистрации жилья или выхода из владения объектом. Плата за ВРИ учитывается отдельно.');lead.className='lr-note lr-intro';
  note(root,territory.label+' · '+territory.source);
+ if(withoutHousing()){
+  const field=FIELD_GROUPS.flatMap(group=>group[1]).find(field=>field[0]==='land_right');
+  const control=landRentField(fields(root),field[0],field[1],field[3],field[4]);
+  control.closest('.field').dataset.field='land_right';
+ }
  const mode=inputs.land_rent_mode||'unspecified',preset=LAND_RENT_SPEC.presets[mode];
  if(String(inputs.land_right||'ownership')==='ownership'){
   note(root,'Выбрана собственность на землю: аренда не начисляется. Сохранённые условия договора остаются в проекте. Для арендованного участка выберите право «Аренда».');
