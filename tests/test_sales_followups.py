@@ -498,3 +498,27 @@ def test_unknown_deadline_is_clarified_once_per_unresolved_phase(tmp_path):
     assert event['revision']==2 and event['state']=='waiting_deadline' and len(event['history'])==1
     assert len([key for key in state['deliveries'] if key.startswith('deadline:')])==1
     assert state['deliveries'][notice['id']]['event_revision']==1
+
+
+@pytest.mark.parametrize('observed,paid,count',[(False,0,0),(True,-1,0),(True,float('nan'),0),(True,0,1),(None,0,1)])
+def test_initial_money_question_respects_new_presence_but_keeps_legacy_abi(observed,paid,count):
+    row=dict(contract='SYNTHETIC',signed='2026-11-16',product='Квартира',unit='корп.7 кв.41',area=100,amount=100000,escrow_paid=paid)
+    if observed is not None:row['escrow_observed']=observed
+    assert len(questions._no_money([row],dt.date(2026,11,23)))==count
+
+
+@pytest.mark.parametrize('as_of,expected', [('2026-11-19',False),('2026-11-09',False),(None,True)])
+def test_native_initial_question_uses_business_cut_instead_of_upload_clock(native,as_of,expected):
+    main,core,where,scope,sent=native
+    dialogue._path(where,'Продажи').unlink()
+    contracts,_=follow.source(where,'Продажи')
+    for row in contracts['rows']:row['escrow_observed']=True
+    if as_of:contracts.update(as_of=as_of,as_of_provenance='uploader_declared')
+    store.save(where,'Продажи',{'contracting':contracts},'SYNTHETIC-DATED-OR-LEGACY.xlsx')
+    kept=store.load(where,'Продажи');kept['sources']['contracting']['at']='2026-11-23T12:00:00+00:00'
+    store._replace(store._path(where,'Продажи'),kept)
+    req=core.SalesChatRequest(chat_id=scope['chat_id'],project='Монитор',action='report',
+        sign=core._web_login_sign('monitor-sales',scope['chat_id']),taken_at='2026-11-23',
+        author='synthetic',text='Отчёт за 23.11.2026\nВстречи за день - 1\nТекущих броней: 0')
+    result=core.internal_monitor_sales_chat(req)
+    assert not result['ask_error'] and bool(result['ask']) is expected

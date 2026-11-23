@@ -1571,8 +1571,11 @@ def _apply_sales_chat(req: SalesChatRequest, project: str) -> dict[str, Any]:
         if day and len(updated.get("messages") or []) > len((current or {}).get("messages") or []):
             contracting = (kept.get("sources") or {}).get("contracting") or {}
             try:
+                payload = contracting.get("data") or {}
+                source_day = (payload.get("as_of") if payload.get("as_of_provenance") == "uploader_declared"
+                              else contracting.get("at"))
                 found = sales_questions.questions(
-                    updated, contracting.get("data"), contracting.get("at"), day,
+                    updated, contracting.get("data"), source_day, day,
                     set(sales_questions.load_asked(where, sales_project))
                     | sales_dialogue.asked_keys(where, sales_project),
                     snapshot=((kept.get("sources") or {}).get("chessboard") or {}).get("data"),

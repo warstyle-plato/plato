@@ -111,14 +111,20 @@ def money_key(row: dict[str, Any]) -> str:
 def _no_money(rows: list[dict[str, Any]], uploaded: datetime.date) -> list[dict[str, Any]]:
     out = []
     for row in rows:
+        if row.get("escrow_observed") is False:
+            continue
         signed = _date(row.get("signed"))
         amount = float(row.get("amount") or 0.0)
         if not signed or amount <= 0:
+            continue
+        if row.get("escrow_observed") is True and not 0 < amount < float("inf"):
             continue
         age = (uploaded - signed).days
         if not PAYMENT_DAYS <= age <= RECENT_DAYS:
             continue
         paid = float(row.get("escrow_paid") or 0.0)
+        if row.get("escrow_observed") is True and not 0 <= paid < float("inf"):
+            continue
         if paid >= PAYMENT_SHARE * amount:
             continue
         got = ("на эскроу пока ничего не поступило" if paid < 1.0 else
