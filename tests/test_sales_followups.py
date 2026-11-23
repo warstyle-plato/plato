@@ -216,6 +216,11 @@ def test_waiting_data_once_then_full_notification_is_not_a_question(tmp_path):
     assert follow.poll(tmp_path,'Продажи',scope,DUE-dt.timedelta(seconds=1))==[]
     follow.poll(tmp_path,'Продажи',scope,DUE);follow.poll(tmp_path,'Продажи',scope,DUE+dt.timedelta(seconds=10))
     assert len([k for k in follow.load(tmp_path,'Продажи')['deliveries'] if k.startswith('unknown:')])==1
+    pending=follow.load(tmp_path,'Продажи')
+    notice=next(v for k,v in pending['deliveries'].items() if k.startswith('unknown:'))
+    assert notice['question'] is None and notice['batch_id']=='' and not dialogue.is_question(notice['text'])
+    assert next(iter(pending['events'].values()))['due_at']==DUE.isoformat()
+    assert len(dialogue.load(tmp_path,'Продажи')['batches'])==1
     rows[0].update(escrow_paid=100_000_000,escrow_observed=True)
     source={'rows':rows,'as_of':'2026-11-27','as_of_provenance':'uploader_declared'}
     store.save(tmp_path,'Продажи',{'contracting':source},'SYNTHETIC-FUTURE.xlsx')

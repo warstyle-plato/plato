@@ -508,7 +508,7 @@ def poll(where, project, scope, now=None):
                               "Ожидание регистрации не является обещанной датой оплаты."))
                 delivery_key = ("closure:" if open_issue else "result:") + key
             _enqueue(where, project, data, scope, delivery_key, f"{_label(event['question'])}: {text}",
-                     None if result["state"] == "full" else event["question"])
+                     None if result["state"] in ("full", "unknown") else event["question"])
             data["deliveries"][delivery_key]["event_key"] = event["key"]
             data["deliveries"][delivery_key]["event_revision"] = event["revision"]
             data["deliveries"][delivery_key]["evaluation_basis"] = basis
