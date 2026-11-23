@@ -31,7 +31,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from browser import chromium_or_skip, serve  # noqa: E402
+from browser import chromium_or_skip, serve, wait_for_result  # noqa: E402
 
 import main_legacy as core  # noqa: E402
 
@@ -86,13 +86,10 @@ def captions() -> dict:
             browser = pw.chromium.launch(executable_path=path)
             page = browser.new_page()
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="load")
-            page.wait_for_function("()=>typeof lastResult!=='undefined'",
-                                   timeout=60000)
+            wait_for_result(page)
             for own in (0.0, HAND_RATE):
                 page.evaluate("o=>{inputs.landscaping_gns_th_per_sqm=o}", own)
-                page.evaluate("()=>calculate()")
-                page.wait_for_function("()=>lastResult&&lastResult.summary",
-                                       timeout=60000)
+                page.evaluate("()=>settledCalculate()")
                 page.evaluate("()=>{openTab('inputs');renderInputs();}")
                 out[own] = {
                     "area": page.evaluate(
