@@ -256,7 +256,7 @@ def test_sales_page_draws_the_shared_overlay(client, width):
                                 for p in PdfReader(io.BytesIO(pdf)).pages)
                 assert "Остаток по шахматке" in text
                 assert "Состав новых лотов" in text
-                assert "не график поступлений на эскроу" in text
+                assert "Оценка стоимости не является графиком поступлений на эскроу." in text
                 paper.close()
             assert not errors
         finally:
