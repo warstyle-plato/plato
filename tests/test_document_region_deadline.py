@@ -186,12 +186,17 @@ def test_new_file_entrypoint_finishes_while_the_old_territory_reply_is_pending(
         {'answer':json.dumps({'fields':[],'questions':[],'notes':[]})}
         if 'Новый независимый источник' in req.message else first_model(req,request))
     after_new=[]
+    new_finished=threading.Event()
     def new_source():
         main._handle_update({'message':{'chat':{'id':CHAT,'type':'private'},'from':{'id':CHAT},
             'document':{'file_id':'next-file','file_name':'next-source.pdf'},'caption':'посмотри тизер'}})
         after_new.append(len(sent))
+        new_finished.set()
     territory_http.on_chunk=new_source
     run()
+    # Superseding the old source can return its worker while the server's
+    # callback is still publishing the new card on another thread.
+    assert new_finished.wait(1), 'The new source must finish before inspecting its card'
     state=core._telegram_dialog_get(CHAT)
     assert state['document_read']['status']=='ready'
     assert state['document_read']['filename']=='next-source.pdf'
