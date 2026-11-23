@@ -96,7 +96,18 @@ def test_a_foreign_file_is_data_not_a_command():
     assert "confirm(" in body, "замена вводных на экране — с подтверждением"
 
 
-def test_the_name_is_taken_where_saving_takes_it():
-    """Своего поля с именем нет, и заводить второе значило бы развести их."""
-    body = page_function("currentProjectName")
-    assert "_manual_tep_import" in body and "projectCadastral()" in body
+def test_the_name_is_shared_with_document_downloads():
+    """Настройки используют имя открытого проекта, сохраняя прежнюю метку без имени."""
+    import page_blocks
+
+    output = page_blocks.run_json("""
+let inputs={_manual_tep_import:{project_name:'Из документа'}};
+let openedProject={id:'saved',name:'Имя в кабинете'};
+let cadastralAnalysis=null,moResult=null;
+function projectCadastral(){return ['77:01:0001001:1']}
+""", """
+const saved=currentProjectName();openedProject=null;
+const imported=currentProjectName();inputs={};
+console.log(JSON.stringify([saved,imported,currentProjectName()]));
+""")
+    assert output == ['Имя в кабинете', 'Из документа', '77:01:0001001:1']
