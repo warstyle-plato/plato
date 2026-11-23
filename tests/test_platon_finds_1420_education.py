@@ -58,3 +58,31 @@ def test_only_the_public_registry_and_excerpt_ship_not_runtime_state():
     for name in ("data/normatives/check_state.json", "data/runtime.db", ".env",
                  "docs/normative/mo_rngp_chain/raw.ocr.txt"):
         assert not _docker_keeps(name, rules), name
+
+
+def test_page_watch_and_platon_read_shipped_registry_over_old_mounted_data(tmp_path, monkeypatch):
+    import json
+    import normative_sources
+    import normatives_registry
+
+    # Снимок нового образа + прежний /app/data. Под mount — старая карточка,
+    # в которой норма уже была принята, но положений для поиска ещё не было.
+    row = knowledge.act_provisions("mo-1420-rngp")
+    old = {k: v for k, v in row.items() if k not in {"key_provisions", "provisions_use"}}
+    mounted = tmp_path / knowledge.REGISTRY_RELATIVE
+    mounted.parent.mkdir(parents=True)
+    mounted.write_text(json.dumps([old], ensure_ascii=False))
+    shipped = tmp_path / "reference_data" / "normatives_registry.json"
+    shipped.parent.mkdir()
+    shipped.write_text(json.dumps([row], ensure_ascii=False))
+    monkeypatch.setattr(knowledge, "_ROOT", tmp_path)
+    monkeypatch.setattr(knowledge, "NORMATIVE_DIR", tmp_path / "docs" / "normative")
+    monkeypatch.setattr(normatives_registry, "_REGISTRY_PATH", normative_sources.registry_path(tmp_path))
+
+    assert normatives_registry._load_registry() == [row]
+    assert knowledge.act_provisions(row["id"]) == row
+    answer = wrapper.core._execute_agent_tool("search_project_knowledge", {
+        "query": "1420-ПП 50 109 детские сады школы", "source": "normative"}, None, {})
+    assert any(SOURCE in e["text"] and "50 мест" in e["text"]
+               for e in answer.get("entries", [])), answer
+    assert "key_provisions" not in json.loads(mounted.read_text())[0]

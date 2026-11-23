@@ -18,6 +18,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from normative_sources import registry_path
+
 _ROOT = Path(__file__).resolve().parent
 RULES_FILES = ("CLAUDE.md", "docs/CLAUDE_HISTORY_*.md")
 SOURCES = {
@@ -131,7 +133,7 @@ def act_provisions(act_id: str) -> dict[str, Any]:
     методика Платона читают их отсюда, а не держат своих пересказов.
     """
     try:
-        rows = json.loads((_ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+        rows = json.loads(registry_path(_ROOT).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     for row in rows if isinstance(rows, list) else []:
@@ -158,7 +160,7 @@ def provisions_text(row: dict[str, Any]) -> str:
 
 def _provision_entries() -> list[dict[str, str]]:
     try:
-        rows = json.loads((_ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+        rows = json.loads(registry_path(_ROOT).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     found = []
