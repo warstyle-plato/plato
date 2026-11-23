@@ -99,7 +99,7 @@ def test_missing_price_is_unknown_and_priced_subset_has_explicit_coverage():
     assert block["priced_units"] == 2 and block["priced_area"] == 90
     assert block["priced_value"] == 9_000_000
     text = chessboard.render(block)
-    assert "Цены подтверждены для 2 из 3 квартир (90,0 из 150,0 м²)" in text
+    assert "Цена за м² и полная стоимость согласованы для 2 из 3 квартир (90,0 из 150,0 м²)" in text
     assert "Стоимость только оценённой части — 9,0 млн ₽" in text
     for lot in snapshot["buildings"]["1"]["lots"]:
         lot.update(amount=None, price_consistent=False)

@@ -348,11 +348,12 @@ def render(block: dict | None) -> str:
             f"{block['not_listed']}, {ru(block['not_listed_area'], 1)} м²; в бронях — {block['booked']}, "
             f"{ru(block['booked_area'], 1)} м²; для объединения выделено квартир — "
             f"{block['regrouping_units']}, {ru(block['regrouping_area'], 1)} м². "
-            "Бронь и отсутствие на витрине не считаются продажей. "
-            f"Обычный остаток для оценки стоимости и срока включает свободные, невыведенные квартиры "
+            "Бронь и отсутствие на витрине не считаются продажей. ")
+    paragraphs = [text]
+    text = (f"Обычный остаток для оценки стоимости и срока включает свободные, невыведенные квартиры "
             f"и брони: {block['ordinary_units']} квартир, {ru(block['ordinary_area'], 1)} м². "
             f"Стоимость этой части остатка по текущим ценам — {value}. "
-            f"Цены подтверждены для {block['priced_units']} из {block['ordinary_units']} квартир "
+            f"Цена за м² и полная стоимость согласованы для {block['priced_units']} из {block['ordinary_units']} квартир "
             f"({ru(block['priced_area'], 1)} из {ru(block['ordinary_area'], 1)} м²). ")
     if block["price_unconfirmed"] and block["priced_value"] is not None:
         text += f"Стоимость только оценённой части — {ru(block['priced_value']/1e6, 1)} млн ₽. "
@@ -360,6 +361,8 @@ def render(block: dict | None) -> str:
         text += "Общая стоимость всего непроданного остатка не подтверждена. "
     if block["adjusted_signed"]:
         text += f"По договорам после снимка исключено квартир — {block['adjusted_signed']}, без повторного вычитания. "
+    paragraphs.append(text)
+    text = ""
     if not block["ordinary_units"]:
         text += "Обычного остатка для оценки срока нет; срок распродажи не рассчитан. "
     if block["months_to_sell"] is not None:
@@ -390,4 +393,6 @@ def render(block: dict | None) -> str:
         text += (f" Не распознаны статусы {block['unknown_status']} квартир "
                  f"({ru(block['unknown_status_area'], 1)} м²); полный непроданный остаток неизвестен, "
                  "выше показана только известная часть.")
-    return "<section class='chessboard-overlay'><h3>Остаток по шахматке и темп продаж</h3><p>" + html.escape(text) + "</p></section>"
+    paragraphs.append(text)
+    return ("<section class='chessboard-overlay'><h3>Остаток по шахматке и темп продаж</h3>"
+            + "".join("<p>" + html.escape(part) + "</p>" for part in paragraphs) + "</section>")
