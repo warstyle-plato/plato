@@ -4948,7 +4948,7 @@ def _sales_depth_html(block: dict[str, Any], kind: str) -> str:
              _pct(item["amount"] / total)] for item in payments]))
     pool = block.get("pool") or {}
     if pool.get("products"):
-        out.append("<h3>Остаток нераспроданного</h3>")
+        out.append("<h3>Остаток по квартирографии или плану финмодели</h3>")
         out.append(_table(["Тип", "Продано лотов", "Всего лотов", "Продано м²", "Всего м²",
                            "Осталось м²"], [
             [esc(p["product"]), f"{p['sold_units']:.0f}",
@@ -4957,7 +4957,7 @@ def _sales_depth_html(block: dict[str, Any], kind: str) -> str:
              _area(max(0.0, p["pool_area"] - p["sold_area"])) if p["pool_area"] else "—"]
             for p in pool["products"]]))
     elif block.get("state") == "ok":
-        out.append("<p class='note'>Остаток нераспроданного не посчитан: в отчёте о продажах "
+        out.append("<p class='note'>Сверка остатка с квартирографией и планом не выполнена: в отчёте о продажах "
                    "нет квартирографии или плана финмодели по объёмам.</p>")
     return "\n".join(out)
 
