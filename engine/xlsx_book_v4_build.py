@@ -2674,6 +2674,7 @@ class WorkbookExportRequest(BaseModel):
     rates: list[dict[str, Any]] = []
     phasing: dict[str, Any] = {}
     project_name: str = ""
+    export_name: str = ""
     scenario: str = "base"
     # Книга пересчитывает модель — за входом и правом на участок.
     session: str = ""
@@ -2704,6 +2705,12 @@ def report_workbook(req: WorkbookExportRequest) -> Response:
         # Молча пропущенное поле — потерянные данные: доносим в журнал.
         _TELEGRAM_RUNTIME["last_error"] = workbook_label(meta) + ", без соответствия: " + "; ".join(
             str(item) for item in meta["missing"][:6])
+    if req.export_name:
+        # Filename metadata belongs to this request, never to workbook inputs/titles.
+        kind = ("гостиница" if meta.get("hotel_book") else
+                "нежилой_офис" if meta.get("office_book") else
+                "нежилой" if meta.get("nonres_book") else "модель")
+        filename = _project_export_filename(kind, req.export_name, "xlsx")
     encoded_name = urllib.parse.quote(filename)
     return Response(
         content=content,
