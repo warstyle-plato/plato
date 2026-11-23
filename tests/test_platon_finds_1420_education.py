@@ -55,7 +55,14 @@ def test_only_the_public_registry_and_excerpt_ship_not_runtime_state():
              if s.strip() and not s.startswith("#")]
     assert _docker_keeps("data/normatives/registry.json", rules)
     assert _docker_keeps("docs/normative/mo_1420_education.md", rules)
-    for name in ("data/normatives/check_state.json", "data/runtime.db", ".env",
+    # Это имена для pure Docker-matcher, а не чтение скрытого состояния.
+    # Берём объявленные runtime-файлы из .gitignore: проверка покрывает и
+    # новые служебные файлы, не завися от их наличия на машине.
+    runtime_names = [line.strip() for line in (root / ".gitignore").read_text().splitlines()
+                     if line.strip().startswith("data/normatives/")]
+    assert {"check_state.json", "check_state.json.tmp"} <= {
+        Path(name).name for name in runtime_names}
+    for name in (*runtime_names, "data/runtime.db", ".env",
                  "docs/normative/mo_rngp_chain/raw.ocr.txt"):
         assert not _docker_keeps(name, rules), name
 
