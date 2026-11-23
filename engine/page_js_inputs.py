@@ -1986,6 +1986,8 @@ function renderInputs(){
      // остальные, — отсюда берут подпись и единицу окно классов и строка
      // отклонений в отчёте; здесь оно только не рисуется. Выход ДО создания
      // узла: наполовину нарисованное поле оставило бы в сетке пустую клетку.
+     // Nonresidential ownership is edited beside the contract rent terms.
+     if(id==='land_right'&&withoutHousing())return;
      if(notOnInputs(id)||strategyHides(id))return;
      const own=moved.has(id)?null:fieldSection(id);
      if(own&&own!==section){
