@@ -169,7 +169,12 @@ def _provision_entries() -> list[dict[str, str]]:
             if not isinstance(item, dict):
                 continue
             title = f"{row.get('short_name') or row.get('id')}: {item.get('subject')}, {item.get('point')}"
-            body = (f"{title}\n{row.get('title', '')}\n{item.get('text')}\n"
+            body = (f"{title}\n{row.get('title', '')}\n"
+                    f"Источник: {row.get('source_url', '')} ({row.get('source_label', '')}).\n"
+                    f"Редакция проверена на {row.get('current_as_of', 'не указано')}; "
+                    f"статус подтверждения: {row.get('status', 'не указан')}; "
+                    f"дата действия: {row.get('effective_from') or 'не подтверждена'}.\n"
+                    f"{row.get('provisions_use', '')}\n{item.get('text')}\n"
                     f"Род: {item.get('kind')}. Цитата: «{item.get('quote')}»")
             found.append({"source": "normative", "title": title, "text": body})
     return found
