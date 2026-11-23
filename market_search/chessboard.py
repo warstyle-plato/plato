@@ -13,7 +13,17 @@ PRICE_GAP = 0.15
 _BUILDING = re.compile(r"(?:корп(?:ус)?\.?\s*(\d+)|(\d+)\s*корпус)", re.I)
 _UNIT = re.compile(r"кв(?:артира)?\.?\s*№?\s*(\d+)", re.I)
 _STATUSES = {"продано": "sold", "свободно": "available",
-             "не для продажи": "unavailable", "проектирование": "regrouping"}
+             "не для продажи": "not_listed", "проектирование": "regrouping"}
+_ORDINARY = ("available", "not_listed", "booked")
+_UNSOLD = (*_ORDINARY, "regrouping")
+
+
+def stock_status(lot: dict) -> str:
+    """Старые импорты называли невыведенные квартиры unavailable; их не меняем."""
+    state = lot.get("status")
+    if state == "unavailable":
+        return "not_listed"
+    return state if state in (*_UNSOLD, "sold") else "unknown"
 
 
 def number(value: Any) -> float | None:
@@ -190,7 +200,7 @@ def questions(snapshot: dict | None, contracts: list[dict], report_text: str, to
                           f"({ru(expected)} ₽/м²) на {ru(-gap*100, 1)}%. Подскажите, почему?"})
     for booking in salesroom.booked_lots(report_text) or []:
         lot = match(inventory, booking["apartment"], area=booking.get("area"))
-        if lot and lot["status"] in ("sold", "unavailable", "regrouping"):
+        if lot and stock_status(lot) in ("sold", "regrouping"):
             found.append({"key": f"chess-status:{lot['key']}", "kind": "chess_status",
                           "text": f"Корпус {lot['building']}, квартира № {lot['unit']}: в отчёте она "
                           f"в бронях, а в шахматке на {lot['as_of']} — «{lot['status_raw']}». "
@@ -259,7 +269,6 @@ def overlay(snapshot: dict | None, contracts: list[dict] | None, today: str,
     if not inventory:
         return {"state": "missing", "reason": "Нет шахматки с подтверждённой датой на этот срез."}
     counts = Counter(x["status"] for x in inventory)
-    available = [x for x in inventory if x["status"] == "available"]
     # Подписанный после снимка договор уменьшает остаток, но не становится
     # второй продажей и не меняет сам источник.
     signed = set()
@@ -272,29 +281,57 @@ def overlay(snapshot: dict | None, contracts: list[dict] | None, today: str,
         lot = match(inventory, hit.group(1), building(row.get("unit")), row.get("area"))
         if lot and day(row["signed"]) >= day(lot["as_of"]):
             signed.add(lot["key"])
-    available = [x for x in available if x["key"] not in signed]
-    known = [x for x in available if x["price_consistent"]]
+    remaining = {state: [x for x in inventory if stock_status(x) == state
+                         and x["key"] not in signed] for state in _UNSOLD}
+    available = remaining["available"]
+    unsold = [x for group in remaining.values() for x in group]
+    # Бронь не является продажей; невыведенные квартиры также остаются запасом.
+    # Проектирование сохраняем в физическом остатке, но не оцениваем будущие лоты.
+    ordinary = [x for state in _ORDINARY for x in remaining[state]]
+    known = [x for x in ordinary if x.get("price_consistent")
+             and number(x.get("amount")) is not None and number(x["amount"]) > 0]
+    unknown = [x for x in inventory if stock_status(x) == "unknown" and x["key"] not in signed]
+    breakdown = {state: {"units": len(group), "area": sum(x["area"] for x in group)}
+                 for state, group in remaining.items()}
     corps = {x["building"] for x in inventory}
     pace = _pace(contracts, corps, today, coverage)
-    area_left = sum(x["area"] for x in available)
+    area_left = sum(x["area"] for x in ordinary)
+    release_unknown = bool(remaining["not_listed"])
     confirmed = (area_left / pace["pace_area"]
-                 if pace["pace_area"] is not None and pace["pace_area"] > 0 else None)
-    conditional = (area_left / pace["pace_observed_area"]
-                   if pace["pace_state"] == "partial" and pace["pace_observed_area"]
-                   and pace["pace_observed_area"] > 0 else None)
+                 if area_left > 0 and not release_unknown and not unknown and pace["pace_area"] is not None
+                 and pace["pace_area"] > 0 else None)
+    conditional_pace = (pace["pace_area"] if (release_unknown or unknown) and pace["pace_state"] == "ok"
+                        else pace["pace_observed_area"] if pace["pace_state"] == "partial" else None)
+    conditional = (area_left / conditional_pace
+                   if area_left > 0 and conditional_pace and conditional_pace > 0 else None)
+    valuation = sum(x["amount"] for x in known) if len(known) == len(ordinary) else None
     return {"state": "ok", "as_of": sorted({x["as_of"] for x in inventory}),
             "buildings": sorted(corps),
-            "counts": dict(counts), "available": len(available), "available_area": area_left,
-            "valuation": sum(x["amount"] for x in known) if len(known) == len(available) else None,
-            "price_unconfirmed": len(available) - len(known), **pace,
+            # counts — исходные статусы снимка, remaining_by_status — после договоров.
+            "counts": dict(counts), "remaining_by_status": breakdown,
+            "available": len(available), "available_area": breakdown["available"]["area"],
+            "not_listed": breakdown["not_listed"]["units"],
+            "not_listed_area": breakdown["not_listed"]["area"],
+            "known_unsold": len(unsold), "known_unsold_area": sum(x["area"] for x in unsold),
+            "unsold_complete": not unknown,
+            "ordinary_units": len(ordinary), "ordinary_area": area_left,
+            "valuation": valuation, "valuation_scope": "available+not_listed+booked",
+            "priced_units": len(known), "priced_area": sum(x["area"] for x in known),
+            "priced_value": sum(x["amount"] for x in known) if known else None,
+            "unsold_valuation": valuation if not remaining["regrouping"] and not unknown else None,
+            "price_unconfirmed": len(ordinary) - len(known), **pace,
+            "forecast_area": area_left, "forecast_scope": "available+not_listed+booked",
+            "release_dates_unknown": release_unknown,
             "months_to_sell": confirmed, "confirmed_months_to_sell": confirmed,
             "conditional_months_to_sell": conditional,
             "forecast_state": ("confirmed" if confirmed is not None else
                                "conditional" if conditional is not None else "unknown"),
-            "booked": counts["booked"], "regrouping_units": counts["regrouping"],
+            "booked": breakdown["booked"]["units"], "booked_area": breakdown["booked"]["area"],
+            "regrouping_units": breakdown["regrouping"]["units"],
+            "regrouping_area": breakdown["regrouping"]["area"],
             "regrouping_lots": None, "regrouping_value": None,
-            "unknown_status": counts["unknown"],
-            "adjusted_signed": len(signed & {x["key"] for x in inventory if x["status"] == "available"})}
+            "unknown_status": len(unknown), "unknown_status_area": sum(x["area"] for x in unknown),
+            "adjusted_signed": len(signed & {x["key"] for x in inventory if stock_status(x) != "sold"})}
 
 
 def render(block: dict | None) -> str:
@@ -303,27 +340,54 @@ def render(block: dict | None) -> str:
     if block.get("state") != "ok":
         return "<p>" + html.escape(block.get("reason") or "Шахматка не подтверждена.") + "</p>"
     value = (f"{ru(block['valuation']/1e6, 1)} млн ₽" if block["valuation"] is not None
-             else "не подтверждена: есть несогласованные цены")
+             else "не подтверждена: есть отсутствующие или несогласованные цены")
     text = (f"По загруженным корпусам {', '.join(block['buildings'])}, по шахматке на "
-            f"{', '.join(block['as_of'])}, свободно квартир — {block['available']}, "
-            f"площадь — {ru(block['available_area'], 1)} м². Стоимость остатка — {value}. "
-            f"В бронях — {block['booked']}; бронь не считается продажей. ")
+            f"{', '.join(block['as_of'])}, известный непроданный остаток — {block['known_unsold']} квартир, "
+            f"{ru(block['known_unsold_area'], 1)} м². В том числе свободно квартир — {block['available']}, "
+            f"{ru(block['available_area'], 1)} м²; не выведены на витрину («не для продажи») — "
+            f"{block['not_listed']}, {ru(block['not_listed_area'], 1)} м²; в бронях — {block['booked']}, "
+            f"{ru(block['booked_area'], 1)} м²; для объединения выделено квартир — "
+            f"{block['regrouping_units']}, {ru(block['regrouping_area'], 1)} м². "
+            "Бронь и отсутствие на витрине не считаются продажей. "
+            f"Обычный остаток для оценки стоимости и срока включает свободные, невыведенные квартиры "
+            f"и брони: {block['ordinary_units']} квартир, {ru(block['ordinary_area'], 1)} м². "
+            f"Стоимость этой части остатка по текущим ценам — {value}. "
+            f"Цены подтверждены для {block['priced_units']} из {block['ordinary_units']} квартир "
+            f"({ru(block['priced_area'], 1)} из {ru(block['ordinary_area'], 1)} м²). ")
+    if block["price_unconfirmed"] and block["priced_value"] is not None:
+        text += f"Стоимость только оценённой части — {ru(block['priced_value']/1e6, 1)} млн ₽. "
+    if block["unsold_valuation"] is None:
+        text += "Общая стоимость всего непроданного остатка не подтверждена. "
+    if block["adjusted_signed"]:
+        text += f"По договорам после снимка исключено квартир — {block['adjusted_signed']}, без повторного вычитания. "
+    if not block["ordinary_units"]:
+        text += "Обычного остатка для оценки срока нет; срок распродажи не рассчитан. "
     if block["months_to_sell"] is not None:
         text += (f"При среднем темпе {ru(block['pace_area'], 1)} м² в месяц за три завершённых месяца "
-                 f"остаток соответствует {ru(block['months_to_sell'], 1)} месяца продаж. ")
-    elif block.get("pace_state") == "ok":
+                 f"обычный остаток соответствует {ru(block['months_to_sell'], 1)} месяца продаж. ")
+    elif block.get("pace_state") == "ok" and not block.get("pace_area"):
         text += "За три завершённых месяца с подтверждённым покрытием источника нет положительного темпа продаж; срок распродажи не рассчитан. "
-    else:
+    elif block.get("pace_state") != "ok":
         text += (block.get("pace_reason") or "Темп продаж не подтверждён; срок распродажи не рассчитан.") + " "
         if block.get("pace_observed_area") is not None:
             text += (f"Только по найденным договорам — {ru(block['pace_observed_area'], 1)} м² в месяц; "
                      "это частичное наблюдение, не подтверждённый темп всего периода. ")
-        if block.get("conditional_months_to_sell") is not None:
-            text += (f"Условная оценка — {ru(block['conditional_months_to_sell'], 1)} месяца "
-                     "при сохранении темпа по загруженным договорам; полнота периода не подтверждена. ")
-    text += (f"Для объединения выделено квартир — {block['regrouping_units']}. Состав новых лотов, "
-             "их цены и сроки выхода пока не заданы: в обычный прогноз они не включены. "
-             "Это оценка свободного остатка по текущим ценам, а не график поступлений на эскроу.")
+    if block.get("conditional_months_to_sell") is not None:
+        text += (f"Условная оценка обычного остатка — {ru(block['conditional_months_to_sell'], 1)} месяца ")
+        if block.get("pace_state") == "ok":
+            text += f"при среднем темпе {ru(block['pace_area'], 1)} м² в месяц за три завершённых месяца. "
+        else:
+            text += "при сохранении темпа по загруженным договорам; полнота периода не подтверждена. "
+        if block["unknown_status"]:
+            text += "Оценка относится только к известной части обычного остатка; полный срок распродажи неизвестен. "
+    if block["release_dates_unknown"]:
+        text += ("Сроки выхода невыведенных квартир неизвестны; оценка предполагает их доступность "
+                 "для продаж и не подтверждает дату распродажи. ")
+    text += ("Квартиры для объединения учтены в непроданном остатке. Состав новых лотов, "
+             "их цены и сроки выхода пока не заданы: в обычный прогноз и оценку стоимости они не включены. "
+             "Оценка стоимости не является графиком поступлений на эскроу.")
     if block["unknown_status"]:
-        text += f" Не распознаны статусы {block['unknown_status']} квартир; они исключены из остатка."
+        text += (f" Не распознаны статусы {block['unknown_status']} квартир "
+                 f"({ru(block['unknown_status_area'], 1)} м²); полный непроданный остаток неизвестен, "
+                 "выше показана только известная часть.")
     return "<section class='chessboard-overlay'><h3>Остаток по шахматке и темп продаж</h3><p>" + html.escape(text) + "</p></section>"

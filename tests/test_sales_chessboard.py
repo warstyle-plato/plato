@@ -122,16 +122,18 @@ def test_booking_on_sold_flat_is_asked_without_a_contract_export():
                                          snapshot=snapshot(), report_text=text)
 
 
-def test_forecast_separates_bookings_and_regrouping_and_counts_only_free_stock():
+def test_forecast_includes_bookings_but_keeps_regrouping_out_of_ordinary_stock():
     rows = [contract(unit=99, amount=5_000_000, signed="2026-08-15", area=60)]
     out = chessboard.overlay(snapshot(), rows, "2026-11-03",
                              {"from": "2026-08-01", "through": "2026-10-31"})
     assert out["available"] == 1 and out["available_area"] == 40
-    assert out["valuation"] == 4_000_000
+    assert out["valuation"] == 9_000_000
+    assert out["known_unsold"] == 3 and out["known_unsold_area"] == 150
+    assert out["ordinary_units"] == 2 and out["ordinary_area"] == 90
     assert out["booked"] == 1
     assert out["regrouping_units"] == 1 and out["regrouping_lots"] is None
     assert out["regrouping_value"] is None
-    assert out["pace_area"] == 20 and out["months_to_sell"] == 2
+    assert out["pace_area"] == 20 and out["months_to_sell"] == 4.5
     assert out["pace_months"] == ["2026-08", "2026-09", "2026-10"]
     other_corpus = dict(rows[0], unit="корп 2 кв.99", area=600)
     assert chessboard.overlay(snapshot(), rows + [other_corpus], "2026-11-03",
@@ -154,10 +156,14 @@ def test_overlay_reaches_report_with_the_same_numbers(tmp_path):
     from test_management_report_model import _contract
 
     rows = [_contract("2026-08-15", "Квартира", 60, 5_000_000)]
-    sales_store.save(tmp_path, "Проба", {"contracting": {"rows": rows}, "chessboard": snapshot()}, "book.xlsx")
+    source = snapshot()
+    source["buildings"]["1"]["lots"][0].update(status="not_listed", status_raw="Не для продажи")
+    sales_store.save(tmp_path, "Проба", {"contracting": {"rows": rows}, "chessboard": source}, "book.xlsx")
     result = report.sales("Проба", "month", "2026-11-03", tmp_path)
-    expected = chessboard.overlay(snapshot(), rows, "2026-11-03")
+    expected = chessboard.overlay(source, rows, "2026-11-03")
     assert result["chessboard"] == expected
+    assert expected["available"] == 0 and expected["not_listed"] == 1
+    assert expected["known_unsold"] == 3 and expected["known_unsold_area"] == 150
     body = report._sales_depth_html(result, "month")
     assert chessboard.render(expected) in body
 
@@ -327,7 +333,7 @@ def test_missing_export_unknown_coverage_and_confirmed_zero_are_different():
     assert partial["pace_state"] == "partial" and partial["pace_area"] is None
     assert partial["pace_observed_area"] == 10 and partial["months_to_sell"] is None
     assert partial["confirmed_months_to_sell"] is None
-    assert partial["conditional_months_to_sell"] == 4 and partial["forecast_state"] == "conditional"
+    assert partial["conditional_months_to_sell"] == 9 and partial["forecast_state"] == "conditional"
     assert "при сохранении темпа по загруженным договорам; полнота периода не подтверждена" in chessboard.render(partial)
     assert "Только по найденным договорам" in chessboard.render(partial)
     old = chessboard.overlay(snapshot(), [], "2026-11-03", {"from": "2026-08-01", "through": "2026-09-30"})
