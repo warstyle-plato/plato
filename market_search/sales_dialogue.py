@@ -66,7 +66,8 @@ def prepare(data_dir: Path, project: str, chat_id: int, items: list[dict[str, An
     data["batches"][batch_id] = {
         "chat_id": chat_id, "asked_at": today, "message_id": 0,
         "text": html.unescape(sales_questions.message(items)),
-        "questions": [{"key": item["key"], "kind": item["kind"], "text": item["text"]}
+        "questions": [{"key": item["key"], "kind": item["kind"], "text": item["text"],
+                       **{key: item[key] for key in ("subject", "baseline", "expected_event") if key in item}}
                       for item in items], "replies": [],
     }
     _save(data_dir, project, data)

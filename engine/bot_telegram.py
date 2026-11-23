@@ -3539,9 +3539,21 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
                        else "ответ Платону не сохранён: сообщение вопроса не найдено")
             if result.get("reply_saved") and result.get("reply_unattributed"):
                 outcome += " без привязки к проекту: исторический вопрос"
+            if result.get("followup_error"):
+                outcome += "; отложенный контроль не подготовлен: " + str(result["followup_error"])
             _telegram_group_seen(chat, outcome)
         except Exception as exc:
             _telegram_group_seen(chat, "ответ Платону не сохранён: " + str(exc)[:80])
+        return
+    from market_search import sales_followups, salesroom
+    if (not original and not (message.get("from") or {}).get("is_bot") and sales_followups.looks_like_answer(text)
+            and not salesroom.is_sales_report(text)):
+        try:
+            result = _sales_chat_store(chat, message, text, taken_at, action="candidate")
+            _telegram_group_seen(chat, "приглашение ответить через Reply подготовлено; обычное сообщение не связано с вопросами"
+                                 if result.get("candidate") else "нет однозначной связи сообщения с вопросами Платона")
+        except Exception:
+            _telegram_group_seen(chat, "связь сообщения с вопросами не установлена")
         return
     if not parsed or not parsed.get("contractors"):
         from market_search import salesroom
