@@ -1038,7 +1038,39 @@ function appendCumulativeFileGroups(host,files){const labels={parsed:'Прочи
 function renderCumulativeFailure(files){const host=$('cumulativeFailureProtocol');host.replaceChildren();const title=document.createElement('p');title.className='bad';title.textContent='Архив не сохранён. Предыдущие снимки остаются в расчёте.';host.append(title);appendCumulativeFileGroups(host,files)}
 function resetCumulativeUpload(){cumulativeEpoch++;contractRequest++;historyRequest++;$('cumulativeFailureProtocol').replaceChildren();msg('cumulativeMsg','');$('cumulativeUpload').disabled=false}
 function renderCumulativeProtocol(snapshot){const host=$('cumulativeProtocol');host.replaceChildren();const title=document.createElement('p');title.textContent=`Сохранён снимок от ${dt(snapshot.taken_at)}${snapshot.filename?' · '+snapshot.filename:''}.`;host.append(title);appendCumulativeFileGroups(host,snapshot.files||[]);if((snapshot.warnings||[]).length){const list=document.createElement('ul');list.className='contract-warning';for(const w of snapshot.warnings){const li=document.createElement('li');li.textContent=warningText(w);list.append(li)}host.append(list)}if((snapshot.issues||[]).length){const box=document.createElement('details'),summary=document.createElement('summary');summary.textContent='Требуют проверки: '+(snapshot.issues_count??snapshot.issues.length);box.append(summary);const list=document.createElement('ul');for(const issue of snapshot.issues){const li=document.createElement('li');li.textContent=[issue.filename||'',issue.sheet?'лист «'+issue.sheet+'»':'',issue.row?'строка '+issue.row:'',warningText(issue)].filter(Boolean).join(' · ');list.append(li)}box.append(list);if(snapshot.issues_overflow_count){const more=document.createElement('p');more.textContent='Показаны первые '+snapshot.issues.length+' замечаний; ещё '+snapshot.issues_overflow_count+' требуют проверки.';box.append(more)}host.append(box)}}
-async function loadCumulativeHistory(){const c=cumulativeContext(),n=++historyRequest;if(!c.project||!hasAuth())return;try{const d=await post('/monitor/cumulative/list',{project:c.project,cut:c.cut},{timeout:15000});if(!sameCumulativeContext(c)||n!==historyRequest)return;const host=$('cumulativeHistory');host.replaceChildren();if(!(d.snapshots||[]).length)return;const title=document.createElement('b');title.textContent='Сохранённые снимки';host.append(title);for(const snap of d.snapshots){const line=document.createElement('div');line.textContent=`${dt(snap.taken_at)} · ${snap.filename||'Архив'}${snap.files_count!=null?' · файлов '+snap.files_count:''}`;host.append(line)}}catch(e){if(sameCumulativeContext(c)&&n===historyRequest)$('cumulativeHistory').textContent='Список снимков не загрузился: '+e.message}}
+function invalidateCumulativeSnapshotView(){
+  clearCumulativeData();currentView=null;
+  for(const id of ['dashCard','ganttCard','summaryCard','scenarioCard','doubtsCard'])$(id)?.classList.add('hidden');
+}
+async function changeCumulativeSnapshot(snap,revision,c,restore){
+  if(!sameCumulativeContext(c))return;
+  const question=restore?`Восстановить архив «${snap.filename||'Архив'}» от ${dt(snap.taken_at)} в проекте «${c.project}»? Он снова будет участвовать в расчётах.`:`Удалить архив «${snap.filename||'Архив'}» от ${dt(snap.taken_at)} из расчётов проекта «${c.project}»? Исходные файлы и история сохранятся; архив можно будет восстановить.`;
+  if(!window.confirm(question)||!sameCumulativeContext(c))return;
+  const buttons=$('cumulativeHistory').querySelectorAll('button');for(const button of buttons)button.disabled=true;
+  try{
+    msg('cumulativeMsg',restore?'Восстанавливаю архив…':'Удаляю архив из расчётов…','warn');
+    await post('/monitor/cumulative/remove',{project:c.project,snapshot_id:snap.snapshot_id,expected_revision:revision,restore},{timeout:15000});
+    if(!sameCumulativeContext(c))return;
+    invalidateCumulativeSnapshotView();
+    msg('cumulativeMsg',restore?'Архив восстановлен. Обновляю расчёт по действующим снимкам.':'Архив удалён из расчётов. Файлы сохранены в истории; обновляю данные проекта.','good');
+    await loadCumulativeHistory();await refresh();
+  }catch(e){if(sameCumulativeContext(c)){invalidateCumulativeSnapshotView();msg('cumulativeMsg',e instanceof TypeError||e.name==='AbortError'?'Связь прервалась. Проверьте состояние архива в списке перед повторным действием.':e.message,'bad');await loadCumulativeHistory()}}
+}
+async function loadCumulativeHistory(){
+  const c=cumulativeContext(),n=++historyRequest;if(!c.project||!hasAuth())return;
+  try{
+    const d=await post('/monitor/cumulative/list',{project:c.project,cut:c.cut},{timeout:15000});
+    if(!sameCumulativeContext(c)||n!==historyRequest)return;
+    const host=$('cumulativeHistory');host.replaceChildren();if(!(d.snapshots||[]).length)return;
+    const title=document.createElement('b');title.textContent='Сохранённые снимки';host.append(title);
+    for(const snap of d.snapshots){
+      const line=document.createElement('div');line.style.marginTop='8px';line.style.overflowWrap='anywhere';
+      const label=document.createElement('span');label.textContent=`${dt(snap.taken_at)} · ${snap.filename||'Архив'}${snap.files_count!=null?' · файлов '+snap.files_count:''}${snap.removed?' · удалён из расчётов':''}`;line.append(label);
+      if(d.revision){const button=document.createElement('button');button.type='button';button.className='btn';button.textContent=snap.removed?'Восстановить':'Удалить';button.style.marginLeft='8px';button.onclick=()=>changeCumulativeSnapshot(snap,d.revision,c,!!snap.removed);line.append(button)}
+      host.append(line);
+    }
+  }catch(e){if(sameCumulativeContext(c)&&n===historyRequest)$('cumulativeHistory').textContent='Список снимков не загрузился: '+e.message}
+}
 function cumulativeContractsText(c){if(!c)return '';if(c.error)return 'Список договоров не собран: '+c.error+' ';return 'В новом архиве представлены договоры: '+c.contracts_in_archive+'. '+(c.contracts_carried?'Прежние подробные КС сохранены для договоров: '+c.contracts_carried+'. ':'')}
 $('cumulativeUpload').onclick=async()=>{const c=cumulativeContext(),file=$('cumulativeFile').files[0],date=$('cumulativeDate').value;if(!hasAuth())return requireLogin();if(!c.project)return msg('cumulativeMsg','Укажите проект вверху страницы.','bad');if(!file||!/\.zip$/i.test(file.name))return msg('cumulativeMsg','Выберите ZIP-архив накопительных ведомостей.','bad');if(file.size>20*1024*1024)return msg('cumulativeMsg','Архив должен быть не больше 20 МБ.','bad');if(!date)return msg('cumulativeMsg','Укажите дату архива.','bad');$('cumulativeUpload').disabled=true;msg('cumulativeMsg','Передаю архив…','warn');try{const data=await b64(file);if(!sameCumulativeContext(c))return;const d=await cumulativeJob('/monitor/cumulative/upload','/monitor/cumulative/result',{project:c.project,taken_at:date,filename:file.name,content_base64:data},()=>sameCumulativeContext(c),t=>msg('cumulativeMsg',t,'warn'));if(!d||!sameCumulativeContext(c))return;$('cumulativeFailureProtocol').replaceChildren();renderCumulativeProtocol(d.snapshot||{});msg('cumulativeMsg','Архив обработан. '+cumulativeContractsText(d.contracts)+'Проценты ГПР не изменены.','good');await loadCumulativeHistory();await loadPhysicalSchedule()}catch(e){if(sameCumulativeContext(c)){if(e.files?.length)renderCumulativeFailure(e.files);msg('cumulativeMsg',cumulativeError(e,true),'bad');await loadCumulativeHistory()}}finally{if(sameCumulativeContext(c))$('cumulativeUpload').disabled=false}};
 

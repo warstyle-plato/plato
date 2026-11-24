@@ -240,8 +240,12 @@ def route(tmp_path, monkeypatch):
     root = tmp_path / ".cumulative_jobs"
     root.mkdir()
     profile = "monitor-cumulative-v1:contracts"
+    import developaid_monitor as monitor
+    import developaid_monitor_ledgers as ledgers
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
     metadata = dict(ticket=TICKET, owner=jobs.owner_binding(KEY, SESSION, profile), profile=profile,
-                    request="synthetic", created=time.time(), state="done")
+                    request="synthetic", created=time.time(), state="done",
+                    context=ledgers.snapshot_job_context(PROJECT))
     (root / (TICKET + ".json")).write_text(json.dumps(metadata))
     (root / (TICKET + ".result")).write_text(json.dumps(cached))
     values = dict(key=KEY, session=SESSION, project=PROJECT, cut=CUT, contract_id=CONTRACT,
