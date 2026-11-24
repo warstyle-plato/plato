@@ -8,6 +8,7 @@ import pytest
 
 import developaid_management_report_jobs as jobs
 import developaid_monitor as monitor
+import developaid_monitor_ledgers as ledgers
 import main as wrapper
 from test_monitor_keeps_every_snapshot import _baseline_book, _rss_book
 
@@ -134,7 +135,8 @@ def test_global_unbounded_builder_and_existing_tickets_are_not_reinterpreted(sou
     store = jobs.Store(monitor._SNAPSHOT_DIR/'.view_jobs')
     owner = jobs.owner_binding(KEY,SESSION,'admin')
     store.start(owner,'admin',{'project':PROJECT,'cut':CUT,'click':'a'*32},
-        lambda:{'snapshot':old_snapshot},'a'*32,result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES)
+        lambda:{'snapshot':old_snapshot},'a'*32,result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES,
+        context=ledgers.snapshot_job_context(PROJECT))
     assert terminal(client).json()['snapshot']==old_snapshot
     before = store._meta('a'*32)
     assert request(client,background=True).json()['snapshot']==old_snapshot

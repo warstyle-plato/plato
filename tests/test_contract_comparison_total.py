@@ -61,8 +61,8 @@ def test_full_scope_column_is_visible_in_the_real_page_and_selected_excel(width,
     with browser_page(width) as (page, _, errors):
         _browser_export(page, cached, CONTRACT, KEY, [])
         expect(page.locator('.contract-comparison thead th')).to_have_text([
-            'Работа / единица', 'Всего по договору', 'План на дату', 'Факт',
-            'Отклонение', 'Срок работы', 'Прогноз окончания'])
+            'Работа или поставка / единица', 'Всего по договору', 'План на дату', 'Факт',
+            'Отклонение', 'Срок строки', 'Прогноз окончания'])
         cell = lambda code: page.locator(f'tr[data-comparison-code="{code}"] [data-label="Всего по договору"]')
         expect(cell(natural['code'])).to_have_text('20 м3')
         expect(cell(money['code'])).to_have_text('1 000 ₽')
