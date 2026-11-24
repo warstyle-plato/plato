@@ -3123,6 +3123,13 @@ def _guide_sheet(book: _Book) -> None:
                       "и подробно — выбранная стратегия проекта. После ручной правки вводных сверка с прежним "
                       "расчётом движка покраснеет: для нового эталона заново выгрузите книгу."),
     )
+    if len({calendar.sheet_name for pair in book.rent_calendars.values()
+            for calendar in pair if calendar}) > 1:
+        guide = (*guide, (land_rent_book.SHEET,
+            "Общие условия аренды земли редактируются на листе «Аренда ЗУ». "
+            "Отдельные календари стратегий и расчёты для оценки здания скрыты, но продолжают "
+            "участвовать в формулах. Для проверки откройте их через правую кнопку на ярлыке "
+            "листа → «Отобразить»."))
     for r, (name, text) in enumerate(guide, start=4):
         ws.cell(r, 1, name).font = _fnt(b=True)
         ws.cell(r, 2, text).alignment = Alignment(wrap_text=True)
@@ -3764,6 +3771,12 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
             checks.append((section_of(path), label, paid.total(book.n, kind), expected / _MLN, False))
     _check_sheet(book, checks, missing)
     rental_sheets = [calendar.sheet_name for pair in book.rent_calendars.values() for calendar in pair if calendar]
+    # Contract inputs stay on the shared master; variant and valuation sheets
+    # remain available for audit through Excel's ordinary Unhide command.
+    for name in rental_sheets:
+        if name != land_rent_book.SHEET:
+            book.wb[name].sheet_state = "hidden"
+            book.wb[name].sheet_view.tabSelected = False
     if rent_ref:
         for name in [*dashboards, *reports]:
             for rental_sheet in rental_sheets or [land_rent_book.SHEET]:
