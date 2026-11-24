@@ -65,7 +65,7 @@ def test_partial_coverage_and_remaining_start_are_visible_next_to_the_measured_r
         assert 'Расчёт с 01.02.2026.' in html
         assert 'Периоды КС до этой даты учтены отдельно: 7.' in html
         assert 'Прогноз всего договора не определён.' in html
-        assert 'Прогноз работ в расчёте: 04.03.2026.' in html
+        assert 'Прогноз работ и поставок в расчёте: 04.03.2026.' in html
     assert result['unchanged']
 
 
