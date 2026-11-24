@@ -120,6 +120,27 @@ def test_native_page_names_full_value_and_keeps_visible_component_numbers_withou
     assert 'Поставка материалов: 100 %' in rendered['html'] and 'Поставка не подтверждает монтаж' in rendered['html']
 
 
+def test_fresh_unknown_card_never_falls_back_to_stale_known_register_metrics():
+    got=calculate([work('1',100,900)],[actual(installed=50,delivered=None)])
+    row={'amount':1000,'completed':None,'physical_items':[],
+         'schedule_control':{'readiness':0.95,'plan_done':0.95,'finish':'2026-03-09'}}
+    def render(source):
+        out,_=page_blocks.run('const row='+json.dumps(row)+';const card='+json.dumps({'control':got})+';',
+            'console.log(JSON.stringify(contractCardSummary(row,card)))',page=source)
+        return json.loads(out)
+    def check(html):
+        assert '95 %' not in html and '09.03.2026' not in html
+        assert 'Работы: 50 %' in html and 'Поставка материалов: Готовность неизвестна' in html
+        assert 'Не рассчитано' in html
+    check(render(page.MONITOR_PAGE))
+    broken=page.MONITOR_PAGE.replace(
+        'const total=d?.control?(d.control.total||{}):(r.schedule_control||{}),fc=d?.control?(d.control.forecast||{}):(r.schedule_control||{})',
+        'const total=d?.control?.total||r.schedule_control||{},fc=d?.control?.forecast||r.schedule_control||{}')
+    assert broken!=page.MONITOR_PAGE
+    with pytest.raises(AssertionError):
+        check(render(broken))
+
+
 def test_counterexample_old_work_only_aggregate_fails_the_full_value_assertion(monkeypatch):
     rows=[work('1',100,900),work('2',900,100)]
     native=control._materials
@@ -175,9 +196,12 @@ def test_old_method_ticket_is_immutable_but_cannot_readmit_or_replace_fresh_calc
     payload={'operation':operation,'click':'a'*32,'project':'Учебный','cut':'2026-03-10'}
     if operation=='documents':
         payload.update(contract_id='f'*64,view='raw',correction_id='',correction_guard='',logical_contract_id='')
+    import developaid_monitor_ledgers as ledgers
+    context=ledgers.snapshot_job_context('Учебный')
+    payload['source_context']=context
     old={'ok':True,'weights':'Готовность работ без материалов','legacy':True}
     store=jobs.Store(root/'monitor'/'.cumulative_jobs')
-    store.start(owner,purpose,payload,lambda:old,'a'*32)
+    store.start(owner,purpose,payload,lambda:old,'a'*32,context=context)
     response=poll(client,'a'*32)
     assert response.status_code==200 and response.json()['legacy']
     original=store._meta('a'*32)

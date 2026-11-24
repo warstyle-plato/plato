@@ -1302,7 +1302,7 @@ $('contractDialog').addEventListener('cancel',e=>{e.preventDefault();closeContra
 $('contractDialog').addEventListener('close',()=>{if(!$('contractDialog').open&&(contractDialogContext||$('contractsDetails').childNodes.length))closeContractDialog()});
 $('contractDialog').addEventListener('click',e=>{const d=$('contractDialog'),r=d.getBoundingClientRect();if(e.target===d&&(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom))closeContractDialog()});
 function contractCardSummary(r,d=null){
- const total=d?.control?.total||r.schedule_control||{},fc=d?.control?.forecast||r.schedule_control||{},p=d?.price,t=d?.terms,wholeUnknown=contractWholeForecastUnknown(fc);
+ const total=d?.control?(d.control.total||{}):(r.schedule_control||{}),fc=d?.control?(d.control.forecast||{}):(r.schedule_control||{}),p=d?.price,t=d?.terms,wholeUnknown=contractWholeForecastUnknown(fc);
  const price=p?.history?.length?p.amount:r.amount,manual=r.deadline_source?.label==='Указан вручную',deadline=manual?r.deadline:fc.from_register?fc.deadline:t?.history?.length?t.deadline:r.deadline;
  const pill=(label,value,caption='',dataLabel=label,action='',risk=false)=>'<section class="contract-card-pill" data-label="'+esc(dataLabel)+'"><div class="contract-card-pill-label">'+esc(label)+'</div><div class="contract-card-pill-value'+(risk?' risktext':'')+'">'+esc(value)+'</div>'+(caption?'<div class="contract-sub">'+esc(caption)+'</div>':'')+action+'</section>';
  const summaryMoney=r.source_kind==='closing_summary',executionSource={cumulative:'накопительная КС-6а'}[r.source_kind]||'источник не подтверждён';
