@@ -18,7 +18,6 @@ from browser import chromium_or_skip, serve, wait_for_result  # noqa: E402
 
 core = _wrapper.core
 PORT = 18833
-ASK = "Предварительный расчёт"
 LEASE = {"land_right": "lease", "vri_region": "msk", "land_rent_mode": "manual",
          "land_rent_cadastral_mln": 100, "land_rent_regime_start": "2027-01-01",
          "project_start": "2027-01-01", "land_rent_rates": [{"year": 1, "rate_pct": 1.5}],
@@ -39,7 +38,7 @@ def test_a_known_rent_sum_does_not_ask_to_clarify_the_rent():
     assert rent["financial_missing_codes"] == ["payments"], "стенд не про один лишь график оплаты"
     assert summary["preliminary"] and summary["preliminary_reason"]
     assert summary["land_rent_sum"] == {"known": True, "reason": ""}
-    assert core.entry_price_verdict(bundle)["title"] != ASK
+    assert core.entry_price_verdict(bundle) == core._entry_price_metric_verdict(bundle)
 
 
 def test_a_future_value_without_its_confirmed_date_keeps_the_rent_unknown():
@@ -49,7 +48,7 @@ def test_a_future_value_without_its_confirmed_date_keeps_the_rent_unknown():
     result = bundle["consolidated"]
     assert "cadastral_date" in result["land_rent"]["financial_missing_codes"]
     assert result["summary"]["land_rent_sum"]["known"] is False
-    assert core.entry_price_verdict(bundle)["title"] == ASK
+    assert core.entry_price_verdict(bundle) == core._entry_price_metric_verdict(bundle)
 
 
 @pytest.mark.parametrize("case, kw, reason", [
@@ -64,11 +63,11 @@ def test_a_future_value_without_its_confirmed_date_keeps_the_rent_unknown():
     # Земля в аренде, условия не заданы.
     ("нет условий", {"land_rent_mode": "unspecified"}, "Для арендуемой земли не заданы"),
 ])
-def test_a_rent_sum_that_is_not_determined_still_asks(case, kw, reason):
+def test_a_rent_sum_that_is_not_determined_keeps_its_reason_and_economic_verdict(case, kw, reason):
     bundle = _run(**kw)
     got = bundle["consolidated"]["summary"]["land_rent_sum"]
     assert got["known"] is False and got["reason"].startswith(reason), (case, got)
-    assert core.entry_price_verdict(bundle)["title"] == ASK, case
+    assert core.entry_price_verdict(bundle) == core._entry_price_metric_verdict(bundle), case
 
 
 def test_the_result_shows_the_rent_row_only_where_the_engine_says_it_applies():

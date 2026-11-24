@@ -68,7 +68,7 @@ def xlsx(cached, tokens=None, **kwargs):
 
 def table(raw):
     sheet = load_workbook(io.BytesIO(raw), data_only=False).active
-    header = next(i for i, row in enumerate(sheet.values, 1) if row[0] == "Работа / единица")
+    header = next(i for i, row in enumerate(sheet.values, 1) if row[0] == "Работа или поставка / единица")
     return sheet, header
 
 
@@ -159,7 +159,7 @@ def test_selection_only_uses_server_values_and_keeps_empty_filter_explicit():
     sheet, header = table(xlsx(cached, [cached["comparison_export"]["row_tokens"][1]], query="нулевым", filter="behind"))
     assert "нулевым" in sheet.cell(header + 1, 1).value and sheet.cell(header + 1, 4).value == 0
     sheet, header = table(xlsx(cached, [], query="нет такой работы"))
-    assert sheet.cell(header + 1, 1).value == "По выбранному фильтру работ нет."
+    assert sheet.cell(header + 1, 1).value == "По выбранному фильтру строк нет."
     meta, comparison, rows = export.select_snapshot(cached, PROJECT, CUT, CONTRACT,
         cached["comparison_export"]["revision"], list(reversed(cached["comparison_export"]["row_tokens"])))
     assert rows == comparison["lines"]  # Client order cannot reorder authoritative rows.

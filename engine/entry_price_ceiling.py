@@ -177,30 +177,20 @@ def _entry_price_weakest(bundle: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def entry_price_verdict(bundle: dict[str, Any]) -> dict[str, str]:
-    """Сумма аренды уже в модели — показываем результат с явной оговоркой.
+    """Экономическая целесообразность по рассчитанным показателям.
 
-    Неизвестную аренду нельзя принять за нулевые затраты. Известное начисление
-    тоже не означает, что договор, НДС и сроки оплаты уже подтверждены.
+    Аренда входит в затраты модели. Подтверждённость её условий показывается
+    отдельно и не заменяет экономический вердикт. Неоценённые обязательства
+    исходного документа сохраняют самостоятельную оговорку.
     """
     result = bundle.get("consolidated") or {}
     summary = result.get("summary") or {}
-    preliminary = bool(summary.get("preliminary"))
-    # Keep the canonical sum-state shared by the result row and all verdicts.
-    # A construction subtotal alone does not resolve post-RVE or VRI costs.
     document_qualification = summary.get('intake_qualification') or {}
     if document_qualification.get('reason'):
         return {'title': ('Предварительная экономика: есть неоценённые обязательства'
                           if document_qualification.get('status') == 'conditional'
                           else 'Предварительная экономика: перепроверьте условия документа'), 'tone':'edge'}
-    rent_sum = summary.get("land_rent_sum") or {}
-    if preliminary and not rent_sum.get("known"):
-        return {"title": "Предварительный расчёт", "tone": "edge"}
-    verdict = _entry_price_metric_verdict(bundle)
-    if preliminary:
-        verdict["title"] = "Предварительно: " + verdict["title"][0].lower() + verdict["title"][1:]
-        if verdict["tone"] == "pass":
-            verdict["tone"] = "edge"
-    return verdict
+    return _entry_price_metric_verdict(bundle)
 
 
 def _entry_price_metric_verdict(bundle: dict[str, Any]) -> dict[str, str]:
