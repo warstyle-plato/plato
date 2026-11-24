@@ -72,7 +72,7 @@ def _label(record: dict) -> str:
     return f"акт КС-2 № {act.get('number') or 'без номера'} от {_shown(act.get('date'))} (файл «{record.get('filename') or ''}»)"
 
 
-def in_force(records: list[dict]) -> dict:
+def in_force(records: list[dict], cut: str = '') -> dict:
     """The acts in force and, for every other act of the same number, why it is not.
 
     Returns {"acts": [record, …], "replaced": {sha256: note}, "copies": {sha256: note},
@@ -83,7 +83,9 @@ def in_force(records: list[dict]) -> dict:
     uploaded = lambda r: (r.get("uploaded_at") or "", r.get("sha256") or "")
     groups: dict[str, list[dict]] = {}
     alone = []
-    for record in sorted((r for r in records if r.get("act")), key=uploaded):
+    eligible = [r for r in records if r.get('act') and
+                (not cut or not _day(r['act'])[0] or _day(r['act'])[0] <= cut)]
+    for record in sorted(eligible, key=uploaded):
         n = edition(record["act"])
         if n is None:
             alone.append(record)
@@ -137,9 +139,13 @@ def accumulated(records: list[dict], cut: str) -> dict:
     and different sections are never added together. A position without its number in the
     estimate is not added to the positions of other acts.
     """
-    chosen = in_force(records)
+    # Choose revisions inside the reporting cut: a later-period edition of
+    # the same act number must not erase the act that was valid earlier.
+    day_of = lambda record: _day(record.get('act') or {})[0]
+    chosen = in_force(records, cut)
+    future = in_force([r for r in records if cut and day_of(r) and day_of(r) > cut])
     positions: dict[tuple, dict] = {}
-    acts, excluded, evidence, later = [], [], [], 0
+    acts, excluded, evidence, later = [], [], [], len(future['acts'])
     for record in chosen["acts"]:
         act = record["act"]
         day, preliminary = _day(act)
@@ -157,9 +163,6 @@ def accumulated(records: list[dict], cut: str) -> dict:
         if not act.get("positions"):
             excluded.append({**row, "reason": "в акте не прочитаны позиции с объёмами: его объёмы в накопление "
                                               "не вошли"})
-            continue
-        if cut and day > cut:
-            later += 1
             continue
         acts.append(row)
         for p in act["positions"]:

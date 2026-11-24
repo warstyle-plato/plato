@@ -397,7 +397,7 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     folders = _folders(project, contract_id, acts)
     cut = cut or dt.date.today().isoformat()
     if not any(candidate.is_dir() for candidate in folders):
-        acts = act_dates.resolve(acts, [])
+        acts = act_dates.resolve(acts, [], cut)
         performed = acts_in_card.accumulated([], cut)
         return _with_control({"contract_id": contract_id, "documents": [], "removed": [],
                               "plan": plan.build([], cut), "fact": _fact([], None, acts, cut, performed),
@@ -406,7 +406,7 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     records = [r for r in every if not r.get("removed_at")]
     # An unconfirmed scan is listed with its proposal; the plan, the fact and the act dates do not see it.
     counted = [r for r in records if not awaits_confirmation(r)]
-    acts = act_dates.resolve(acts, counted)
+    acts = act_dates.resolve(acts, counted, cut)
     performed = acts_in_card.accumulated(counted, cut)
     performed['excluded'].extend({
         'number': r['act'].get('number'), 'date': r['act'].get('date'),

@@ -4,6 +4,7 @@ import copy
 import pytest
 
 import developaid_contract_acts as acts
+import developaid_contract_act_dates as act_dates
 import developaid_contract_fact as fact
 import developaid_contract_files as files
 import developaid_contract_control as control
@@ -93,6 +94,42 @@ def test_unknown_document_total_stays_unknown_while_known_subtotal_survives():
     records[1]['act']['total'] = None
     evidence = acts.accumulated(records, CUT)['evidence']
     assert evidence['total'] is None and evidence['known_total'] == 500 and evidence['count'] == 2
+
+
+def test_a_future_revision_and_its_copy_cannot_erase_the_act_on_an_earlier_cut():
+    earlier = _record('a', '1', '2026-01-31', [(*WALLS, 5, 500)])
+    later = _record('b', '1', '2026-02-28', [(*WALLS, 6, 600)])
+    duplicate = {**later, 'sha256': 'c'*64, 'uploaded_at': '2026-03-02'}
+    records = [earlier, later, duplicate]
+    old = acts.accumulated(records, '2026-01-31')
+    assert old['evidence']['total'] == 500 and old['positions'][0]['quantity'] == 5
+    assert old['replaced'] == {} and old['later'] == 1
+    current = acts.accumulated(records, '2026-02-28')
+    assert current['evidence']['total'] == 600 and current['positions'][0]['quantity'] == 6
+    assert 'a'*64 in current['replaced'] and current['later'] == 0
+
+
+def test_future_revisions_do_not_move_named_statement_periods_out_of_the_cut():
+    early = '2026-01-31'
+    row = {'physical_items': [{'position': '1', 'name': 'Монтаж', 'unit': 'м2', 'plan_quantity': 100,
+        'completed_quantity': None, 'reported_completed_quantity': 5, 'periods': [],
+        'undated_periods': [{'label': 'КС-2 № 1', 'quantity': 5, 'amount': 500}]}]}
+    records = [_record('a', '1', early, [('1', 'Монтаж', 'м2', 5, 500)]),
+               _record('b', '1', '2026-02-28', [('1', 'Монтаж', 'м2', 6, 600)])]
+    resolved = act_dates.resolve(fact.acts(row), records, early)
+    performed = acts.accumulated(records, early)
+    got = fact.build([EDITION], EDITION['sha256'], resolved, early, performed)
+    assert resolved['act_dates'][0]['end'] == early
+    assert got['source'] == 'ks6a' and got['total'] == 500
+    assert performed['evidence']['total'] == 500
+
+
+def test_future_summary_dates_cannot_change_an_earlier_named_statement_period():
+    from tests.test_contract_fact_dates_ks6_periods_by_acts import _work, _period, _row
+    row = _row(_work('1.1', 'Стены', _period('КС-2 № 1', 5, 500)),
+               summary=[('1', '2026-01-31', 500), ('1', '2026-02-28', 600)])
+    resolved = act_dates.resolve(fact.acts(row), [], '2026-01-31')
+    assert resolved['act_dates'][0]['end'] == '2026-01-31'
 
 
 def test_undated_and_future_only_acts_cannot_create_zero_fact():
