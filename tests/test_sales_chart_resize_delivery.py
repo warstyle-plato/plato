@@ -178,9 +178,13 @@ def test_reset_cancels_pending_native_frame_and_late_callback_cannot_take_new_mo
     after = page.evaluate("""reset=>{
       const id=typeof salesChartFrame==='object'?salesChartFrame.id:salesChartFrame;
       window.__oldResetFrame=window.__resetFrames.find(e=>e.id===id);
-      const original=isTelegramWebApp;let left;
+      const original=isTelegramWebApp,refresh=refreshCurrentKeyRate;let left;
+      // Observe the real reset's rate refresh without changing its response or
+      // calculation. It launches calculate() asynchronously after reset returns.
+      window.__resetRateDone=null;
+      refreshCurrentKeyRate=(...args)=>{const done=refresh(...args);window.__resetRateDone=done;return done};
       try{if(reset==='resetProject')isTelegramWebApp=()=>true;left=window[reset]();}
-      finally{isTelegramWebApp=original;}
+      finally{isTelegramWebApp=original;refreshCurrentKeyRate=refresh;}
       const target=window.__resetTarget,extra=window.__resetExtra;
       return {left,frame:salesChartFrame,pending:salesChartPending.size,
         retained:salesChartModels.has(target)||salesChartModels.has(extra),
@@ -193,10 +197,14 @@ def test_reset_cancels_pending_native_frame_and_late_callback_cannot_take_new_mo
     assert after == {'left': [], 'frame': 0, 'pending': 0, 'retained': False,
                      'measured': False, 'tracked': 0, 'empty': True, 'oldModelAttribute': False,
                      'cancelled': True, 'gns': 0, 'units': 0}, after
+    # A new project starts after the reset's own real async work settles. A
+    # chart injected before this point can correctly be cleared by that work.
+    page.evaluate('()=>window.__resetRateDone')
+    page.wait_for_function('()=>calcIdle()', polling=10)
+    page.evaluate('()=>new Promise(resolve=>setTimeout(resolve,0))')
     page.evaluate("""()=>{
       const target=window.__resetTarget;
-      renderSalesPeriodChart(target,{rows:[{month:'2031-02',units:7}],
-        fields:[['units','Новый проект']],unit:'шт.',multiplier:1});
+      renderApartmentPaceChart({rows:[{month:'2031-02',units:7}]});
       target.style.width=(target.clientWidth+19)+'px';
     }""")
     page.wait_for_function("""()=>{
