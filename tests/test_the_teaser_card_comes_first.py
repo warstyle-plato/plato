@@ -227,6 +227,57 @@ def test_the_bot_carries_the_parcels_and_their_document_origin(monkeypatch) -> N
     assert delivered["overrides_review_required"] is False
 
 
+def test_a_later_manual_parcel_is_not_replaced_by_the_teaser(monkeypatch) -> None:
+    import page_blocks
+    card = _ready_owned_bot_card(monkeypatch, [NUMBER], "moscow")
+    overrides = teaser_card.calc_overrides(card)
+    prelude = (
+        "const telegramCalcOverrides=" + json.dumps(overrides) + ";\n"
+        "const INPUT_DEFAULT={},inputs={},tep={};\n"
+        "const field={value:''};const document={getElementById:()=>field};\n"
+        "function showCadastralOrigin(){} function syncTep(){}\n"
+        "function cloneValue(x){return JSON.parse(JSON.stringify(x))}\n"
+    )
+    stdout, _ = page_blocks.run(prelude, """
+        applyTelegramCalcOverrides.restoreParcel=true;
+        applyTelegramCalcOverrides();
+        const initial={query:inputs._cadastral_query,origin:inputs._cadastral_origin};
+        field.value='77:08:0010008:9999';
+        typeCadastralField(field.value);
+        applyTelegramCalcOverrides();
+        console.log(JSON.stringify({initial,query:inputs._cadastral_query,
+            field:field.value,origin:inputs._cadastral_origin}));
+    """)
+    state = json.loads(stdout)
+    assert state["initial"]["query"] == NUMBER
+    assert state["initial"]["origin"]["source"] == "document"
+    assert state["query"] == state["field"] == "77:08:0010008:9999"
+    assert state["origin"]["source"] == "manual"
+
+
+def test_edit_launch_keeps_the_saved_parcel() -> None:
+    import page_blocks
+    stdout, _ = page_blocks.run("""
+        const telegramSession='synthetic',telegramMode='edit',telegramCad='77:08:0010008:1049';
+        let telegramCalcOverrides={},telegramOverridesReviewRequired=false;
+        const inputs={_cadastral_query:'77:08:0010008:9999'},tep={},INPUT_DEFAULT={};
+        const window={};const document={getElementById:()=>null};
+        async function loadTelegramSessionData(){return {overrides_review_required:false,
+            calc_overrides:{_cadastral_query:telegramCad}}}
+        function renderInputs(){} function renderTep(){} function renderPhasing(){}
+        function syncProjectClassSelector(){} function syncProjectKindSelector(){}
+        function openTab(){} function telegramProgress(){} function setupTelegramEditSubmit(){}
+        async function calculate(){}
+    """, """
+        (async()=>{
+            await runTelegramLaunch();
+            console.log(JSON.stringify({query:inputs._cadastral_query,
+                restore:!!applyTelegramCalcOverrides.restoreParcel}));
+        })().catch(e=>{console.error(e);process.exit(1)});
+    """)
+    assert json.loads(stdout) == {"query": "77:08:0010008:9999", "restore": False}
+
+
 def test_the_parcel_rows_have_no_number_before_the_calculation(monkeypatch) -> None:
     _stub(monkeypatch)
     got = core.agent_document(core.AgentDocumentRequest(

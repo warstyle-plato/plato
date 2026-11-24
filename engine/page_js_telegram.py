@@ -202,6 +202,8 @@ async function initializeTelegramLaunch(){
   if(status)status.innerHTML='<span class="import-error">Расчёт из чата не прошёл: '+why+'</span>';
   const tg=window.Telegram&&window.Telegram.WebApp;
   if(tg&&tg.MainButton){try{tg.MainButton.enable();tg.MainButton.setText('Обновить расчёт в Telegram')}catch(err){}}
+ }finally{
+  applyTelegramCalcOverrides.restoreParcel=false;
  }
 }
 
@@ -269,6 +271,9 @@ async function runTelegramLaunch(){
   setupTelegramEditSubmit();
   return;
  }
+ // Номер карточки восстанавливается один раз при запуске. Последующее
+ // получение ТЭП по другому номеру — явная смена участка пользователем.
+ applyTelegramCalcOverrides.restoreParcel=true;
  if(telegramMode==='intake'){
   // «Всё верно, считать» из карточки тизера в чате. Расчёт — умолчания
   // движка, участок (если он в тизере) и поверх ровно строки карточки, без

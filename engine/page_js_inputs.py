@@ -1821,7 +1821,10 @@ function applyTelegramCalcOverrides(){
  });
  // ТЭП сбрасывает сведения прежней территории. Номера из подтверждённой
  // карточки возвращаются вместе с площадями, до расчёта и сохранения проекта.
- if(o._cadastral_query)writeCadastralField(o._cadastral_query,o._cadastral_origin);
+ if(applyTelegramCalcOverrides.restoreParcel){
+  applyTelegramCalcOverrides.restoreParcel=false;
+  if(o._cadastral_query)writeCadastralField(o._cadastral_query,o._cadastral_origin);
+ }
  // The server-authenticated qualification is model metadata, never a cash input.
  if(o._intake_qualification)inputs._intake_qualification=cloneValue(o._intake_qualification);
  if(o._tep_source_packet)inputs._tep_source_packet=cloneValue(o._tep_source_packet);
