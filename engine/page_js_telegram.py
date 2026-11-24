@@ -273,7 +273,7 @@ async function runTelegramLaunch(){
  }
  // Номер карточки восстанавливается один раз при запуске. Последующее
  // получение ТЭП по другому номеру — явная смена участка пользователем.
- applyTelegramCalcOverrides.restoreParcel=true;
+ if(telegramCalcOverrides._cadastral_query)applyTelegramCalcOverrides.restoreParcel=true;
  if(telegramMode==='intake'){
   // «Всё верно, считать» из карточки тизера в чате. Расчёт — умолчания
   // движка, участок (если он в тизере) и поверх ровно строки карточки, без
