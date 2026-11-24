@@ -120,7 +120,7 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         expect(more.locator('#contractCardSummary')).to_contain_text('Общая готовность в расчёте: 50 %')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('06.02.2026')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Не определён')
-        expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Прогноз работ в расчёте')
+        expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Прогноз работ и поставок в расчёте')
         expect(more.locator('#contractComparisonInfo')).to_contain_text('Не учтено периодов КС: 2')
         first=more.locator('[data-comparison-code="1.1"]')
         expect(first).to_contain_text('Отставание: 3 дня')
