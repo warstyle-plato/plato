@@ -1875,7 +1875,7 @@ def link_sales(project: str, sales_project: str, author: str,
     name = str(sales_project or "").strip()
     if name and name not in sales_projects(data_dir):
         raise ValueError(f"В отчёте о продажах нет проекта «{name}».")
-    record = {"sales_project": name, "by": author,
+    record = {"sales_project": name, "by": author, "revision": os.urandom(16).hex(),
               "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
     folder = monitor._project_dir(project)
     # Два воркера: запись через временный файл и замену, читатель видит

@@ -104,25 +104,38 @@ def _what(row: dict[str, Any]) -> str:
     return contracting.product_name(row.get("product") or "").lower() or "помещение"
 
 
+def money_key(row: dict[str, Any]) -> str:
+    return f"money:{row.get('contract') or row.get('unit')}:{_date(row.get('signed'))}"
+
+
 def _no_money(rows: list[dict[str, Any]], uploaded: datetime.date) -> list[dict[str, Any]]:
     out = []
     for row in rows:
+        if row.get("escrow_observed") is False:
+            continue
         signed = _date(row.get("signed"))
         amount = float(row.get("amount") or 0.0)
         if not signed or amount <= 0:
+            continue
+        if row.get("escrow_observed") is True and not 0 < amount < float("inf"):
             continue
         age = (uploaded - signed).days
         if not PAYMENT_DAYS <= age <= RECENT_DAYS:
             continue
         paid = float(row.get("escrow_paid") or 0.0)
+        if row.get("escrow_observed") is True and not 0 <= paid < float("inf"):
+            continue
         if paid >= PAYMENT_SHARE * amount:
             continue
         got = ("на эскроу пока ничего не поступило" if paid < 1.0 else
                f"на эскроу поступило {_mln(paid)} из {_mln(amount)}")
         out.append({
-            "key": f"money:{row.get('contract') or row.get('unit')}:{signed}",
+            "key": money_key(row),
             "kind": "money",
+            "expected_event": "payment",
             "amount": amount,
+            "subject": {key: row.get(key) for key in ("contract", "signed", "product", "unit")},
+            "baseline": {"escrow_paid": paid, "source": "original_question_snapshot", "observed": row.get("escrow_observed") is True},
             "text": (f"{_cap(_name(row))} ({_what(row)}, {_mln(amount)}): "
                      f"{got}. Подскажите, когда ждать оплату?")})
     # Сначала самые крупные суммы: в сообщение идут первые три.
