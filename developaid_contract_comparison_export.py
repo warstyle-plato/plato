@@ -18,7 +18,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 SCHEMA = "contract-comparison-export-v1"
 MAX_ROWS = 10_000
 MAX_XLSX_BYTES = 8 * 1024 * 1024
-FILTERS = {"all": "Все работы", "behind": "Отстают от плана", "ahead": "Опережают план",
+FILTERS = {"all": "Все работы и поставки", "behind": "Отстают от плана", "ahead": "Опережают план",
            "overdue": "Срок прошёл", "done": "Завершены", "unknown": "Нужны данные"}
 
 
@@ -151,12 +151,12 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         sheet.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=7)
 
     label = meta.get("label") or {}
-    note("Накопленные план и факт по работам договора")
+    note("Накопленные план и факт по работам и поставкам договора")
     note("Проект: " + meta["project"])
     note("Договор: " + (label.get("contract") or "номер не подтверждён") +
          (" · " + label["contractor"] if label.get("contractor") else ""))
     append(["Дата среза", _date(meta["cut"])])
-    note(f"Выгружено работ: {len(rows)} из {len(comparison['lines'])}. Фильтр: {FILTERS[filter]}." +
+    note(f"Выгружено строк: {len(rows)} из {len(comparison['lines'])}. Фильтр: {FILTERS[filter]}." +
          (" Поиск: " + query if query else ""))
     edition = comparison.get("edition") or {}
     source = {"ks2": "КС-2 по периодам выполнения", "ks6a": "накопительная КС-6а"}.get(
@@ -188,9 +188,19 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
                   comparison.get("weights")]:
         if value:
             note(value)
+    total = comparison.get('total') or {}
+    if total.get('readiness') is not None:
+        note('Общая готовность работ и поставки в расчёте: ' + _percent(total['readiness']))
+    for key, label in [('work','Работы'),('material','Поставка материалов')]:
+        component = (comparison.get('components') or {}).get(key)
+        if component:
+            note(label + ': ' + ('готовность ' + _percent(component['readiness'])
+                 if component.get('readiness') is not None else 'готовность неизвестна' if component.get('amount') != 0
+                 else 'в расчёте нет этого компонента') + '. Учтённый вклад: ' +
+                 (str(_number(component['counted'])) + ' ₽' if component.get('counted') is not None else 'неизвестен'))
     note("Всего по договору — полный объём позиции по действующей редакции договора в единицах строки.")
     note("Пустая числовая ячейка означает неизвестное значение, а не ноль. "
-         "Прогноз относится к сопоставленным работам и не меняет срок ввода проекта.")
+         "Прогноз относится к сопоставленным работам и поставкам и не меняет срок ввода проекта.")
     if meta.get('source_correction'):
         correction = meta['source_correction']
         note('Источники договора уточнены владельцем. Версия выбора: ' + correction['decision_id'])
@@ -199,14 +209,14 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         if correction.get('warning'):
             note(correction['warning'])
     note("Версия таблицы: " + meta["revision"])
-    append(["Работа / единица", "Всего по договору", "План на дату", "Факт", "Отклонение", "Срок работы", "Прогноз окончания"])
+    append(["Работа или поставка / единица", "Всего по договору", "План на дату", "Факт", "Отклонение", "Срок строки", "Прогноз окончания"])
     header = row_number
     for cell in sheet[header]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
     if not rows:
-        note("По выбранному фильтру работ нет." if comparison["lines"] else
-             comparison.get("reason") or "Работы для сравнения не определены. Выполнение неизвестно.")
+        note("По выбранному фильтру строк нет." if comparison["lines"] else
+             comparison.get("reason") or "Работы и поставки для сравнения не определены. Выполнение неизвестно.")
     sections = any(row.get('section') for row in rows)
     previous_section = None
     for row in rows:
@@ -231,7 +241,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
             cell.number_format = '#,##0.00" ₽"' if row.get("basis") == "money" else "#,##0.###"
         movement = (f"Отставание: {row['lag_days']} дн." if row.get("lag_days", 0) else
                     f"Опережение: {row['ahead_days']} дн." if row.get("ahead_days", 0) else
-                    {"done": "Работа завершена.", "on_plan": "По плану."}.get(row.get("state"), ""))
+                    {"done": "Поставка завершена." if row.get("component") == "material" else "Работа завершена.", "on_plan": "По плану."}.get(row.get("state"), ""))
         remarks = ["\n".join(_text(v) for v in [row.get("money_fallback"), row.get("reason"),
                    "Готовность: " + _percent(row["readiness"]) if row.get("readiness") is not None else ""] if v),
                    "Полный объём неизвестен." if row.get("contract_total") is None else "",
