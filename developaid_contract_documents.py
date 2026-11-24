@@ -36,7 +36,7 @@ import re
 from math import fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 11
+READER_VERSION = 12
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -995,6 +995,13 @@ def _act_layout(cells):
         order = next((n for n, cell in enumerate(low) if cell.startswith('по поряд')), None)
         place = next((n for n, cell in enumerate(low) if cell.startswith('позиции по смете')), None)
         unit = next((n for n, cell in enumerate(low) if cell.startswith(('единица', 'ед.'))), None)
+        if unit is None and index:
+            # A merged header cell can cross the horizontal rule of the order
+            # columns: «Единица» lands above it, «измерения» below. Join only
+            # those exact labels in the same column of the adjacent row.
+            unit = next((n for n, cell in enumerate(low)
+                         if cell == 'измерения' and n < len(cells[index-1])
+                         and _space(cells[index-1][n]).lower() == 'единица'), None)
         counts = [n for n, cell in enumerate(low) if cell.startswith(('количество', 'кол-во', 'кол.'))]
         if None in (order, place, unit) or not counts or not order < place < unit < counts[0]:
             continue
