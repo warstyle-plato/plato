@@ -83,8 +83,16 @@ def test_browser_shows_acts_without_a_plan_and_retains_unknown_execution(width):
         expect(page.locator('#contractComparisonRows')).to_contain_text('нет действующей редакции плана')
         expect(page.locator('#contractKs2Confirmation')).not_to_contain_text('Источник объёмов выполнения — накопительная КС-6а')
         block.get_by_text('Проверить акты и суммы', exact=True).click()
+        block.get_by_text('Загруженные акты КС-2 (2)', exact=True).click()
         expect(block.locator('tbody tr')).to_have_count(2)
         expect(block.locator('tbody tr').nth(1)).to_contain_text('Позиции не прочитаны')
+        if width == 390:
+            metrics = block.locator('tbody tr').first.evaluate('''row => ({
+                width: row.getBoundingClientRect().width,
+                cells: [...row.cells].map(cell => ({width: cell.getBoundingClientRect().width,
+                    label: getComputedStyle(cell, '::before').content}))})''')
+            assert all(cell['width'] >= metrics['width'] * .9 for cell in metrics['cells'])
+            assert all(cell['label'] not in ('none', '""') for cell in metrics['cells'])
         page.locator('#contractDialogClose').click()
         brief = page.locator(f'tr[data-contract-id="{BROWSER_CONTRACT}"] .contract-money .contract-act-evidence-brief')
         expect(brief).to_be_visible()
