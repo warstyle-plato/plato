@@ -4,7 +4,9 @@ import sys
 from types import SimpleNamespace
 
 from market_search.geocoder import GeocodingError
-from market_search.krt_registry import KrtRegistry, parse_catalogue, parse_catalogue_markdown
+from market_search.krt_registry import (
+    CACHE_SCHEMA_VERSION, KrtRegistry, parse_catalogue, parse_catalogue_markdown,
+)
 from market_search.krt_requirements import (
     decision_search_queries,
     parse_decision_requirements,
@@ -158,7 +160,7 @@ def test_registry_reads_mos_decision_only_for_a_planned_project(
     registry = KrtRegistry(tmp_path)
     registry.path.parent.mkdir(parents=True)
     registry.path.write_text(json.dumps({
-        "schema_version": 2, "complete": True, "projects": [project],
+        "schema_version": CACHE_SCHEMA_VERSION, "complete": True, "projects": [project],
     }), encoding="utf-8")
     calls = []
 
@@ -214,7 +216,7 @@ def test_registry_does_not_search_documents_for_non_planned_krt(tmp_path: Path) 
     ))
     registry.path.parent.mkdir(parents=True)
     registry.path.write_text(json.dumps({
-        "schema_version": 2, "complete": True, "projects": [project],
+        "schema_version": CACHE_SCHEMA_VERSION, "complete": True, "projects": [project],
     }), encoding="utf-8")
     result = registry.requirements("active")
     assert result["skipped"] is True

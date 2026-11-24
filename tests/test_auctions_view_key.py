@@ -99,7 +99,7 @@ def test_full_market_key_still_has_full_auction_access(monkeypatch):
     assert client.post("/auctions/no-such-route").status_code == 404
 
 
-def test_view_key_opens_krt_site_data_but_not_share_or_cabinet_role(monkeypatch):
+def test_view_key_opens_krt_site_data_but_not_share_or_cabinet_role(monkeypatch, offline_krt_catalogue):
     _keys(monkeypatch)
     client = _with_owner_gate(monkeypatch)
 

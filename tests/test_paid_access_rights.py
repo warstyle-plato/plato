@@ -339,7 +339,7 @@ def _registry_client(**kw) -> TestClient:
     return TestClient(main_registry.app, **kw)
 
 
-def test_the_krt_economics_reads_the_same_decision(monkeypatch):
+def test_the_krt_economics_reads_the_same_decision(monkeypatch, offline_krt_catalogue):
     """Рейтинг каталога КРТ — экономика: без входа закрыт, при включённом замке
     весь каталог — по подписке, а ключ кабинета рынка открывает всё."""
     monkeypatch.setenv("MARKET_CABINET_KEY", "team-test-key")
@@ -360,7 +360,7 @@ def test_the_krt_economics_reads_the_same_decision(monkeypatch):
     assert team.status_code == 200
 
 
-def test_with_the_paywall_off_the_krt_economics_needs_only_a_login(monkeypatch):
+def test_with_the_paywall_off_the_krt_economics_needs_only_a_login(monkeypatch, offline_krt_catalogue):
     monkeypatch.delenv("DEVELOPAID_PAYWALL")
     registry = _registry_client()
     assert registry.get("/auctions/krt/ranking").status_code == 401
