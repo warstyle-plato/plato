@@ -826,6 +826,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             # A fresh click must not reuse another running view of older data.
             # Retrying the same admission keeps its exact ticket and fingerprint.
             fingerprint = {"operation": operation, "click": req.ticket or _secrets.token_hex(16), **payload}
+            if operation in {'view', 'documents'}:
+                import developaid_contract_control as contract_control
+                fingerprint['contract_calculation_revision'] = contract_control.CALCULATION_REVISION
             if archive:
                 fingerprint["archive_sha256"] = _hashlib.sha256(archive).hexdigest()
             profile_stages = operation == "view" and getattr(req, "profile_stages", False)

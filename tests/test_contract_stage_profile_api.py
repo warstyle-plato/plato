@@ -115,12 +115,14 @@ def test_mode_is_bound_to_ticket_and_key_owner_ttl_still_gate_reads(api, monkeyp
     assert post(client,'contracts/result',ticket='a'*32,session='owner').status_code == 404
 
 
-def test_predeploy_ordinary_fingerprint_accepts_omitted_and_false_flag_unchanged(api, monkeypatch):
+def test_current_calculation_fingerprint_accepts_omitted_and_false_flag_unchanged(api, monkeypatch):
     client, root = api
     store = jobs.Store(root/'monitor'/'.cumulative_jobs')
     purpose = 'monitor-cumulative-v1:contracts'
     owner = jobs.owner_binding(KEY, '', purpose)
-    legacy_payload = {'operation': 'view', 'click': 'a'*32, 'project': PROJECT, 'cut': CUT}
+    import developaid_contract_control as control
+    legacy_payload = {'operation': 'view', 'click': 'a'*32, 'project': PROJECT, 'cut': CUT,
+                      'contract_calculation_revision':control.CALCULATION_REVISION}
     legacy_result = {'ok': True, 'register': {'rows': [], 'unknown': None, 'zero': 0}}
     store.start(owner, purpose, legacy_payload, lambda: legacy_result, 'a'*32,
                 result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES)

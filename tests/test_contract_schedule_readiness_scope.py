@@ -26,7 +26,7 @@ def rendered(control, source=None):
 def assert_matched_scope(result):
     assert 'Сверить с КС-6а' in result['brief']
     assert '0,1 %' not in result['brief']
-    assert 'готовность работ в расчёте' in result['parts']
+    assert 'общая готовность в расчёте' in result['parts']
     assert 'готовность договора' not in result['parts']
     assert result['unchanged']
 
@@ -36,9 +36,9 @@ def test_low_schedule_readiness_is_named_as_matched_scope_without_changing_finan
 
 
 def test_scope_assertion_rejects_the_previous_whole_contract_wording():
-    old = page.MONITOR_PAGE.replace('готовность работ в расчёте ${contractShare(s.readiness)}',
+    old = page.MONITOR_PAGE.replace('общая готовность в расчёте ${contractShare(s.readiness)}',
                                     'готовность ${contractShare(s.readiness)}').replace(
-        '<div class="contract-sub">готовность работ в расчёте</div>',
+        '<div class="contract-sub">общая готовность в расчёте</div>',
         '<div class="contract-sub">готовность договора</div>')
     with pytest.raises(AssertionError):
         assert_matched_scope(rendered(CONTROL, old))
@@ -47,7 +47,7 @@ def test_scope_assertion_rejects_the_previous_whole_contract_wording():
 def test_unknown_schedule_readiness_is_not_rendered_as_zero():
     result = rendered(dict(CONTROL, readiness=None, plan_done=None))
     assert 'готовность' not in result['brief']
-    assert 'готовность работ в расчёте' not in result['parts']
+    assert 'общая готовность в расчёте' not in result['parts']
     assert '0 %' not in result['parts']
     assert result['unchanged']
 
