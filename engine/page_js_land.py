@@ -1941,11 +1941,11 @@ function useLandForTep(){
 function renderStoredLand(){
  const stored=inputs._land_lookup;
  if(!stored)return;
- if((inputs._cadastral_query||inputs._cadastral_origin)&&!cadastralQueryMatches(stored.query)){
+ if(inputs._cadastral_origin&&!cadastralQueryMatches(stored.query)){
   delete inputs._land_lookup;landLookup=null;return;
  }
  landLookup=cloneValue(stored);
- writeCadastralField(stored.query||'');
+ writeCadastralField(cadastralQueryMatches(stored.query)?inputs._cadastral_query:stored.query||'');
  renderLandLookup(landLookup);
  loadLandScreening(stored.query||'');
  const status=document.getElementById('cadastralStatus');

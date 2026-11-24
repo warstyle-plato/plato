@@ -278,6 +278,31 @@ def test_edit_launch_keeps_the_saved_parcel() -> None:
     assert json.loads(stdout) == {"query": "77:08:0010008:9999", "restore": False}
 
 
+def test_matching_saved_sources_keep_the_manual_query_text() -> None:
+    import page_blocks
+    state = page_blocks.run_json("""
+        const query='77:09:0010009:9002, 77:09:0010009:9001';
+        const numbers=['77:09:0010009:9001','77:09:0010009:9002'];
+        const origin={source:'manual',text:'вписано вручную'};
+        const inputs={_cadastral_query:query,_cadastral_origin:origin,
+            _cadastral_analysis:{requested:numbers},_land_lookup:{query:numbers.join(', ')}};
+        let cadastralAnalysis=null,landLookup=null;
+        const field={value:''},cadastralStatus={innerHTML:''};
+        const document={getElementById:()=>field};
+        function showCadastralOrigin(){} function renderCadastralPreview(){}
+        function renderLandLookup(){} function loadLandScreening(){}
+        function cloneValue(x){return JSON.parse(JSON.stringify(x))}
+    """, """
+        renderStoredCadastral();renderStoredLand();
+        console.log(JSON.stringify({query:inputs._cadastral_query,field:field.value,
+            origin:inputs._cadastral_origin,analysis:!!cadastralAnalysis,lookup:!!landLookup}));
+    """)
+    assert state == {"query": "77:09:0010009:9002, 77:09:0010009:9001",
+                     "field": "77:09:0010009:9002, 77:09:0010009:9001",
+                     "origin": {"source": "manual", "text": "вписано вручную"},
+                     "analysis": True, "lookup": True}
+
+
 def test_the_parcel_rows_have_no_number_before_the_calculation(monkeypatch) -> None:
     _stub(monkeypatch)
     got = core.agent_document(core.AgentDocumentRequest(
