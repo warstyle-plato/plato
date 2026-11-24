@@ -181,6 +181,27 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     confirmation = comparison.get('confirmation') or {}
     if confirmation.get('message'):
         note(confirmation['message'])
+    evidence = comparison.get('act_evidence') or {}
+    if evidence.get('count'):
+        note('Итоги загруженных КС-2. Полнота комплекта актов не подтверждена. '
+             'Для сравнения с ГПР используются сопоставленные объёмы по ценам расчёта договора.')
+        append(['Количество актов', evidence['count']])
+        append(['Итого по документам', _number(evidence.get('total'))])[1].number_format = '#,##0.00" ₽"'
+        if evidence.get('total') is None:
+            append(['Сумма прочитанных итогов', _number(evidence.get('known_total'))])[1].number_format = '#,##0.00" ₽"'
+            note('Общий итог актов не определён: часть сумм не прочитана.')
+        if evidence.get('unread_count'):
+            note(f"Актов без прочитанных позиций: {evidence['unread_count']}. Их итоги показаны по документам.")
+        for act in evidence.get('acts') or []:
+            append(['КС-2 № ' + str(act.get('number') or 'без номера'),
+                    _date(act.get('date')), _number(act.get('total'))])[2].number_format = '#,##0.00" ₽"'
+            append(['Отчётный период акта', _date(act.get('start')),
+                    _date(act.get('finish') or act.get('day'))])
+            note('Прочитано позиций: ' + str(act.get('positions') or 0))
+            if act.get('filename'):
+                note('Файл акта: ' + _text(act['filename']))
+            for warning in act.get('warnings') or []:
+                note(warning)
     for gap in comparison.get('data_gaps') or []:
         note(gap)
     for value in [comparison.get("reason"), comparison.get("source_note"), comparison.get("plan_assumption"),
