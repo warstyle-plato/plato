@@ -613,9 +613,15 @@ def _rate_on(path: list[dict[str, Any]] | None, day: datetime.date) -> float | N
 
 
 def _reduce(installments: list[dict[str, Any]], amount: float, after: datetime.date,
-            order: str) -> float:
-    """Досрочное погашение уменьшает будущие платежи графика; что не легло — вернуть."""
-    ahead = [item for item in installments if _day(item["date"]) > after]
+            order: str, *, include_current: bool = False) -> float:
+    """Зачесть досрочное в ещё не исполненные взносы; остаток вернуть.
+
+    По умолчанию взнос дня операции уже исключён/исполнен. Текущий взнос
+    включается явно, пока он ещё номинальный: в симуляции до `_settle`, а
+    при восстановлении графика — до отсечения уже прошедших дат.
+    """
+    ahead = [item for item in installments if _day(item["date"]) > after
+             or (include_current and _day(item["date"]) == after)]
     if order == "pro_rata":
         total = sum(item["amount"] for item in ahead)
         if total <= 0:
@@ -952,7 +958,11 @@ def _prepare(st: _Loan, datasets: dict[str, Any]) -> None:
             for op in f.get("operations") or []:
                 day = _day(op["date"])
                 if op["kind"] == "prepay" and (not st.reflected_before_base or day > st.base_day):
-                    _reduce(st.installments, op["amount"], day, st.order)
+                    # Восстанавливаем ещё номинальный график: зачёт в взнос
+                    # своей даты делается до отсечения закрытых дней. Иначе
+                    # одна операция задним числом уменьшит будущие взносы.
+                    _reduce(st.installments, op["amount"], day, st.order,
+                            include_current=True)
             st.installments = [i for i in st.installments if _day(i["date"]) > st.start]
     plan = datasets[f"plan.{loan['id']}"]["data"]
     st.events = {}
@@ -979,7 +989,9 @@ def _set_base(st: _Loan, kind: str) -> None:
                           source="долг по фактам плюс прогнозные выборки и погашения",
                           as_of=st.out.get("facts_as_of") or st.start.isoformat())
     if st.pending_prepay:
-        _reduce(st.installments, st.pending_prepay, st.base_day, st.order)
+        # Это досрочное прошлых дней до определения базы, не новый платёж базы.
+        _reduce(st.installments, st.pending_prepay, st.base_day, st.order,
+                include_current=False)
         st.pending_prepay = 0.0
 
 
@@ -987,7 +999,9 @@ def _prepay(st: _Loan, amount: float, day: datetime.date) -> float:
     paid = min(amount, st.principal)
     st.principal -= paid
     if st.installments is not None:
-        _reduce(st.installments, paid, day, st.order)
+        # `_operations` и `_disclose` идут до `_settle`: ближайший ещё не
+        # исполненный взнос может приходиться на сегодняшний день.
+        _reduce(st.installments, paid, day, st.order, include_current=True)
     elif not st.reflected_before_base:
         st.pending_prepay += paid
     return paid
@@ -1810,7 +1824,7 @@ COLORS = {"green": ("good", "зелёный", "обязательства пок
 
 TABLE_HEAD = ["Дата", "Основной долг к погашению", "Проценты и комиссии", "Всего к оплате",
               "Эскроу до раскрытия", "Доступно из раскрытия", "Другие источники", "Дефицит",
-              "Долг после платежа"]
+              "Долг при выполнении графика"]
 
 
 def _esc(text: Any) -> str:
@@ -1914,7 +1928,10 @@ def _main_table(result: dict[str, Any]) -> str:
             + "</tr>" + "".join(body) + "</table>"
             "<p class='note'>Суммы — млн ₽. «Доступно из раскрытия» — раскрытые деньги, ещё не "
             "направленные на прошлые платежи. «Другие источники» — свободные деньги проекта и "
-            "подтверждённое дополнительное финансирование, потраченные на этот платёж.</p>")
+            "подтверждённое дополнительное финансирование, потраченные на этот платёж. "
+            "«Долг при выполнении графика» предполагает полную уплату всех показанных платежей. "
+            "При дефиците источников погашение этой части не подтверждено; нулевой остаток "
+            "графика не означает, что кредит фактически погашен.</p>")
 
 
 def _detail_html(result: dict[str, Any]) -> str:
