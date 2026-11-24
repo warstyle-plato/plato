@@ -795,6 +795,10 @@ function projectParcelFacts(){
 function renderStoredCadastral(){
  const stored=inputs._cadastral_analysis;
  if(!stored)return;
+ if((inputs._cadastral_query||inputs._cadastral_origin)
+   &&!cadastralQueryMatches((stored.requested||stored.recognized||[]).join(', '))){
+  delete inputs._cadastral_analysis;cadastralAnalysis=null;return;
+ }
  cadastralAnalysis=cloneValue(stored);
  writeCadastralField((stored.requested||[]).join(', '));
  renderCadastralPreview(cadastralAnalysis);

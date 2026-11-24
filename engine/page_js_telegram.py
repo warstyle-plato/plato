@@ -367,6 +367,7 @@ async function initializeApp(){
  repairParkingFromGlavapu();
  renderInputs();
  renderTep();
+ renderStoredCadastralQuery();
  renderStoredGlavapu();
  renderStoredCadastral();
  renderStoredLand();

@@ -136,6 +136,10 @@ function sameGlavapuTerritory(incoming){
  return !!quarter&&quarter===String(before.cadastral_quarter||'').trim()
   &&Math.abs(Number(now.site_area_ha||0)-Number(before.site_area_ha||0))<0.001;
 }
+function sameCadastralParcelSet(before,after){
+ return Array.isArray(before)&&before.length>0&&Array.isArray(after)&&after.length>0
+  &&new Set(before).size===new Set(after).size&&before.every(number=>after.includes(number));
+}
 
 async function applyGlavapu(){
  if(!glavapuImport){glavapuStatus.innerHTML='<span class="import-error">Сначала разберите файл.</span>';return}
@@ -155,12 +159,27 @@ async function applyGlavapu(){
   }
  }
  const incoming=glavapuImport;
+ // Ответ ТЭП относится к текущему запросу участка. Сброс его старых чисел
+ // не должен терять сам запрос и его происхождение. Файл без кадастровой
+ // привязки или ответ для другого участка прежний номер не наследует.
+ const parcelQuery=inputs._cadastral_query||'';
+ const parcelNumbers=cadastralNumbersIn(parcelQuery);
+ const incomingNumbers=(incoming.source||{}).cadastral_numbers;
+ const keepParcel=sameCadastralParcelSet(parcelNumbers,incomingNumbers);
+ const parcelOrigin=keepParcel?inputs._cadastral_origin:null;
+ const previousNumbers=(((inputs._glavapu_import||{}).source)||{}).cadastral_numbers;
  // Новый участок — территория обнуляется целиком (с ручными значениями:
  // они про прежнюю площадку). Новая выгрузка того же участка — нет.
- const sameTerritory=sameGlavapuTerritory(incoming);
+ // Явно другой кадастровый состав сильнее совпавших квартала и площади.
+ const changedParcel=Array.isArray(incomingNumbers)&&incomingNumbers.length&&(!keepParcel
+  ||(Array.isArray(previousNumbers)&&previousNumbers.length&&!sameCadastralParcelSet(previousNumbers,incomingNumbers)));
+ const sameTerritory=sameGlavapuTerritory(incoming)&&!changedParcel;
  const keptOrigins=sameTerritory?Object.assign({},inputs._field_origin||{}):{};
  if(sameTerritory)territoryCleared=[];
  else resetTerritoryData();
+ if(keepParcel)writeCadastralField(parcelQuery,parcelOrigin);
+ else if(!sameTerritory)writeCadastralField('');
+ if(!sameTerritory)forgetOtherCadastralSources();
  glavapuImport=incoming;
  inputs._field_origin=keptOrigins;
  const provenance=incoming.provenance||{};

@@ -674,6 +674,7 @@ async function drawLandPreviewQuiet(query){
   try{
    response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})});
   }finally{landContourPending=Math.max(0,landContourPending-1)}
+  if(!cadastralQueryMatches(raw))return;
   // Ограничения не зависят от картинки: карточка — украшение, а скрининг —
   // ответ на вопрос «можно ли тут строить». Раньше он запускался только после
   // удачного контура, и на 22 участках не показывался вовсе (замечание
@@ -682,6 +683,7 @@ async function drawLandPreviewQuiet(query){
   if(!response.ok)return;
   const data=await response.json();
   if(!Number(data.found_count||0))return;
+  if(!cadastralQueryMatches(data.query||raw))return;
   landLookup=data;
   inputs._land_lookup=cloneValue(data);
   renderLandLookup(data);
@@ -1045,6 +1047,22 @@ function rememberCadastralQuery(value){
  const text=String(value==null?'':value).trim().slice(0, 600);
  if(text)inputs._cadastral_query=text; else delete inputs._cadastral_query;
 }
+function cadastralQueryMatches(value){
+ const current=inputs._cadastral_query||'';
+ const before=cadastralNumbersIn(current),after=cadastralNumbersIn(value);
+ return before.length||after.length?sameCadastralParcelSet(before,after)
+  :landQueryKey(current)===landQueryKey(value);
+}
+function forgetOtherCadastralSources(){
+ const lookup=inputs._land_lookup;
+ if(lookup&&!cadastralQueryMatches(lookup.query)){
+  delete inputs._land_lookup;landLookup=null;hideLandPreview();
+ }
+ const analysis=inputs._cadastral_analysis;
+ if(analysis&&!cadastralQueryMatches((analysis.requested||analysis.recognized||[]).join(', '))){
+  delete inputs._cadastral_analysis;cadastralAnalysis=null;
+ }
+}
 
 // Единственный писатель поля: он же и запоминает. Две двери — набранное руками
 // и поставленное кодом — разошлись бы молча, и половина проектов сохраняла бы
@@ -1063,8 +1081,8 @@ function writeCadastralField(value,origin){
 // документу больше не принадлежит.
 function typeCadastralField(value){
  rememberCadastralQuery(value);
- if(inputs._cadastral_origin&&inputs._cadastral_origin.source!=='manual')
-  inputs._cadastral_origin={source:'manual',text:'вписано вручную'};
+ inputs._cadastral_origin={source:'manual',text:'вписано вручную'};
+ forgetOtherCadastralSources();
  showCadastralOrigin();
 }
 function showCadastralOrigin(){
@@ -1112,6 +1130,7 @@ async function lookupLand(options){
   }finally{landContourPending=Math.max(0,landContourPending-1)}
   const data=await response.json();
   if(!response.ok)throw new Error(serverDetail(data)||'Не удалось получить данные об участке из госреестра');
+  if(!cadastralQueryMatches(raw)||!cadastralQueryMatches(data.query||raw))return;
   landLookup=data;
   // Снимок сохраняется в проект сразу: отдельная кнопка «Сохранить участок»
   // была лишним шагом, и забытая, она молча теряла сведения при закрытии.
@@ -1922,6 +1941,9 @@ function useLandForTep(){
 function renderStoredLand(){
  const stored=inputs._land_lookup;
  if(!stored)return;
+ if((inputs._cadastral_query||inputs._cadastral_origin)&&!cadastralQueryMatches(stored.query)){
+  delete inputs._land_lookup;landLookup=null;return;
+ }
  landLookup=cloneValue(stored);
  writeCadastralField(stored.query||'');
  renderLandLookup(landLookup);
