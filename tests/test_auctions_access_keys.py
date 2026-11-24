@@ -241,7 +241,7 @@ def _free_port() -> int:
         return sock.getsockname()[1]
 
 
-def test_rendered_auctions_page_hides_and_server_refuses(registry_app):
+def test_rendered_auctions_page_hides_and_server_refuses(registry_app, offline_krt_catalogue):
     """Браузер вошёл по ссылке: контура и кнопок расчёта не видно, запросы к
     расчёту из той же страницы получают отказ сервера, а Платон спрашивается
     через `/auctions/ask`."""
