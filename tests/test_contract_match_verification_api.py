@@ -137,7 +137,9 @@ def test_explicit_source_bound_payload_accepts_false_verify_without_rebuilding(a
     client,root=api;store=jobs.Store(root/'monitor'/'.cumulative_jobs')
     family='monitor-cumulative-v1:contracts';owner=jobs.owner_binding(KEY,'',family)
     context=ledgers.snapshot_job_context(PROJECT)
-    payload={'operation':'view','click':'a'*32,'project':PROJECT,'cut':CUT,'source_context':context}
+    import developaid_contract_control as control
+    payload={'operation':'view','click':'a'*32,'project':PROJECT,'cut':CUT,'source_context':context,
+             'contract_calculation_revision':control.CALCULATION_REVISION}
     flags={}
     if mode!='ordinary':payload['diagnostics']=stages.PURPOSE;flags['profile_stages']=True
     if mode=='off':payload['matching_cache']=cache.DISABLED_PURPOSE;flags['profile_matching_cache_off']=True
@@ -164,7 +166,9 @@ def test_v1_verify_ticket_is_immutable_and_cannot_be_readmitted_as_v2(api,monkey
     client,root=api;store=jobs.Store(root/'monitor'/'.cumulative_jobs')
     family='monitor-cumulative-v1:contracts';owner=jobs.owner_binding(KEY,'',family)
     context=ledgers.snapshot_job_context(PROJECT)
+    import developaid_contract_control as control
     payload={'operation':'view','click':'a'*32,'project':PROJECT,'cut':CUT,'source_context':context,
+             'contract_calculation_revision':control.CALCULATION_REVISION,
              'diagnostics':stages.PURPOSE,'matching_cache':'contract-pure-matching-hit-verify-v1'}
     def legacy():
         if failed:raise ValueError('synthetic legacy failure')
