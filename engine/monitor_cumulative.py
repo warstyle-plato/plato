@@ -18,6 +18,13 @@ class MonitorCumulativeProject(MonitorCumulativeAuth):
     project: str = _CumulativeField(min_length=1, max_length=200)
 
 
+class MonitorCumulativeSnapshotState(MonitorCumulativeProject):
+    model_config = {'extra': 'forbid', 'strict': True}
+    snapshot_id: str = _CumulativeField(pattern=r'^\d{4}-\d{2}-\d{2}-[0-9a-f]{64}$')
+    expected_revision: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
+    restore: bool = False
+
+
 class MonitorCumulativeUpload(MonitorCumulativeProject):
     taken_at: str
     filename: str = _CumulativeField(default="", max_length=240)
@@ -317,8 +324,9 @@ class MonitorGprPhysicalSave(MonitorCumulativeProject):
 _IDENTITY_PATHS = frozenset('/monitor/contracts/identity/'+name for name in
                             ('inventory', 'confirm', 'revoke', 'resolve', 'result',
                              'correction-inventory', 'correction-preview', 'correct-sources'))
+_SNAPSHOT_ACTIVITY_PATHS = frozenset({'/monitor/cumulative/remove'})
 _PDF_INTAKE_PATHS = frozenset('/monitor/contracts/pdf-intake/'+name for name in ('preview', 'commit', 'result'))
-_CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | frozenset({
+_CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS | frozenset({
     '/monitor/schedule/version-preview', '/monitor/schedule/version-approve',
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
@@ -346,7 +354,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | frozenset({
 
 @app.middleware("http")
 async def monitor_cumulative_private_headers(request: Request, call_next):
-    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS or request.url.path == "/monitor/contracts/comparison.xlsx") and request.method == 'POST':
+    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS or request.url.path == "/monitor/contracts/comparison.xlsx") and request.method == 'POST':
         private = {"Cache-Control": "private, no-store"}
         cap = 1024*1024 if request.url.path == "/monitor/contracts/comparison.xlsx" else 64*1024
         if request.url.path in _PDF_INTAKE_PATHS - {'/monitor/contracts/pdf-intake/result'}:
@@ -738,13 +746,16 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             raise HTTPException(400, 'Режим сравнения требует включённой диагностики этапов.')
         profile = "monitor-cumulative-v1:" + family
         owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
-        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs")
+        import developaid_monitor_ledgers as _job_ledgers
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs",
+                           context_validator=_job_ledgers.validate_snapshot_job_context)
         if not operation:
             if family == "contracts" and getattr(req, "offset", None) is not None:
                 result = store.poll_part(req.ticket, owner, profile, req.offset, accept_gzip=req.accept_gzip)
             else:
                 result = store.poll(req.ticket, owner, profile)
         else:
+            source_context = _job_ledgers.snapshot_job_context(req.project.strip())
             payload = {"project": req.project.strip()}
             if not payload["project"]:
                 raise HTTPException(400, "Выберите проект.")
@@ -825,7 +836,11 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             # The store persists only the fingerprint, not these private inputs.
             # A fresh click must not reuse another running view of older data.
             # Retrying the same admission keeps its exact ticket and fingerprint.
-            fingerprint = {"operation": operation, "click": req.ticket or _secrets.token_hex(16), **payload}
+            fingerprint = {"operation": operation, "click": req.ticket or _secrets.token_hex(16),
+                           "source_context": source_context, **payload}
+            if operation in {'view', 'documents'}:
+                import developaid_contract_control as contract_control
+                fingerprint['contract_calculation_revision'] = contract_control.CALCULATION_REVISION
             if archive:
                 fingerprint["archive_sha256"] = _hashlib.sha256(archive).hexdigest()
             profile_stages = operation == "view" and getattr(req, "profile_stages", False)
@@ -838,7 +853,7 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             if matching_verify:
                 import developaid_contract_match_verify as matching_verification
                 fingerprint['matching_cache'] = matching_verification.PURPOSE
-            def build():
+            def build_raw():
                 if profile_stages:
                     import developaid_contract_stage_profile as stage_profile
                     if matching_verify:
@@ -863,6 +878,11 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                                                     operation, payload, archive)
                     return {**result, 'diagnostics': diagnostics.export()}
                 return _monitor_cumulative_execute(operation, payload, archive)
+            def build():
+                _job_ledgers.validate_snapshot_job_context(source_context)
+                value = build_raw()
+                _job_ledgers.validate_snapshot_job_context(source_context)
+                return value
             # Only the ordinary register transports its complete history/rows.
             # Source review/audit/index operations retain the default budget.
             result_policy = ({"result_limit_bytes": jobs.MAX_EXTENDED_RESULT_BYTES}
@@ -870,7 +890,7 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             if operation == "view" and getattr(req, "chunked", False):
                 result_policy["include_result"] = False
                 result_policy["compress_result"] = True
-            result = store.start(owner, profile, fingerprint, build, req.ticket, **result_policy)
+            result = store.start(owner, profile, fingerprint, build, req.ticket, context=source_context, **result_policy)
         if result["pending"]:
             result["detail"] = ("Проверяю управленческую статью АХР." if family == "finance-management" else
                                 "Проверяю банковское отнесение АХР." if family == "finance-allocation" else
@@ -890,7 +910,7 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
         }
         if exc.code:
             private["X-Monitor-Job-Error"] = exc.code
-        raise HTTPException(exc.status, messages.get(exc.status, "Не удалось завершить операцию. Повторите запрос."),
+        raise HTTPException(exc.status, jobs.SOURCE_CHANGED_DETAIL if exc.code == "source_changed" else messages.get(exc.status, "Не удалось завершить операцию. Повторите запрос."),
                             headers=private) from None
     except Exception as exc:
         logging.getLogger("developaid.monitor").error("Cumulative operation unavailable (%s)", type(exc).__name__)
@@ -914,10 +934,31 @@ def monitor_cumulative_list(req: MonitorCumulativeProject) -> Response:
     _require_admin_key(req.key, "Монитор проекта", req.session)
     import developaid_monitor_ledgers as ledgers
     try:
-        return JSONResponse(content={"snapshots": ledgers.list_snapshots(req.project)})
+        return JSONResponse(content=ledgers.snapshot_inventory(req.project))
     except Exception as exc:
         logging.getLogger("developaid.monitor").error("Cumulative snapshot list unavailable (%s)", type(exc).__name__)
         raise HTTPException(503, "История накопительных сейчас недоступна.") from None
+
+
+@app.post("/monitor/cumulative/remove", include_in_schema=False)
+def monitor_cumulative_remove(req: MonitorCumulativeSnapshotState) -> Response:
+    """A reversible exact-snapshot selection change; never delete financial evidence."""
+    private = {"Cache-Control": "private, no-store"}
+    _require_admin_key(req.key, "Монитор проекта", req.session)
+    import developaid_monitor_ledgers as ledgers
+    import developaid_contract_identity_store as identity_store
+    try:
+        result = ledgers.change_snapshot_activity(req.project.strip(), req.snapshot_id,
+                                                  req.expected_revision, restore=req.restore)
+        return JSONResponse(result, headers=private)
+    except ledgers.LedgerConflict as exc:
+        raise HTTPException(409, str(exc), headers=private) from None
+    except ledgers.LedgerProblem as exc:
+        raise HTTPException(400, str(exc), headers=private) from None
+    except identity_store.IdentityProblem:
+        raise HTTPException(409, "Привязка проекта изменилась. Обновите список снимков и проверьте состояние архива перед повторным действием.", headers=private) from None
+    except Exception:
+        raise HTTPException(503, "Не удалось изменить архив. Обновите список снимков перед повторным действием.", headers=private) from None
 
 
 @app.post("/monitor/contracts/build", include_in_schema=False)
@@ -1056,7 +1097,9 @@ def monitor_contract_comparison_xlsx(req: MonitorContractComparisonExport) -> Re
     try:
         profile = "monitor-cumulative-v1:contracts"
         owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
-        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs")
+        import developaid_monitor_ledgers as _job_ledgers
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs",
+                           context_validator=_job_ledgers.validate_snapshot_job_context)
         cached = store.poll(req.ticket, owner, profile)
         meta, comparison, rows = comparison_export.select_snapshot(
             cached, project, cut, req.contract_id, req.revision, req.selected_tokens)
@@ -1068,7 +1111,7 @@ def monitor_contract_comparison_xlsx(req: MonitorContractComparisonExport) -> Re
     except comparison_export.ExportProblem as exc:
         raise HTTPException(exc.status, str(exc), headers=private) from None
     except jobs.JobProblem as exc:
-        status = 409 if exc.status in (400, 404) else 503
+        status = 409 if exc.status in (400, 404, 409) else 503
         raise HTTPException(status, "Сохранённая карточка недоступна. Откройте её заново перед выгрузкой.",
                             headers=private) from None
     except Exception as exc:

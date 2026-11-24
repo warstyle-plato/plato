@@ -41,7 +41,7 @@ def _row(line, volume, *, unknown=False, reason=''):
     money_fact = line.get('work_fact') if split else line.get('fact')
     money_deviation = money_fact-money_plan if money_plan is not None and money_fact is not None else None
     return {'code': line['code'], 'name': line['name'], 'basis': 'volume' if natural else 'money',
-            **{key: line[key] for key in ('display_code', 'parent_code', 'position_key', 'source') if key in line},
+            **{key: line[key] for key in ('display_code', 'parent_code', 'position_key', 'source', 'component', 'source_code') if key in line},
             **({'physical_scope': line['operations']['group']} if line.get('operations') else {}),
             'unit': volume['unit'] if natural else '₽',
             'contract_total': volume.get('quantity') if natural else line.get('work_amount' if split else 'amount'),
@@ -71,7 +71,8 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
               'act_evidence': canonical.get('act_evidence'),
               'left_out': canonical.get('left_out'), 'preliminary': canonical.get('preliminary',False),
               'schedule_source': canonical.get('schedule_source'),
-              'assumption': canonical.get('assumption') or '', 'weights': canonical.get('weights') or ''}
+              'assumption': canonical.get('assumption') or '', 'weights': canonical.get('weights') or '',
+              'components': canonical.get('components') or {}}
     source_sha = ((current or {}).get('schedule_sha256') or
                   (canonical.get('schedule_source') or {}).get('sha256') or
                   (source_sha256 if current is None else None))
@@ -79,9 +80,9 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
     schedule = document and document.get('schedule')
     source_lines = (schedule or {}).get('lines') or []
     parents = {r.get('parent') for r in source_lines}
-    supplies = {r['code'] for r in (current or {}).get('lines') or [] if r.get('supply_only')}
-    source_works = [r for r in source_lines if r['code'] not in parents and r['code'] not in supplies]
-    result['coverage'] = {'calculated': len(canonical.get('lines') or []), 'source_works': len(source_works),
+    source_works = [r for r in source_lines if r['code'] not in parents]
+    material_rows = canonical.get('materials') or []
+    result['coverage'] = {'calculated': len({r['code'] for r in (canonical.get('lines') or []) + material_rows}), 'source_works': len(source_works),
                           'source_rows': len(source_lines), 'source_known': bool(schedule),
                           'schedule_title': document and document.get('title'), 'schedule_sha256': source_sha}
     if canonical.get('lines'):
@@ -93,15 +94,25 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
             result['lines'].append(row)
             result['lines'].extend(_row(part, part.get('volume'))
                                    for part in (native.get('operations') or {}).get('lines') or [])
-    elif current and current.get('lines'):
+    if material_rows:
+        for native in material_rows:
+            material = dict(native, source_code=native['code'])
+            if not native.get('supply_only'):
+                material.update(code=native['code']+'::material',parent_code=native['code'],display_code=native['code'])
+            row = _row(material,material.get('volume'))
+            if not material.get('volume'):
+                row['money_fallback'] = 'Поставка материалов по стоимости: сопоставимый объём в одной единице не определён. Монтаж не подтверждён поставкой.'
+            result['lines'].append(row)
+    if not canonical.get('lines') and not material_rows and current and current.get('lines'):
         start = dt.date.fromisoformat(current['start']) if current.get('start') else None
         day = dt.date.fromisoformat(cut)
         for row in current['lines']:
-            if row.get('supply_only'):
-                continue
             due = control._span(row,start)[1].isoformat()
-            volume = control._volume(row,plan.done(row,day,start),[],0.0)
-            result['lines'].append(_row({**row,'due':due},volume,unknown=True,reason=reason))
+            supplied = row.get('supply_only')
+            source = ({**row,'volume':row.get('material_volume'),'work_amount':row.get('material_amount'),
+                       'component':'material'} if supplied else row)
+            volume = control._volume(source,plan.done(row,day,start),[],0.0)
+            result['lines'].append(_row({**source,'due':due},volume,unknown=True,reason=reason))
     shown = {r['code'] for r in result['lines']}
     if schedule:
         unfit = links.unfit(schedule)
@@ -113,7 +124,9 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
                 'lag_days':None,'ahead_days':None,'overdue_days':None,'forecast_finish':None,'finished':None,
                 'due':row.get('finish'),'state':'unknown','reason':unfit.get(row['code']) or
                 'Работа есть в ГПР, но объём из расчёта и выполнение КС с ней не сопоставлены.', 'money_fallback':''})
-    result['coverage']['unknown'] = sum(r['state'] == 'unknown' for r in result['lines'] if not r.get('parent_code'))
+    result['coverage']['unknown'] = len({r.get('source_code') or r['code']
+        for r in result['lines'] if r['state'] == 'unknown' and
+        (not r.get('parent_code') or r.get('component') == 'material')})
     result['coverage']['partial'] = bool(result['coverage']['unknown'] or (canonical.get('left_out') or {}).get('count') or result['data_gaps'])
     # A current estimate can describe only the remaining scope of an agreement.
     # Keep its calendar projection, but never promote it to the whole contract

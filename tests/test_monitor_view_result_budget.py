@@ -12,6 +12,7 @@ import pytest
 
 import developaid_management_report_jobs as jobs
 import developaid_monitor as monitor
+import developaid_monitor_ledgers as ledgers
 import main as wrapper
 
 core = wrapper.core
@@ -94,7 +95,8 @@ def test_default_16_mib_and_old_failed_ticket_are_never_upgraded_or_rebuilt(api,
     assert jobs.MAX_RESULT_BYTES == 16 * 1024 * 1024
     owner = jobs.owner_binding(KEY, SESSION, 'admin')
     params = {'project': PROJECT, 'cut': CUT, 'click': TICKET}
-    store.start(owner, 'admin', params, lambda: {'source': 'x' * jobs.MAX_RESULT_BYTES}, TICKET)
+    store.start(owner, 'admin', params, lambda: {'source': 'x' * jobs.MAX_RESULT_BYTES}, TICKET,
+                context=ledgers.snapshot_job_context(PROJECT))
     assert terminal(client).status_code == 500
     before = store._meta(TICKET)
     assert 'result_limit_bytes' not in before and 'failure_code' not in before

@@ -633,6 +633,7 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
             'act_evidence': found.get('act_evidence'),
             "left_out": found["left_out"],
             "coverage": found.get("coverage"),
+            "components": found.get("components") or {},
             "data_gaps": found["data_gaps"],
             "forecast_scope": forecast.get("scope"),
             "whole_contract_finish": forecast.get("whole_contract_finish"),

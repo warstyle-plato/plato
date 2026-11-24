@@ -134,6 +134,63 @@ import main_legacy as _engine  # noqa: E402
 _MODULES = (_wrapper.core, _engine) if _wrapper.core is not _engine else (_engine,)
 
 
+def _join_krt_catalogue_threads(threads, timeout=5.0):
+    """Завершить работу теста, пока его источники ещё подменены."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    # Нить может заказать следующий обход до своего завершения. Итератор
+    # списка видит и добавленные за время join нити; они принадлежат тому же
+    # тесту и тоже не должны пережить его monkeypatch.
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    alive = [thread.name for thread in threads if thread.is_alive()]
+    assert not alive, f"тест оставил незавершённый обход КРТ: {alive}"
+
+
+@pytest.fixture(autouse=True)
+def krt_catalogue_threads(monkeypatch):
+    """Реальный daemon каталога принадлежит запустившему его тесту.
+
+    catalogue/find отвечают со снимка и могут продолжить чтение фоном. Если
+    снять подмену request_bytes до завершения нити, её следующий запрос идёт
+    уже настоящим транспортом и попадает в сетевой guard другого теста.
+    Нити не отключены и исключения не подавлены: ждём их здесь, до teardown
+    общей зависимости monkeypatch, и отказываем владельцу зависшей работы.
+    """
+    import threading
+
+    threads = []
+    start = threading.Thread.start
+
+    def owned_start(thread, *args, **kwargs):
+        if thread.name == "krt-catalogue-refresh":
+            threads.append(thread)
+        return start(thread, *args, **kwargs)
+
+    monkeypatch.setattr(threading.Thread, "start", owned_start)
+    try:
+        yield
+    finally:
+        _join_krt_catalogue_threads(threads)
+
+
+@pytest.fixture
+def offline_krt_catalogue(monkeypatch):
+    """ACL-проверке нужен настоящий маршрут, но не ответ городского портала."""
+    from market_search import krt_registry
+
+    def unavailable(url, **_kwargs):
+        assert (url == krt_registry.CATALOGUE_URL
+                or url.startswith(krt_registry.JINA_PREFIX + krt_registry.CATALOGUE_URL)), url
+        # Обычная ветка недоступного источника, а не подмена маршрута, прав,
+        # daemon или результата каталога. Обход закончит оба транспорта до
+        # снятия monkeypatch; внезапный иной запрос остаётся ошибкой теста.
+        raise OSError("fictional offline catalogue for access-control test")
+
+    monkeypatch.setattr(krt_registry, "request_bytes", unavailable)
+
+
 @pytest.fixture(autouse=True)
 def pristine_page():
     """Страница движка возвращается к исходной после КАЖДОГО теста.

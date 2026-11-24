@@ -158,7 +158,7 @@ def test_a_link_without_the_section_is_refused_by_name(block):
 
 
 @pytest.mark.parametrize("block", ALL)
-def test_a_link_with_the_section_reads_it(block):
+def test_a_link_with_the_section_reads_it(block, offline_krt_catalogue):
     session, browser = claim(invite([block]))
     reader, _name = READS[block]
     answer = reader(session, browser)

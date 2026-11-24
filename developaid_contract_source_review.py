@@ -667,7 +667,7 @@ def project_audit(project, cut):
                 def inventory():
                     guard()
                     values=ledgers.list_snapshots(project) if root.exists() else []
-                    known={s.get('snapshot_id') for s in values}
+                    known={s.get('snapshot_id') for s in values} | ledgers.removed_snapshot_ids(project)
                     # A retained native-named original without its manifest is
                     # evidence to inspect, never an omitted/empty contract.
                     for path in root.glob('*.zip') if root.exists() else []:
@@ -856,7 +856,7 @@ def _selected_source_read(project, cut, book_sha256, corpus_token, projection):
                 def inventory():
                     guard()
                     values = ledgers.list_snapshots(project) if root.exists() else []
-                    known = {s.get('snapshot_id') for s in values}
+                    known = {s.get('snapshot_id') for s in values} | ledgers.removed_snapshot_ids(project)
                     for path in root.glob('*.zip') if root.exists() else []:
                         if re.fullmatch(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{64}', path.stem) and path.stem not in known:
                             values.append(dict(snapshot_id=path.stem, taken_at=path.stem[:10], manifest_present=False))
