@@ -34,6 +34,8 @@ RESULT_PART_BYTES = 256 * 1024
 FAILURE_CODES = frozenset({"builder_failed", "serialization_failed", "result_too_large",
                            "storage_failed", "interrupted", "source_changed"})
 FAILED = "Не удалось собрать сводку. Повторите запрос."
+SOURCE_CHANGED_DETAIL = ("Состав архивов изменился. Обновите данные проекта; "
+                         "повторная загрузка файлов не требуется.")
 MISSING = "Сборка сводки не найдена или срок её хранения истёк. Запросите сводку снова."
 
 

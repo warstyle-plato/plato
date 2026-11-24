@@ -1761,8 +1761,7 @@ def validate_snapshot_job_context(value) -> None:
                 or snapshot_job_context(value['namespace']) != value):
             raise ValueError('source changed')
     except (OSError, ValueError):
-        raise jobs.JobProblem(409, 'Состав архивов изменился. Обновите данные проекта; повторная загрузка файлов не требуется.',
-                              code='source_changed') from None
+        raise jobs.JobProblem(409, jobs.SOURCE_CHANGED_DETAIL, code='source_changed') from None
 
 
 def snapshot_inventory(project: str) -> dict:

@@ -907,7 +907,7 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
         }
         if exc.code:
             private["X-Monitor-Job-Error"] = exc.code
-        raise HTTPException(exc.status, exc.detail if exc.code == "source_changed" else messages.get(exc.status, "Не удалось завершить операцию. Повторите запрос."),
+        raise HTTPException(exc.status, jobs.SOURCE_CHANGED_DETAIL if exc.code == "source_changed" else messages.get(exc.status, "Не удалось завершить операцию. Повторите запрос."),
                             headers=private) from None
     except Exception as exc:
         logging.getLogger("developaid.monitor").error("Cumulative operation unavailable (%s)", type(exc).__name__)

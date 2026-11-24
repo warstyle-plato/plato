@@ -133,15 +133,18 @@ def test_ticket_modes_are_bound_but_false_and_omitted_keep_old_fingerprints(api,
 
 
 @pytest.mark.parametrize('mode',['ordinary','on','off'])
-def test_explicit_predeploy_payload_accepts_false_verify_without_rebuilding(api,monkeypatch,mode):
+def test_explicit_source_bound_payload_accepts_false_verify_without_rebuilding(api,monkeypatch,mode):
     client,root=api;store=jobs.Store(root/'monitor'/'.cumulative_jobs')
     family='monitor-cumulative-v1:contracts';owner=jobs.owner_binding(KEY,'',family)
-    payload={'operation':'view','click':'a'*32,'project':PROJECT,'cut':CUT}
+    context=ledgers.snapshot_job_context(PROJECT)
+    payload={'operation':'view','click':'a'*32,'project':PROJECT,'cut':CUT,'source_context':context}
     flags={}
     if mode!='ordinary':payload['diagnostics']=stages.PURPOSE;flags['profile_stages']=True
     if mode=='off':payload['matching_cache']=cache.DISABLED_PURPOSE;flags['profile_matching_cache_off']=True
-    store.start(owner,family,payload,lambda:{'ok':True,'register':{'rows':[]}},'a'*32,result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES)
-    expected=poll(client,'a'*32).json();before=store._meta('a'*32)
+    store.start(owner,family,payload,lambda:{'ok':True,'register':{'rows':[]}},'a'*32,
+                result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES,context=context)
+    response=poll(client,'a'*32);assert response.status_code==200
+    expected=response.json();before=store._meta('a'*32)
     monkeypatch.setattr(core,'_monitor_cumulative_execute',lambda *a:pytest.fail('Legacy ticket rebuilt'))
     for extra in ({},{'profile_matching_verify':False}):assert admit(client,'a'*32,**flags,**extra).json()==expected
     assert store._meta('a'*32)==before
@@ -160,13 +163,14 @@ def test_no_hits_is_not_a_successful_verification_proof(api,monkeypatch):
 def test_v1_verify_ticket_is_immutable_and_cannot_be_readmitted_as_v2(api,monkeypatch,failed):
     client,root=api;store=jobs.Store(root/'monitor'/'.cumulative_jobs')
     family='monitor-cumulative-v1:contracts';owner=jobs.owner_binding(KEY,'',family)
-    payload={'operation':'view','click':'a'*32,'project':PROJECT,'cut':CUT,
+    context=ledgers.snapshot_job_context(PROJECT)
+    payload={'operation':'view','click':'a'*32,'project':PROJECT,'cut':CUT,'source_context':context,
              'diagnostics':stages.PURPOSE,'matching_cache':'contract-pure-matching-hit-verify-v1'}
     def legacy():
         if failed:raise ValueError('synthetic legacy failure')
         return {'ok':True,'register':{'rows':[]},'diagnostics':{
             'matching_cache_verification':{'purpose':'contract-pure-matching-hit-verify-v1'}}}
-    store.start(owner,family,payload,legacy,'a'*32,result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES)
+    store.start(owner,family,payload,legacy,'a'*32,result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES,context=context)
     expected=poll(client,'a'*32);assert expected.status_code==(500 if failed else 200)
     before=store._meta('a'*32)
     monkeypatch.setattr(core,'_monitor_cumulative_execute',lambda *a:pytest.fail('Legacy VERIFY rebuilt'))

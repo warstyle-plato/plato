@@ -611,7 +611,7 @@ def _monitor_view_job(req, *, start: bool) -> Response:
                     429: "Сервер занят другими расчётами. Повторите чуть позже."}
         if exc.code:
             private["X-Monitor-Job-Error"] = exc.code
-        detail = (exc.detail if exc.code == "source_changed" else "Полный расчёт не удалось передать: результат превышает допустимый размер. "
+        detail = (jobs.SOURCE_CHANGED_DETAIL if exc.code == "source_changed" else "Полный расчёт не удалось передать: результат превышает допустимый размер. "
                   "Обратитесь к администратору." if exc.code == "result_too_large" else
                   messages.get(exc.status, "Не удалось рассчитать план и факт проекта. Обновите срез."))
         raise HTTPException(exc.status, detail, headers=private) from None
@@ -1732,7 +1732,7 @@ def _monitor_report_job(req, *, start: bool) -> Response:
         exc.headers = {**(exc.headers or {}), **private}
         raise
     except jobs.JobProblem as exc:
-        raise HTTPException(exc.status, exc.detail, headers=private) from None
+        raise HTTPException(exc.status, jobs.SOURCE_CHANGED_DETAIL if exc.code == "source_changed" else exc.detail, headers=private) from None
     except (OSError, ValueError):
         raise HTTPException(503, "Сборка сводки сейчас недоступна. Повторите запрос.",
                             headers=private) from None

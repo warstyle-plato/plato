@@ -358,3 +358,54 @@ def test_inventory_token_cannot_remove_same_snapshot_in_a_cloned_project(sources
     assert not (folder/ledgers._ACTIVITY_FILE).exists()
     assert not (clone/ledgers._ACTIVITY_FILE).exists()
     assert ledgers.latest_snapshot(PROJECT)['snapshot_id']==ledgers.latest_snapshot(other)['snapshot_id']==new['snapshot_id']
+
+
+@pytest.mark.parametrize('family',['contracts','view','report'])
+@pytest.mark.parametrize('failed',[False,True])
+def test_unsealed_legacy_native_ticket_stays_immutable_and_fresh_admission_works(sources,monkeypatch,family,failed):
+    from fastapi.testclient import TestClient
+    import main
+    key='synthetic-legacy-source-key';monkeypatch.setenv('DEVELOPAID_ADMIN_KEY',key)
+    calls=[]
+    def execute(*_args,**_kwargs):calls.append(family);return {'ok':True,'register':{'rows':[]}}
+    monkeypatch.setattr(main.core,'_monitor_cumulative_execute',execute)
+    monkeypatch.setattr(monitor,'build',lambda *_a,**_k:(calls.append(family),{'schedule':{'rows':[]}})[1])
+    monkeypatch.setattr(main.core,'_monitor_report_body',lambda *_a,**_k:(calls.append(family),{'report':{},'text':'current','html':'current'})[1])
+    paths={'contracts':('/monitor/contracts/build','/monitor/contracts/result',{'cut':'2026-02-01'},'.cumulative_jobs','monitor-cumulative-v1:contracts'),
+           'view':('/monitor/view','/monitor/view/result',{'cut':'2026-02-01','background':True},'.view_jobs','admin'),
+           'report':('/monitor/report/build','/monitor/report/result',{'end':'2026-02-01','kind':'week'},'.report_jobs','admin')}
+    start,poll,params,folder,profile=paths[family];store=jobs.Store(monitor._SNAPSHOT_DIR/folder)
+    owner=jobs.owner_binding(key,'',profile);old='a'*32
+    def legacy():
+        if failed:raise ValueError('synthetic former failure')
+        return {'saved':'legacy response'}
+    store.start(owner,profile,{'old':'unsealed params'},legacy,old)
+    limit=time.monotonic()+5
+    while store._busy(old) and time.monotonic()<limit:time.sleep(.01)
+    assert not store._busy(old)
+    before=store._meta(old);client=TestClient(main.app)
+    for path,data in [(poll,{'ticket':old}), (start,dict(params,project=PROJECT,ticket=old))]:
+        response=client.post(path,json=dict(data,key=key))
+        assert response.status_code==409 and response.json()['detail']==jobs.SOURCE_CHANGED_DETAIL
+    assert store._meta(old)==before and not calls
+    fresh='b'*32;response=client.post(start,json=dict(params,key=key,project=PROJECT,ticket=fresh))
+    assert response.status_code in (200,202),response.text
+    while response.status_code==202 and time.monotonic()<limit:
+        time.sleep(.01);response=client.post(poll,json={'key':key,'ticket':fresh})
+    assert response.status_code==200 and calls==[family]
+    assert store._meta(old)==before
+
+
+@pytest.mark.parametrize('family',['contracts','view','report'])
+def test_source_changed_error_detail_is_always_fixed_and_never_private(sources,monkeypatch,family):
+    from fastapi.testclient import TestClient
+    import main
+    key='synthetic-plain-source-key';private='SYNTHETIC_PRIVATE_EXCEPTION_PATH_AND_PAYLOAD'
+    monkeypatch.setenv('DEVELOPAID_ADMIN_KEY',key)
+    def fail(*_args,**_kwargs):raise jobs.JobProblem(409,private,code='source_changed')
+    monkeypatch.setattr(jobs.Store,'poll',fail)
+    path={'contracts':'/monitor/contracts/result','view':'/monitor/view/result','report':'/monitor/report/result'}[family]
+    response=TestClient(main.app).post(path,json={'key':key,'ticket':'a'*32,'session':'synthetic-private-session'})
+    assert response.status_code==409 and response.json()=={'detail':jobs.SOURCE_CHANGED_DETAIL}
+    assert response.headers['cache-control']=='private, no-store'
+    assert private not in response.text and key not in response.text and 'synthetic-private-session' not in response.text
