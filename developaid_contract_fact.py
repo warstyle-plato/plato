@@ -438,7 +438,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
     known_lines = {}
     work_money, material_money, material_volumes = {}, {}, {}
     unknown_work, unknown_material = set(), set()
-    last, done_quantity, position_facts = {}, {}, {}
+    last, material_last, done_quantity, position_facts = {}, {}, {}, {}
     for act in rows:
         end = _day(act["end"])
         if end > _day(cut):
@@ -524,6 +524,8 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
                         unit = material_volumes.setdefault(code, {}).setdefault(
                             _unit(position["unit"]), {"unit": position["unit"], "quantity": 0.0})
                         unit['quantity'] += components['material_quantity'] * share
+                    if share and (components['material_quantity'] or components['material_amount']):
+                        material_last[code] = max(material_last.get(code, act['end']), act['end'])
                 dated_money.append((end, money))
                 dated_known_money.append((end, components['known_total']))
                 _accumulate_money(result, money, 'total', 'known_total', components['known_total'])
@@ -614,6 +616,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
                         'work_fact': None if code in unknown_work else work_money.get(code, 0.0),
                         'material_fact': None if code in unknown_material else material_money.get(code, 0.0),
                         'material_volumes': list(material_volumes.get(code, {}).values()),
+                        'material_last': material_last.get(code),
                         "last": last.get(code), "complete": complete(code) and not uncertain.get(code, {}).get('quantity_incomplete'),
                         **uncertain.get(code, {})}
                        for code in order if code in lines]

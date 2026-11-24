@@ -559,7 +559,9 @@ def _monitor_view_job(req, *, start: bool) -> Response:
         _require_team_access(req.session, req.key, "Монитор проекта", write=False)
         profile = "demo" if demo_session_chat(req.session) else "admin"
         owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
-        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".view_jobs")
+        import developaid_monitor_ledgers as _job_ledgers
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".view_jobs",
+                           context_validator=_job_ledgers.validate_snapshot_job_context)
         if start:
             project = req.project.strip()
             try:
@@ -575,19 +577,24 @@ def _monitor_view_job(req, *, start: bool) -> Response:
             if profile_python:
                 import developaid_monitor_python_profile as python_profile
                 payload['diagnostics'] = python_profile.PURPOSE
+            source_context = _job_ledgers.snapshot_job_context(project)
             def build():
+                _job_ledgers.validate_snapshot_job_context(source_context)
                 def snapshot():
                     return {"snapshot": jsonable_encoder(developaid_monitor.build(project, cut=cut, upto=cut))}
                 if profile_python:
                     import developaid_monitor_python_profile as python_profile
                     result, diagnostics = python_profile.run(snapshot)
-                    return {**result, 'diagnostics': diagnostics}
-                return snapshot()
+                    value = {**result, 'diagnostics': diagnostics}
+                else:
+                    value = snapshot()
+                _job_ledgers.validate_snapshot_job_context(source_context)
+                return value
             # Full snapshots can contain several complete financial and GPR
             # projections. Keep every field within a bounded, server-owned
             # budget; other job families retain their existing limits.
             result = store.start(owner, profile, payload, build, req.ticket,
-                                 result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES)
+                                 result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES, context=source_context)
         else:
             result = store.poll(req.ticket, owner, profile)
         if result["pending"]:
@@ -604,7 +611,7 @@ def _monitor_view_job(req, *, start: bool) -> Response:
                     429: "Сервер занят другими расчётами. Повторите чуть позже."}
         if exc.code:
             private["X-Monitor-Job-Error"] = exc.code
-        detail = ("Полный расчёт не удалось передать: результат превышает допустимый размер. "
+        detail = (jobs.SOURCE_CHANGED_DETAIL if exc.code == "source_changed" else "Полный расчёт не удалось передать: результат превышает допустимый размер. "
                   "Обратитесь к администратору." if exc.code == "result_too_large" else
                   messages.get(exc.status, "Не удалось рассчитать план и факт проекта. Обновите срез."))
         raise HTTPException(exc.status, detail, headers=private) from None
@@ -1696,7 +1703,9 @@ def _monitor_report_job(req, *, start: bool) -> Response:
         _require_team_access(req.session, req.key, "Сводка руководству", write=False)
         profile = "demo" if demo_session_chat(req.session) else "admin"
         owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
-        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".report_jobs")
+        import developaid_monitor_ledgers as _job_ledgers
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".report_jobs",
+                           context_validator=_job_ledgers.validate_snapshot_job_context)
         if start:
             end = (req.end or "").strip() or _dt.date.today().isoformat()
             try:
@@ -1707,10 +1716,14 @@ def _monitor_report_job(req, *, start: bool) -> Response:
                        "sales_project": req.sales_project}
             # Only canonical calculation inputs and a fixed policy are captured;
             # raw authentication credentials never enter the worker or manifest.
+            source_context = _job_ledgers.snapshot_job_context(req.project.strip())
             def build():
-                return jsonable_encoder(_monitor_report_body(
+                _job_ledgers.validate_snapshot_job_context(source_context)
+                value = jsonable_encoder(_monitor_report_body(
                     MonitorReportRequest(**payload), hide_legal=profile == "demo"))
-            result = store.start(owner, profile, payload, build, req.ticket)
+                _job_ledgers.validate_snapshot_job_context(source_context)
+                return value
+            result = store.start(owner, profile, payload, build, req.ticket, context=source_context)
         else:
             result = store.poll(req.ticket, owner, profile)
         return JSONResponse(status_code=202 if result["pending"] else 200,
@@ -1719,7 +1732,7 @@ def _monitor_report_job(req, *, start: bool) -> Response:
         exc.headers = {**(exc.headers or {}), **private}
         raise
     except jobs.JobProblem as exc:
-        raise HTTPException(exc.status, exc.detail, headers=private) from None
+        raise HTTPException(exc.status, jobs.SOURCE_CHANGED_DETAIL if exc.code == "source_changed" else exc.detail, headers=private) from None
     except (OSError, ValueError):
         raise HTTPException(503, "Сборка сводки сейчас недоступна. Повторите запрос.",
                             headers=private) from None

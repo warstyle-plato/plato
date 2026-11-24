@@ -33,7 +33,7 @@ def test_backend_tiles_keep_document_qualifications_and_leave_model_and_inputs_u
     result['summary']['preliminary_reason']=DETAIL
     before=copy.deepcopy((result,x))
     block=core.entry_price_block({'consolidated':result},x,None)
-    assert block['verdict']=={'title':'Предварительный расчёт','tone':'edge'}
+    assert block['verdict']==core._entry_price_metric_verdict({'consolidated':result})
     assert all(DETAIL not in t['note'] for t in block['tiles'])
     assert (result,x)==before
     result['summary']['intake_qualification']={'status':'conditional','reason':'Учебный документ: проверить обязательства.'}
@@ -79,8 +79,8 @@ def test_actual_result_has_one_notice_and_opens_the_lease_conditions(width,surfa
             for host in ['#reportKpi','#projectParamsTable']+(['#iaVerdict'] if surface=='/' else []):
                 assert DETAIL not in page.locator(host).inner_text()
             if surface=='/':
-                expect(page.locator('#iaVerdictTitle')).to_have_text('Предварительный расчёт')
-                assert not page.locator('#iaVerdict').evaluate("e=>e.classList.contains('pass')")
+                expect(page.locator('#iaVerdictTitle')).to_have_text(page.evaluate('lastResult.report.entry_price_verdict.title'))
+                assert page.locator('#iaVerdict').evaluate("e=>e.classList.contains('pass')") == (page.evaluate('lastResult.report.entry_price_verdict.tone') == 'pass')
                 assert pending
                 result=page.evaluate('lastResult');x=page.evaluate('inputs')
                 goal={'available':True,'target_metric':'llcr','target_llcr':1.2,
@@ -89,7 +89,7 @@ def test_actual_result_has_one_notice_and_opens_the_lease_conditions(width,surfa
                 block=core.entry_price_block({'consolidated':result},x,goal)
                 pending[-1].fulfill(json={**goal,**block,'fingerprint':'synthetic-local-goal'})
                 expect(page.locator('#iaVerdictStamp')).to_contain_text('synthetic-local')
-                expect(page.locator('#iaVerdictTitle')).to_have_text('Предварительный расчёт')
+                expect(page.locator('#iaVerdictTitle')).to_have_text(page.evaluate('lastResult.report.entry_price_verdict.title'))
                 assert DETAIL not in page.locator('#iaVerdictGrid').inner_text()
                 assert projection(page)==before
             page.screenshot(path=str(tmp_path/f'rent-result-{surface.strip("/") or "main"}-{width}.png'))

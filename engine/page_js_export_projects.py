@@ -1272,6 +1272,7 @@ function resetMoParams(){
 }
 function resetAll(){
  localStorage.removeItem('plato_v04');
+ resetSalesPeriodCharts();
  // Открытая подсказка «i» говорит о числе прошлого проекта — закрыть.
  hideKpiTip();
  inputs=resetInputsWanted();

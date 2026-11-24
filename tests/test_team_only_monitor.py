@@ -66,6 +66,7 @@ _PDF_INTAKE_PAYLOAD = {
                    "quote": "ООО «Учебный подрядчик», именуемое в дальнейшем «Подрядчик»"},
 }
 _ENDPOINT_PAYLOADS = {
+    ("POST", "/monitor/cumulative/remove"): {"expected_revision": "a" * 64, "restore": False},
     ("POST", "/monitor/sales-followups"): {"chat_id": _SALES_GROUP},
     ("POST", "/monitor/finance-allocation/apply"): {"assignments": [{"row_id": "a" * 64, "bank_code": "2.6"}]},
     ("POST", "/monitor/finance-management/apply"): {"item_ids": ["a" * 64], "management_article": "2.6"},
@@ -270,12 +271,15 @@ def test_the_admin_key_passes(method, path, monkeypatch):
     if identity_operation:
         import developaid_management_report_jobs as jobs
         start = jobs.Store.start
-        def authorized_job(store, owner, profile, params, builder, ticket=""):
+        def authorized_job(store, owner, profile, params, builder, ticket="", **policy):
             # Admission, strict models and the native job store stay real.
             # This auth smoke does not confirm/revoke any source identity.
             if profile == "monitor-cumulative-v1:contract-identity":
+                import developaid_monitor_ledgers as ledgers
+                assert policy.get('context') == ledgers.snapshot_job_context(params['project'])
+                assert params['source_context'] == policy['context']
                 builder = lambda: {"ok": True}
-            return start(store, owner, profile, params, builder, ticket)
+            return start(store, owner, profile, params, builder, ticket, **policy)
         monkeypatch.setattr(jobs.Store, "start", authorized_job)
     # Заголовком ключ едет на GET-маршрутах (страница так не кладёт его в адрес).
     answers = [call(method, path, key=KEY)]
@@ -294,6 +298,7 @@ def test_the_admin_key_passes(method, path, monkeypatch):
                 if answer.status_code == 202:
                     time.sleep(.005)
             assert answer.status_code == 200, "synthetic identity worker did not finish before fixture teardown"
+            assert answer.json().get('ok') is True
 
 
 def test_sales_followups_need_both_admin_key_and_current_exact_owner_scope():
