@@ -630,6 +630,7 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
                                          "auto", "incomplete")},
             "source": found.get("source"), "preliminary": bool(found.get("preliminary")),
             "confirmation": found.get("confirmation"),
+            'act_evidence': found.get('act_evidence'),
             "left_out": found["left_out"],
             "coverage": found.get("coverage"),
             "data_gaps": found["data_gaps"],

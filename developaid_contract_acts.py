@@ -139,7 +139,7 @@ def accumulated(records: list[dict], cut: str) -> dict:
     """
     chosen = in_force(records)
     positions: dict[tuple, dict] = {}
-    acts, excluded, later = [], [], 0
+    acts, excluded, evidence, later = [], [], [], 0
     for record in chosen["acts"]:
         act = record["act"]
         day, preliminary = _day(act)
@@ -151,6 +151,9 @@ def accumulated(records: list[dict], cut: str) -> dict:
             excluded.append({**row, "reason": "у акта не прочитаны ни отчётный период, ни дата составления: "
                                               "его объёмы в накопление не вошли"})
             continue
+        if not cut or day <= cut:
+            evidence.append({**row, 'total': act.get('total'),
+                             'warnings': list(record.get('warnings') or [])})
         if not act.get("positions"):
             excluded.append({**row, "reason": "в акте не прочитаны позиции с объёмами: его объёмы в накопление "
                                               "не вошли"})
@@ -204,7 +207,12 @@ def accumulated(records: list[dict], cut: str) -> dict:
                     "amount": fsum(x["amount"] for x in parts),
                     "preliminary": any(x["preliminary"] for x in parts)})
     preliminary = any(a["preliminary"] for a in acts)
+    known_total = fsum(a['total'] for a in evidence if a['total'] is not None)
     return {"cut": cut, "acts": acts, "positions": out, "excluded": excluded, "later": later,
+            'evidence': {'acts': evidence, 'count': len(evidence),
+                         'total': known_total if evidence and all(a['total'] is not None for a in evidence) else None,
+                         'known_total': known_total,
+                         'unread_count': sum(not a['positions'] for a in evidence)},
             "replaced": chosen["replaced"], "copies": chosen["copies"], "notes": chosen["notes"], "warnings": warnings,
             "preliminary": preliminary,
             "note": PRELIMINARY if preliminary else ""}
