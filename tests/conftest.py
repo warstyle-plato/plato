@@ -175,6 +175,22 @@ def krt_catalogue_threads(monkeypatch):
         _join_krt_catalogue_threads(threads)
 
 
+@pytest.fixture
+def offline_krt_catalogue(monkeypatch):
+    """ACL-проверке нужен настоящий маршрут, но не ответ городского портала."""
+    from market_search import krt_registry
+
+    def unavailable(url, **_kwargs):
+        assert (url == krt_registry.CATALOGUE_URL
+                or url.startswith(krt_registry.JINA_PREFIX + krt_registry.CATALOGUE_URL)), url
+        # Обычная ветка недоступного источника, а не подмена маршрута, прав,
+        # daemon или результата каталога. Обход закончит оба транспорта до
+        # снятия monkeypatch; внезапный иной запрос остаётся ошибкой теста.
+        raise OSError("fictional offline catalogue for access-control test")
+
+    monkeypatch.setattr(krt_registry, "request_bytes", unavailable)
+
+
 @pytest.fixture(autouse=True)
 def pristine_page():
     """Страница движка возвращается к исходной после КАЖДОГО теста.

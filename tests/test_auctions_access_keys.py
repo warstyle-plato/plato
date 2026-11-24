@@ -72,7 +72,7 @@ def _assert_closed(client: TestClient) -> None:
         assert response.json().get("detail"), (method, path)
 
 
-def test_auctions_key_opens_auctions_and_closes_the_rest(registry_app):
+def test_auctions_key_opens_auctions_and_closes_the_rest(registry_app, offline_krt_catalogue):
     record, secret = access_keys.issue("Проверочный Человек", issued_by="1")
     client = TestClient(registry_app)
 
