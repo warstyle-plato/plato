@@ -86,8 +86,6 @@ async function applyTelegramManualTep(manual,options){
  // хуже, с номерами прошлого расчёта, и непонятно, что именно посчитано.
  const numbers=((manual.source||{}).cadastral_numbers)||[];
  writeCadastralField(numbers.join(', '));
- const preview=document.getElementById('cadastralPreview');
- if(preview){preview.innerHTML='';preview.style.display='none';}
  if(typeof cadastralStatus!=='undefined'&&cadastralStatus){
   cadastralStatus.innerHTML=numbers.length
    ? '<span class="import-ok">Участков в расчёте: '+numbers.length+'.</span> Территория пришла из Telegram вместе с ТЭП.'

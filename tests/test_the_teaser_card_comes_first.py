@@ -73,6 +73,22 @@ EXTRACTION = {
 }
 
 
+@pytest.fixture(autouse=True)
+def local_browser_requests_only(monkeypatch):
+    """Browser requests stay local, just like Python requests in conftest."""
+    from playwright.sync_api import Browser
+    original = Browser.new_page
+
+    def new_page(browser, *args, **kwargs):
+        page = original(browser, *args, **kwargs)
+        page.route("**/*", lambda route: route.fallback()
+                   if urlsplit(route.request.url).hostname in {"127.0.0.1", "localhost", "::1"}
+                   else route.abort())
+        return page
+
+    monkeypatch.setattr(Browser, "new_page", new_page)
+
+
 def _stub(monkeypatch) -> None:
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
     monkeypatch.setattr(core, "usage_track", lambda *_a, **_k: None)
@@ -193,6 +209,22 @@ def test_the_bot_overrides_are_exactly_the_card_rows(monkeypatch) -> None:
                                               if not row["path"].startswith("land.")}
     # Чего нет в карточке «уйдёт в расчёт», того нет и в расчёте бота.
     assert "purchase_price_mln" not in overrides
+
+
+def test_the_bot_carries_the_parcels_and_their_document_origin(monkeypatch) -> None:
+    numbers = [NUMBER, "77:08:0010008:1050"]
+    card = _ready_owned_bot_card(monkeypatch, numbers, "moscow")
+    overrides = teaser_card.calc_overrides(card)
+    assert overrides["_cadastral_query"] == ", ".join(numbers)
+    assert overrides["_cadastral_origin"]["source"] == "document"
+    assert "стр. 3" in overrides["_cadastral_origin"]["text"]
+    token = core._telegram_intake_calc_markup(1, card, "moscow")["inline_keyboard"][0][0]["web_app"]["url"]
+    from urllib.parse import parse_qs
+    session = parse_qs(urlsplit(token).fragment)["telegram_session"][0]
+    delivered = core.telegram_session_data(core.TelegramSessionRequest(session=session))
+    assert delivered["cadastral_numbers"] == numbers
+    assert delivered["calc_overrides"]["_cadastral_query"] == ", ".join(numbers)
+    assert delivered["overrides_review_required"] is False
 
 
 def test_the_parcel_rows_have_no_number_before_the_calculation(monkeypatch) -> None:
@@ -405,11 +437,12 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
         with stand.serve(wrapper.app, port) as root:
             page.goto(f"{root}/?telegram=1#{url.split('#', 1)[1]}", wait_until="domcontentloaded")
             page.wait_for_function(
-                "() => /по карточке тизера готов|не посчитан/.test("
+                "() => /по карточке тизера готов|Расчёт завершён|не посчитан/.test("
                 "(document.getElementById('telegramIntakeNote')?.innerText||'')"
                 "+(document.getElementById('telegramDoneBanner')?.innerText||''))", timeout=90_000)
             stand.wait_for_result(page)
-            assert page.is_visible("#telegramIntakeNote"), "итог расчёта человеку не виден"
+            assert page.is_visible("#telegramDoneBanner" if region == "moscow" else "#telegramIntakeNote"), \
+                "итог расчёта человеку не виден"
             # Что видит человек: блок итога на открытой вкладке, а не текст
             # где-то в разметке.
             seen = page.evaluate(
@@ -417,10 +450,20 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
                 "+(document.getElementById('telegramDoneBanner')?.innerText||'')")
             state = page.evaluate("() => ({region: inputs.vri_region, area: Number(inputs.site_area_ha),"
                                   " fee: Number(inputs.land_rights_cost_mln||0)})")
+            # Applying parcel TEP resets territory metadata. The card must
+            # restore its parcel identity before calculation and saving.
+            assert page.input_value("#cadastralNumbers") == ", ".join(numbers)
+            assert page.evaluate("inputs._cadastral_query") == ", ".join(numbers)
+            assert page.evaluate("projectCadastral()") == numbers
+            saved = page.evaluate("() => JSON.parse(JSON.stringify({inputs,tep,phasing}))")
+            page.evaluate("snapshot => {resetAll();applyProjectSnapshot(snapshot)}", saved)
+            assert page.input_value("#cadastralNumbers") == ", ".join(numbers)
+            assert page.evaluate("projectCadastral()") == numbers
             chromium.close()
     assert not errors, errors
     assert "не посчитан" not in seen, seen[:500]
     sent = calcs[-1]
+    assert core._project_cadastral_numbers(sent["inputs"]) == numbers
     for row in card["to_engine"]:
         if row["derived"] or row["path"].startswith("land."):
             continue
@@ -428,6 +471,27 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
         got = sent["inputs"][parts[1]] if parts[0] == "inputs" else sent["tep"][parts[1]][parts[2]]
         assert got == row["value"] or abs(float(got) - float(row["value"])) < 1e-6, (row["path"], got)
     return {"seen": seen, "state": state, "sent": sent}
+
+
+def test_the_moscow_teaser_parcels_survive_glavapu_and_reopening(monkeypatch) -> None:
+    numbers = [NUMBER, "77:08:0010008:1050"]
+    analysis = {"requested": numbers, "recognized": numbers, "parcels": [],
+                "territory": {"inside_moscow": True, "area_ha": 1.2}, "warnings": []}
+    imported = {"source": {"label": "Синтетический ТЭП"}, "recognized": [], "warnings": [],
+                "normalized": {"site_area_ha": 1.2}, "cadastral_analysis": analysis,
+                "mappings": {"inputs": {"site_area_ha": 1.2},
+                             "tep": {"apartments": {"gns": 10000, "saleable": 6500}}}}
+
+    def fulfil(body):
+        return lambda route: route.fulfill(status=200, content_type="application/json",
+                                           body=json.dumps(body, ensure_ascii=False))
+
+    _mini_app_by_parcel(monkeypatch, numbers, "moscow", PORT + 4, [
+        ("**/cadastral/analyze", fulfil(analysis)),
+        ("**/cadastral/tep-server", fulfil(imported)),
+        ("**/telegram/result", fulfil({"ok": True})),
+        ("**/land/screening", fulfil({})),
+    ])
 
 
 def test_the_mini_app_counts_another_region_with_the_card(monkeypatch) -> None:
