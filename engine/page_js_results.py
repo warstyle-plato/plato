@@ -1125,6 +1125,7 @@ function salesPeriodSvg(rows,fields,unit,multiplier=1,width=1000){
 }
 const salesChartModels=new WeakMap();
 const salesChartWidths=new WeakMap();
+const salesChartTargets=new Set();
 const salesChartPending=new Set();
 let salesChartFrame=0;
 const salesChartObserver=new ResizeObserver(entries=>{
@@ -1132,11 +1133,15 @@ const salesChartObserver=new ResizeObserver(entries=>{
   if(salesChartModels.has(e.target)&&e.target.clientWidth>0
     &&salesChartWidths.get(e.target)!==e.target.clientWidth)salesChartPending.add(e.target);
  });
- if(salesChartPending.size&&!salesChartFrame)salesChartFrame=requestAnimationFrame(()=>{
-  salesChartFrame=0;
-  const targets=[...salesChartPending];salesChartPending.clear();
-  targets.forEach(drawSalesPeriodChart);
- });
+ if(salesChartPending.size&&!salesChartFrame){
+  const frame={id:0};salesChartFrame=frame;
+  frame.id=requestAnimationFrame(()=>{
+   if(salesChartFrame!==frame)return;
+   salesChartFrame=0;
+   const targets=[...salesChartPending];salesChartPending.clear();
+   targets.forEach(drawSalesPeriodChart);
+  });
+ }
 });
 function drawSalesPeriodChart(target){
  const model=salesChartModels.get(target);if(!model)return;
@@ -1150,14 +1155,25 @@ function renderSalesPeriodChart(target,model){
  // Новый итог перерисовывается и при прежней ширине. В callback наблюдателя
  // SVG не меняем: его height:auto меняет высоту самого наблюдаемого блока.
  salesChartModels.set(target,model);salesChartWidths.delete(target);
+ salesChartTargets.add(target);
  salesChartObserver.observe(target);drawSalesPeriodChart(target);
 }
 function releaseSalesPeriodChart(target){
  salesChartObserver.unobserve(target);salesChartModels.delete(target);
  salesChartWidths.delete(target);salesChartPending.delete(target);
+ salesChartTargets.delete(target);
 }
 function releaseSalesPeriodCharts(box){
  box.querySelectorAll('[data-report-chart]').forEach(releaseSalesPeriodChart);
+}
+function resetSalesPeriodCharts(){
+ // Отложенный кадр и его модели принадлежат прежнему проекту. Даже если
+ // старый callback уже передан, его token не должен погасить новую очередь.
+ if(salesChartFrame)cancelAnimationFrame(salesChartFrame.id);
+ salesChartFrame=0;salesChartPending.clear();salesChartObserver.disconnect();
+ [...salesChartTargets].forEach(target=>{
+  releaseSalesPeriodChart(target);target.replaceChildren();target.removeAttribute('data-report-chart');
+ });
 }
 function renderApartmentPaceChart(sales){
  const target=document.getElementById('apartmentPaceChart');if(!target)return;

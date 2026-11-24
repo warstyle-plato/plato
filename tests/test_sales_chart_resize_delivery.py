@@ -143,6 +143,88 @@ def test_new_model_at_same_width_and_release_before_pending_frame(native_page, w
     assert not page.locator("#pageFailure").count()
 
 
+@pytest.mark.parametrize('width', [390, 1440])
+@pytest.mark.parametrize('reset', ['resetAll', 'resetProject'])
+def test_reset_cancels_pending_native_frame_and_late_callback_cannot_take_new_model_frame(native_page, width, reset):
+    page = _open(native_page, width)
+    page.evaluate("()=>openTab('report',null)")
+    page.wait_for_function(CHART_READY)
+    page.evaluate("""()=>{
+      const extra=document.createElement('div');extra.style.width='310px';document.body.append(extra);
+      extra.setAttribute('data-report-chart','old-project-model');window.__resetExtra=extra;
+      renderSalesPeriodChart(extra,{rows:[{month:'2030-01',units:987654321}],
+        fields:[['units','Старый проект']],unit:'шт.',multiplier:1});
+    }""")
+    page.evaluate(FRAMES)
+    page.evaluate("""()=>{
+      window.__nativeChartRAF=window.requestAnimationFrame.bind(window);
+      window.__nativeChartCancel=window.cancelAnimationFrame.bind(window);
+      window.__resetFrames=[];window.__resetCancelled=[];
+      // Native RAF delivery is real; hold its application callback to interleave
+      // reset before SVG drawing. ResizeObserver and ErrorEvent stay native.
+      window.requestAnimationFrame=callback=>{
+        const entry={callback,delivered:false,id:0};
+        entry.id=window.__nativeChartRAF(time=>{entry.delivered=true;entry.time=time});
+        window.__resetFrames.push(entry);return entry.id;
+      };
+      window.cancelAnimationFrame=id=>{window.__resetCancelled.push(id);window.__nativeChartCancel(id)};
+      const target=document.getElementById('apartmentPaceChart');window.__resetTarget=target;
+      target.style.width=(target.clientWidth+31)+'px';window.__resetExtra.style.width='350px';
+    }""")
+    page.wait_for_function("""()=>{
+      const id=typeof salesChartFrame==='object'?salesChartFrame.id:salesChartFrame;
+      return window.__resetFrames.some(e=>e.id===id&&e.delivered);
+    }""", polling=10)
+    after = page.evaluate("""reset=>{
+      const id=typeof salesChartFrame==='object'?salesChartFrame.id:salesChartFrame;
+      window.__oldResetFrame=window.__resetFrames.find(e=>e.id===id);
+      const original=isTelegramWebApp;let left;
+      try{if(reset==='resetProject')isTelegramWebApp=()=>true;left=window[reset]();}
+      finally{isTelegramWebApp=original;}
+      const target=window.__resetTarget,extra=window.__resetExtra;
+      return {left,frame:salesChartFrame,pending:salesChartPending.size,
+        retained:salesChartModels.has(target)||salesChartModels.has(extra),
+        measured:salesChartWidths.has(target)||salesChartWidths.has(extra),
+        tracked:typeof salesChartTargets!=='undefined'?salesChartTargets.size:null,
+        empty:!target.querySelector('svg')&&!extra.querySelector('svg'),
+        oldModelAttribute:extra.hasAttribute('data-report-chart'),
+        cancelled:window.__resetCancelled.includes(id),gns:tep.apartments.gns,units:tep.apartments.units};
+    }""", reset)
+    assert after == {'left': [], 'frame': 0, 'pending': 0, 'retained': False,
+                     'measured': False, 'tracked': 0, 'empty': True, 'oldModelAttribute': False,
+                     'cancelled': True, 'gns': 0, 'units': 0}, after
+    page.evaluate("""()=>{
+      const target=window.__resetTarget;
+      renderSalesPeriodChart(target,{rows:[{month:'2031-02',units:7}],
+        fields:[['units','Новый проект']],unit:'шт.',multiplier:1});
+      target.style.width=(target.clientWidth+19)+'px';
+    }""")
+    page.wait_for_function("""()=>{
+      const id=typeof salesChartFrame==='object'?salesChartFrame.id:salesChartFrame;
+      return id!==window.__oldResetFrame.id&&window.__resetFrames.some(e=>e.id===id&&e.delivered);
+    }""", polling=10)
+    before = _result_fingerprint(page)
+    late = page.evaluate("""()=>{
+      const frame=salesChartFrame,target=window.__resetTarget,svg=target.querySelector('svg');
+      window.__oldResetFrame.callback(window.__oldResetFrame.time);
+      const result={sameFrame:salesChartFrame===frame,pending:salesChartPending.has(target),
+        sameSvg:svg===target.querySelector('svg'),title:target.querySelector('title').textContent,
+        oldExtraEmpty:!window.__resetExtra.querySelector('svg')};
+      window.requestAnimationFrame=window.__nativeChartRAF;
+      window.cancelAnimationFrame=window.__nativeChartCancel;
+      const id=typeof frame==='object'?frame.id:frame;
+      window.__resetFrames.find(e=>e.id===id).callback(performance.now());
+      return result;
+    }""")
+    assert late['sameFrame'] and late['pending'] and late['sameSvg'] and late['oldExtraEmpty'], late
+    assert '7' in late['title'] and '987654321' not in late['title']
+    page.wait_for_function(CHART_READY)
+    page.evaluate(FRAMES)
+    assert _result_fingerprint(page) == before
+    assert not page.evaluate("()=>window.__chartProbe.errors")
+    assert not page.locator('#pageFailure').count()
+
+
 def test_genuine_script_rejection_and_resource_failures_remain_visible(native_page):
     page = _open(native_page, 1440)
     page.evaluate("()=>setTimeout(()=>{__missingChartProbeFunction__()},0)")
