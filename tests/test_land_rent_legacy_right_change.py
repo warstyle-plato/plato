@@ -80,8 +80,8 @@ def test_legacy_ownership_switch_rebuilds_before_recalc_and_keeps_confirmation(w
             assert 'conditions' not in page.evaluate('lastResult.land_rent.financial_missing_codes')
             evidence=Path('/tmp/plato-rent-legacy-ui');evidence.mkdir(exist_ok=True)
             page.locator('#landRentEditor').screenshot(path=str(evidence/f'confirmed-rates-{width}-{surface.strip("/") or "main"}.png'))
-            # Explicit synthetic contract data removes only the other two gaps.
-            # Rates confirmation alone must never create this date-only verdict.
+            # Explicit synthetic contract data removes only the other two rent gaps.
+            # The missing date stays separate from the economic verdict.
             page.locator('#landRentEditor details[data-land-rent-detail="payments"] > summary').click()
             page.locator('#f_land_rent_premium_status').select_option('not_applicable')
             browser.wait_for_result(page)
@@ -91,8 +91,10 @@ def test_legacy_ownership_switch_rebuilds_before_recalc_and_keeps_confirmation(w
             page.locator('#f_land_rent_termination_date').dispatch_event('change')
             browser.wait_for_result(page)
             assert page.evaluate('lastResult.summary.land_rent_sum.reason_code') == 'regime_start'
-            title = 'Предварительный расчёт'
-            assert page.evaluate('lastResult.report.entry_price_verdict.title') == title
+            title = 'Экономика не проходит'
+            expected_verdict = {'title': title, 'tone': 'fail'}
+            assert page.evaluate('lastResult.summary.llcr') < 1.05
+            assert page.evaluate('lastResult.report.entry_price_verdict') == expected_verdict
             assert 'договор с ними ещё не сверен' not in page.locator('#landRentSummary').inner_text()
             if surface == '/':
                 if page.locator('#iaFabHint button').count():
@@ -124,4 +126,11 @@ def test_legacy_ownership_switch_rebuilds_before_recalc_and_keeps_confirmation(w
             assert page.evaluate('lastResult.land_rent.construction_total') is None
             assert page.evaluate('lastResult.summary.land_rent_sum.known') is False
             assert 'Не определена' in page.locator('#projectParamsTable').inner_text()
+            assert page.evaluate('lastResult.summary.preliminary') is True
+            assert page.evaluate('lastResult.summary.llcr') < 1.05
+            assert page.evaluate('lastResult.report.entry_price_verdict') == expected_verdict
+            if surface == '/':
+                page.locator('.ia-nav').get_by_role('button', name='Результат', exact=True).click()
+                expect(page.locator('#iaVerdictTitle')).to_have_text(title)
+                assert page.locator('#iaVerdict').evaluate("e=>e.classList.contains('fail')")
             assert not errors, errors
