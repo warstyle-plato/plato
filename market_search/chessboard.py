@@ -50,6 +50,22 @@ def building(value: Any) -> str:
     return str(int(hit.group(1) or hit.group(2))) if hit else ""
 
 
+def explicit_building(value: Any) -> str:
+    """Для сравнения цен нужен один явно названный корпус, без догадок по башне."""
+    text = str(value or "")
+    corps = set()
+    for hit in _BUILDING.finditer(text):
+        before, after = text[:hit.start()], text[hit.end():]
+        # «3А», «3.1», «3/1» и обратные записи этих составных номеров — не «3».
+        if ((before and (before[-1].isalnum() or before[-1] == "_"))
+                or (after and (after[0].isalnum() or after[0] == "_"))
+                or (hit.group(1) and after.lstrip().startswith((".", "/", "-")))
+                or (hit.group(2) and before.rstrip().endswith((".", "/", "-")))):
+            return ""
+        corps.add(str(int(hit.group(1) or hit.group(2))))
+    return next(iter(corps)) if len(corps) == 1 else ""
+
+
 def read(data: bytes) -> dict[str, Any]:
     from openpyxl import load_workbook
 
