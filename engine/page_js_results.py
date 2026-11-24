@@ -1124,17 +1124,40 @@ function salesPeriodSvg(rows,fields,unit,multiplier=1,width=1000){
  return svg+`<text x="${W-pR}" y="${pT-5}" font-size="11" fill="#777" text-anchor="end">${escapeHtml(unit)}</text></svg>`;
 }
 const salesChartModels=new WeakMap();
-const salesChartObserver=new ResizeObserver(entries=>entries.forEach(e=>drawSalesPeriodChart(e.target)));
+const salesChartWidths=new WeakMap();
+const salesChartPending=new Set();
+let salesChartFrame=0;
+const salesChartObserver=new ResizeObserver(entries=>{
+ entries.forEach(e=>{
+  if(salesChartModels.has(e.target)&&e.target.clientWidth>0
+    &&salesChartWidths.get(e.target)!==e.target.clientWidth)salesChartPending.add(e.target);
+ });
+ if(salesChartPending.size&&!salesChartFrame)salesChartFrame=requestAnimationFrame(()=>{
+  salesChartFrame=0;
+  const targets=[...salesChartPending];salesChartPending.clear();
+  targets.forEach(drawSalesPeriodChart);
+ });
+});
 function drawSalesPeriodChart(target){
  const model=salesChartModels.get(target);if(!model)return;
  const width=target.clientWidth;
- if(width>0)target.innerHTML=salesPeriodSvg(model.rows,model.fields,model.unit,model.multiplier,width);
+ if(width>0&&salesChartWidths.get(target)!==width){
+  target.innerHTML=salesPeriodSvg(model.rows,model.fields,model.unit,model.multiplier,width);
+  salesChartWidths.set(target,width);
+ }
 }
 function renderSalesPeriodChart(target,model){
- salesChartModels.set(target,model);salesChartObserver.observe(target);drawSalesPeriodChart(target);
+ // Новый итог перерисовывается и при прежней ширине. В callback наблюдателя
+ // SVG не меняем: его height:auto меняет высоту самого наблюдаемого блока.
+ salesChartModels.set(target,model);salesChartWidths.delete(target);
+ salesChartObserver.observe(target);drawSalesPeriodChart(target);
+}
+function releaseSalesPeriodChart(target){
+ salesChartObserver.unobserve(target);salesChartModels.delete(target);
+ salesChartWidths.delete(target);salesChartPending.delete(target);
 }
 function releaseSalesPeriodCharts(box){
- box.querySelectorAll('[data-report-chart]').forEach(target=>{salesChartObserver.unobserve(target);salesChartModels.delete(target)});
+ box.querySelectorAll('[data-report-chart]').forEach(releaseSalesPeriodChart);
 }
 function renderApartmentPaceChart(sales){
  const target=document.getElementById('apartmentPaceChart');if(!target)return;
@@ -1142,7 +1165,7 @@ function renderApartmentPaceChart(sales){
  const shown=rows.some(r=>Number(r.units)>0);
  target.style.display=shown?'':'none';
  if(shown)renderSalesPeriodChart(target,{rows,fields:[['units','Продажи']],unit:'квартир/мес.',multiplier:1});
- else{target.innerHTML='';salesChartObserver.unobserve(target);salesChartModels.delete(target)}
+ else{target.innerHTML='';releaseSalesPeriodChart(target)}
 }
 
 // Эскроу против обязательства по ПФ. Прежде здесь сравнивалось тело долга со
