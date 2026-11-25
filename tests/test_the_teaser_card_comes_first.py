@@ -73,6 +73,22 @@ EXTRACTION = {
 }
 
 
+@pytest.fixture(autouse=True)
+def local_browser_requests_only(monkeypatch):
+    """Browser requests stay local, just like Python requests in conftest."""
+    from playwright.sync_api import Browser
+    original = Browser.new_page
+
+    def new_page(browser, *args, **kwargs):
+        page = original(browser, *args, **kwargs)
+        page.route("**/*", lambda route: route.fallback()
+                   if urlsplit(route.request.url).hostname in {"127.0.0.1", "localhost", "::1"}
+                   else route.abort())
+        return page
+
+    monkeypatch.setattr(Browser, "new_page", new_page)
+
+
 def _stub(monkeypatch) -> None:
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
     monkeypatch.setattr(core, "usage_track", lambda *_a, **_k: None)
@@ -193,6 +209,98 @@ def test_the_bot_overrides_are_exactly_the_card_rows(monkeypatch) -> None:
                                               if not row["path"].startswith("land.")}
     # Чего нет в карточке «уйдёт в расчёт», того нет и в расчёте бота.
     assert "purchase_price_mln" not in overrides
+
+
+def test_the_bot_carries_the_parcels_and_their_document_origin(monkeypatch) -> None:
+    numbers = [NUMBER, "77:08:0010008:1050"]
+    card = _ready_owned_bot_card(monkeypatch, numbers, "moscow")
+    overrides = teaser_card.calc_overrides(card)
+    assert overrides["_cadastral_query"] == ", ".join(numbers)
+    assert overrides["_cadastral_origin"]["source"] == "document"
+    assert "стр. 3" in overrides["_cadastral_origin"]["text"]
+    token = core._telegram_intake_calc_markup(1, card, "moscow")["inline_keyboard"][0][0]["web_app"]["url"]
+    from urllib.parse import parse_qs
+    session = parse_qs(urlsplit(token).fragment)["telegram_session"][0]
+    delivered = core.telegram_session_data(core.TelegramSessionRequest(session=session))
+    assert delivered["cadastral_numbers"] == numbers
+    assert delivered["calc_overrides"]["_cadastral_query"] == ", ".join(numbers)
+    assert delivered["overrides_review_required"] is False
+
+
+def test_a_later_manual_parcel_is_not_replaced_by_the_teaser(monkeypatch) -> None:
+    import page_blocks
+    card = _ready_owned_bot_card(monkeypatch, [NUMBER], "moscow")
+    overrides = teaser_card.calc_overrides(card)
+    prelude = (
+        "const telegramCalcOverrides=" + json.dumps(overrides) + ";\n"
+        "const INPUT_DEFAULT={},inputs={},tep={};\n"
+        "const field={value:''};const document={getElementById:()=>field};\n"
+        "function showCadastralOrigin(){} function syncTep(){}\n"
+        "function cloneValue(x){return JSON.parse(JSON.stringify(x))}\n"
+    )
+    stdout, _ = page_blocks.run(prelude, """
+        applyTelegramCalcOverrides.restoreParcel=true;
+        applyTelegramCalcOverrides();
+        const initial={query:inputs._cadastral_query,origin:inputs._cadastral_origin};
+        field.value='77:08:0010008:9999';
+        typeCadastralField(field.value);
+        applyTelegramCalcOverrides();
+        console.log(JSON.stringify({initial,query:inputs._cadastral_query,
+            field:field.value,origin:inputs._cadastral_origin}));
+    """)
+    state = json.loads(stdout)
+    assert state["initial"]["query"] == NUMBER
+    assert state["initial"]["origin"]["source"] == "document"
+    assert state["query"] == state["field"] == "77:08:0010008:9999"
+    assert state["origin"]["source"] == "manual"
+
+
+def test_edit_launch_keeps_the_saved_parcel() -> None:
+    import page_blocks
+    stdout, _ = page_blocks.run("""
+        const telegramSession='synthetic',telegramMode='edit',telegramCad='77:08:0010008:1049';
+        let telegramCalcOverrides={},telegramOverridesReviewRequired=false;
+        const inputs={_cadastral_query:'77:08:0010008:9999'},tep={},INPUT_DEFAULT={};
+        const window={};const document={getElementById:()=>null};
+        async function loadTelegramSessionData(){return {overrides_review_required:false,
+            calc_overrides:{_cadastral_query:telegramCad}}}
+        function renderInputs(){} function renderTep(){} function renderPhasing(){}
+        function syncProjectClassSelector(){} function syncProjectKindSelector(){}
+        function openTab(){} function telegramProgress(){} function setupTelegramEditSubmit(){}
+        async function calculate(){}
+    """, """
+        (async()=>{
+            await runTelegramLaunch();
+            console.log(JSON.stringify({query:inputs._cadastral_query,
+                restore:!!applyTelegramCalcOverrides.restoreParcel}));
+        })().catch(e=>{console.error(e);process.exit(1)});
+    """)
+    assert json.loads(stdout) == {"query": "77:08:0010008:9999", "restore": False}
+
+
+def test_matching_saved_sources_keep_the_manual_query_text() -> None:
+    import page_blocks
+    state = page_blocks.run_json("""
+        const query='77:09:0010009:9002, 77:09:0010009:9001';
+        const numbers=['77:09:0010009:9001','77:09:0010009:9002'];
+        const origin={source:'manual',text:'вписано вручную'};
+        const inputs={_cadastral_query:query,_cadastral_origin:origin,
+            _cadastral_analysis:{requested:numbers},_land_lookup:{query:numbers.join(', ')}};
+        let cadastralAnalysis=null,landLookup=null;
+        const field={value:''},cadastralStatus={innerHTML:''};
+        const document={getElementById:()=>field};
+        function showCadastralOrigin(){} function renderCadastralPreview(){}
+        function renderLandLookup(){} function loadLandScreening(){}
+        function cloneValue(x){return JSON.parse(JSON.stringify(x))}
+    """, """
+        renderStoredCadastral();renderStoredLand();
+        console.log(JSON.stringify({query:inputs._cadastral_query,field:field.value,
+            origin:inputs._cadastral_origin,analysis:!!cadastralAnalysis,lookup:!!landLookup}));
+    """)
+    assert state == {"query": "77:09:0010009:9002, 77:09:0010009:9001",
+                     "field": "77:09:0010009:9002, 77:09:0010009:9001",
+                     "origin": {"source": "manual", "text": "вписано вручную"},
+                     "analysis": True, "lookup": True}
 
 
 def test_the_parcel_rows_have_no_number_before_the_calculation(monkeypatch) -> None:
@@ -405,11 +513,12 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
         with stand.serve(wrapper.app, port) as root:
             page.goto(f"{root}/?telegram=1#{url.split('#', 1)[1]}", wait_until="domcontentloaded")
             page.wait_for_function(
-                "() => /по карточке тизера готов|не посчитан/.test("
+                "() => /по карточке тизера готов|Расчёт завершён|не посчитан/.test("
                 "(document.getElementById('telegramIntakeNote')?.innerText||'')"
                 "+(document.getElementById('telegramDoneBanner')?.innerText||''))", timeout=90_000)
             stand.wait_for_result(page)
-            assert page.is_visible("#telegramIntakeNote"), "итог расчёта человеку не виден"
+            assert page.is_visible("#telegramDoneBanner" if region == "moscow" else "#telegramIntakeNote"), \
+                "итог расчёта человеку не виден"
             # Что видит человек: блок итога на открытой вкладке, а не текст
             # где-то в разметке.
             seen = page.evaluate(
@@ -417,10 +526,20 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
                 "+(document.getElementById('telegramDoneBanner')?.innerText||'')")
             state = page.evaluate("() => ({region: inputs.vri_region, area: Number(inputs.site_area_ha),"
                                   " fee: Number(inputs.land_rights_cost_mln||0)})")
+            # Applying parcel TEP resets territory metadata. The card must
+            # restore its parcel identity before calculation and saving.
+            assert page.input_value("#cadastralNumbers") == ", ".join(numbers)
+            assert page.evaluate("inputs._cadastral_query") == ", ".join(numbers)
+            assert page.evaluate("projectCadastral()") == numbers
+            saved = page.evaluate("() => JSON.parse(JSON.stringify({inputs,tep,phasing}))")
+            page.evaluate("snapshot => {resetAll();applyProjectSnapshot(snapshot)}", saved)
+            assert page.input_value("#cadastralNumbers") == ", ".join(numbers)
+            assert page.evaluate("projectCadastral()") == numbers
             chromium.close()
     assert not errors, errors
     assert "не посчитан" not in seen, seen[:500]
     sent = calcs[-1]
+    assert core._project_cadastral_numbers(sent["inputs"]) == numbers
     for row in card["to_engine"]:
         if row["derived"] or row["path"].startswith("land."):
             continue
@@ -428,6 +547,156 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
         got = sent["inputs"][parts[1]] if parts[0] == "inputs" else sent["tep"][parts[1]][parts[2]]
         assert got == row["value"] or abs(float(got) - float(row["value"])) < 1e-6, (row["path"], got)
     return {"seen": seen, "state": state, "sent": sent}
+
+
+def test_the_moscow_teaser_parcels_survive_glavapu_and_reopening(monkeypatch) -> None:
+    numbers = [NUMBER, "77:08:0010008:1050"]
+    analysis = {"requested": numbers, "recognized": numbers, "parcels": [],
+                "territory": {"inside_moscow": True, "area_ha": 1.2}, "warnings": []}
+    imported = {"source": {"label": "Синтетический ТЭП"}, "recognized": [], "warnings": [],
+                "normalized": {"site_area_ha": 1.2}, "cadastral_analysis": analysis,
+                "mappings": {"inputs": {"site_area_ha": 1.2},
+                             "tep": {"apartments": {"gns": 10000, "saleable": 6500}}}}
+
+    def fulfil(body):
+        return lambda route: route.fulfill(status=200, content_type="application/json",
+                                           body=json.dumps(body, ensure_ascii=False))
+
+    _mini_app_by_parcel(monkeypatch, numbers, "moscow", PORT + 4, [
+        ("**/cadastral/analyze", fulfil(analysis)),
+        ("**/cadastral/tep-server", fulfil(imported)),
+        ("**/telegram/result", fulfil({"ok": True})),
+        ("**/land/screening", fulfil({})),
+    ])
+
+
+@pytest.mark.parametrize("width", [390, 1440])
+def test_the_current_manual_parcels_survive_real_tep_in_edit_mode(monkeypatch, width) -> None:
+    """The real apply boundary keeps this request's parcels, never the old card."""
+    from playwright.sync_api import sync_playwright
+    import browser as stand
+
+    numbers = [NUMBER, "77:08:0010008:1050", "77:08:0010008:1051"]
+    current = ["77:09:0010009:9001", "77:09:0010009:9002"]
+    card = _ready_owned_bot_card(monkeypatch, numbers, "moscow")
+    url = core._telegram_intake_calc_markup(1, card, "moscow")["inline_keyboard"][0][0]["web_app"]["url"]
+    analysis = {"requested": numbers, "recognized": numbers, "parcels": [],
+                "territory": {"inside_moscow": True, "area_ha": 1.2}, "warnings": []}
+    imported = {"source": {"label": "Synthetic parcel TEP", "cadastral_numbers": numbers},
+                "recognized": [], "warnings": [], "normalized": {"site_area_ha": 1.2},
+                "mappings": {"inputs": {"site_area_ha": 1.2},
+                             "tep": {"apartments": {"gns": 10000, "saleable": 6500}}}}
+    errors, calcs = [], []
+
+    def fulfil(body):
+        return lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+    def identity(page):
+        return page.evaluate("() => ({query:inputs._cadastral_query||'',origin:inputs._cadastral_origin||null,"
+                             "field:document.getElementById('cadastralNumbers').value,cad:projectCadastral()})")
+
+    def fill_query(page, value):
+        # На корне с IA участок находится в «Проекте», а inputs — уже
+        # «Экономика». Открываем настоящий видимый раздел перед вводом,
+        # как пользователь; force-fill скрыл бы ошибку маршрута стенда.
+        if page.locator('.ia-nav').count():
+            page.locator('.ia-nav').get_by_role('button', name='Проект', exact=True).click()
+        else:
+            page.locator('[data-tab="inputs"]').click()
+        page.locator('#cadastralNumbers').fill(value)
+
+    def apply(page, incoming):
+        page.evaluate("async incoming=>{glavapuImport=incoming;await applyGlavapu()}", incoming)
+        stand.wait_for_result(page)
+
+    def assert_empty(page):
+        state = identity(page)
+        assert {key: state[key] for key in ("query", "field", "cad")} == {"query": "", "field": "", "cad": []}
+        assert state["origin"] is None or state["origin"]["source"] == "manual"
+        assert core._project_cadastral_numbers(calcs[-1]["inputs"]) == []
+
+    with sync_playwright() as pw:
+        chromium = pw.chromium.launch(executable_path=str(chromium_or_skip()))
+        page = chromium.new_page(viewport={"width": width, "height": 844})
+        page.on("pageerror", lambda exc: errors.append(str(exc)))
+        page.on("request", lambda r: calcs.append(json.loads(r.post_data or "{}"))
+                if r.method == "POST" and urlsplit(r.url).path == "/calculate" else None)
+        for pattern, body in [("**/cadastral/analyze", analysis), ("**/cadastral/tep-server", imported),
+                              ("**/telegram/result", {"ok": True})]:
+            page.route(pattern, fulfil(body))
+        page.route(lambda url: urlsplit(url).path == "/land/screening", fulfil({}))
+        old_lookup = {"query": ", ".join(numbers), "found_count": len(numbers), "warnings": [],
+                      "results": [dict(EKB_PARCEL, cadastral_number=number, region="Москва",
+                                       address="Synthetic old parcel") for number in numbers]}
+        page.route("**/land/lookup", lambda route: fulfil(old_lookup if
+                   json.loads(route.request.post_data or "{}").get("query") == old_lookup["query"]
+                   else {"results": [], "found_count": 0, "warnings": []})(route))
+        with stand.serve(wrapper.app, PORT + 5) as root:
+            launch = f"{root}/?telegram=1#{url.split('#', 1)[1]}"
+            page.goto(launch, wait_until="domcontentloaded")
+            page.wait_for_function("document.getElementById('telegramDoneBanner')!==null", timeout=90_000)
+            stand.wait_for_result(page)
+            page.wait_for_function("!!inputs._land_lookup", timeout=30_000)
+            assert identity(page)["cad"] == numbers
+            assert identity(page)["origin"]["source"] == "document"
+            initial = page.evaluate("() => JSON.parse(JSON.stringify({inputs,tep,phasing}))")
+            page.evaluate("snapshot=>{resetAll();applyProjectSnapshot(snapshot)}", initial)
+            page.evaluate("document.getElementById('telegramDoneBanner').remove()")
+            fill_query(page, ", ".join(current))
+            page.evaluate("applyTelegramCalcOverrides();persistLocalSilently()")
+            assert identity(page)["query"] == ", ".join(current)
+            # The query change forces reinitialization; a hash change alone does not.
+            page.goto(launch.replace("/?telegram=1#", "/?telegram=1&parcel_edit=1#") + "&mode=edit",
+                      wait_until="domcontentloaded")
+            stand.wait_for_result(page)
+            page.wait_for_function("document.getElementById('telegramEditSubmit')!==null", timeout=30_000)
+            expected = identity(page)
+            assert expected["cad"] == current and expected["origin"]["source"] == "manual", expected
+            assert expected["field"] == expected["query"] == ", ".join(current)
+            assert page.evaluate("inputs._land_lookup||null") is None
+            assert page.evaluate("!!applyTelegramCalcOverrides.restoreParcel") is False
+            incoming = copy.deepcopy(imported)
+            incoming["source"]["label"] = "Synthetic current parcel TEP"
+            incoming["normalized"] = {"site_area_ha": 2.3, "cadastral_quarter": "77:09:0010009"}
+            incoming["mappings"]["inputs"]["site_area_ha"] = 2.3
+            incoming["source"]["cadastral_numbers"] = list(reversed(current))
+            page.route("**/cadastral/analyze", fulfil(dict(analysis, requested=current, recognized=current)))
+            page.route("**/cadastral/tep-server", fulfil(incoming))
+            obtained = page.evaluate("async()=>{const incoming=await obtainCadastralTep();"
+                                     "await applyGlavapu();return incoming.source.cadastral_numbers}")
+            assert obtained == list(reversed(current))
+            stand.wait_for_result(page)
+            assert identity(page) == expected
+            assert page.evaluate("inputs._land_lookup||null") is None
+            assert core._project_cadastral_numbers(calcs[-1]["inputs"]) == current
+            assert page.evaluate("Number(inputs.site_area_ha)") == 2.3
+            assert page.evaluate("inputs._glavapu_import.source.label") == "Synthetic current parcel TEP"
+            saved = page.evaluate("() => JSON.parse(JSON.stringify({inputs,tep,phasing}))")
+            page.evaluate("snapshot=>{resetAll();applyProjectSnapshot(snapshot)}", saved)
+            assert identity(page) == expected
+
+            # Quarter and area alone cannot make an explicitly different parcel the same site.
+            different = copy.deepcopy(incoming)
+            different["source"]["cadastral_numbers"] = numbers
+            apply(page, different)
+            assert_empty(page)
+            fill_query(page, ", ".join(current))
+            apply(page, incoming)
+            # Clearing the field, unrelated files, and project reset cannot revive a parcel.
+            fill_query(page, "")
+            apply(page, incoming)
+            assert_empty(page)
+            fill_query(page, ", ".join(current))
+            unrelated = copy.deepcopy(imported)
+            unrelated["source"].pop("cadastral_numbers")
+            apply(page, unrelated)
+            assert_empty(page)
+            fill_query(page, ", ".join(current))
+            page.evaluate("resetAll()")
+            apply(page, incoming)
+            assert_empty(page)
+            chromium.close()
+    assert not errors, errors
 
 
 def test_the_mini_app_counts_another_region_with_the_card(monkeypatch) -> None:
