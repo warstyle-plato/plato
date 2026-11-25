@@ -121,13 +121,18 @@ class ReadContext:
         found = identity.metadata_inventory(self.project, list(pair), correction=pair in self.corrections)
         self.parse_refresh_budget['metadata_files'] += found['metadata_files_read']
         self.parse_refresh_budget['metadata_bytes'] += found['metadata_bytes_read']
+        self.parse_refresh_budget['files'] += found.get('price_source_files_read', 0)
+        self.parse_refresh_budget['bytes'] += found.get('price_source_bytes_read', 0)
+        import developaid_contract_files as files
         if (self.parse_refresh_budget['metadata_files'] > identity.MAX_FILES or
-                self.parse_refresh_budget['metadata_bytes'] > identity.MAX_METADATA_BYTES):
+                self.parse_refresh_budget['metadata_bytes'] > identity.MAX_METADATA_BYTES or
+                self.parse_refresh_budget['files'] > files.MAX_PARSE_REFRESH_FILES or
+                self.parse_refresh_budget['bytes'] > files.MAX_PARSE_REFRESH_BYTES):
             raise OwnershipProblem('Общий объём метаданных уточнений превышает предел одной сборки.')
         return found
 
     def capture(self, composition):
-        if not self.present or is_raw_history():
+        if not self.present:
             return
         import developaid_monitor_contracts as contracts
         import developaid_contract_identity_store as store
@@ -147,8 +152,14 @@ class ReadContext:
                 self.check()
             fresh = relevant-set(self.binding_pins)
             if fresh:
+                approvals = {pair: event for pair, event in self.corrections.items()
+                    if self.active_events.get(pair, {}).get('event_id') == event['event_id']
+                    and self.active_events[pair]['action'] == 'correct_sources'}
                 files.refresh_parse_cache(self.project, [(pair, pair in self.corrections) for pair in sorted(fresh)],
-                                          self.parse_refresh_budget)
+                                          self.parse_refresh_budget, approvals)
+            # Raw-history enrichment can reach the parser before the main
+            # operational capture. Its source inventory must be pinned too:
+            # an owner edit during that first enrichment is concurrent drift.
             metadata_bytes = 0
             for pair in relevant:
                 bindings = self._binding_inventory(pair)
@@ -160,6 +171,8 @@ class ReadContext:
                     raise OwnershipProblem('Исходные привязки изменились во время чтения. Обновите реестр.')
                 self.binding_pins[pair] = observed
                 self.source_cache.setdefault(('bindings', pair), bindings)
+        if is_raw_history():
+            return  # Do not fold or adopt a historical archive composition.
         if active_passes:
             self.roster = self._roster()
             if len(self.roster) > MAX_ARCHIVES or len(set(self.roster)) != len(self.roster):

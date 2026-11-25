@@ -96,7 +96,10 @@ def guard(folders):
 def accepted(record, history):
     if not record.get('gpr_pending'):
         return True  # Existing saved graphs retain their explicit unknown signing status.
-    return any(event['action'] == 'activate' and event['source'] == source_key(record) for event in history)
+    return any(event.get('action') == 'activate' and event.get('schema') == SCHEMA
+        and event.get('source') == source_key(record) and event.get('counterparty_signed') is True
+        and event.get('origin') == 'manual_document_reference' and bool(event.get('actor'))
+        and isinstance(event.get('note'), str) and 5 <= len(event['note']) <= 1000 for event in history)
 
 
 def project_records(records, history):
@@ -152,11 +155,22 @@ def counted(records):
 
 
 def view(project, contract_id, records, folders, cut):
-    from developaid_contract_files import _schedule_identity
+    from developaid_contract_files import _schedule_identity, _edition, _date, awaits_confirmation
     eligible = counted(records)
     active = _schedule_identity(eligible, cut)
     selected = source_key(active) if active else None
     schedule = (active or {}).get('schedule')
+    pending = [record for record in records if record.get('gpr_status') in
+               {'pending_signed_confirmation', 'conflicting_edition'}]
+    previews = [record for record in pending if not record.get('removed_at') and not awaits_confirmation(record)
+                and _date(record) and _date(record) <= cut]
+    preview = max(previews, key=_edition) if previews and active is None else None
+    if preview:
+        import developaid_contract_gpr_export as exporter
+        preview = {'source': source_key(preview), 'schedule': preview['schedule'],
+                   'presentation': exporter.presentation(preview['schedule'], {}, cut),
+                   'note': 'Предварительный просмотр обнаруженного ГПР. Редакция ещё не принята; '
+                           'в расчёт, прогноз и выгрузку действующего графика не включена.'}
     anchor = (schedule or {}).get('anchor') or {}
     conditions = []
     for candidate in ((active or {}).get('terms') or {}).get('candidates') or []:
@@ -175,13 +189,14 @@ def view(project, contract_id, records, folders, cut):
                                    'Правила исчисления срока требуют проверки по документу.'})
     return {'schema': SCHEMA, 'project': project, 'contract_id': contract_id, 'cut': cut,
             'guard': guard(folders), 'source': selected, 'schedule': schedule,
+            'preview': preview,
             'conditions': conditions,
             'signature_evidence': (active or {}).get('signature_evidence') or
                 {'state': 'unknown', 'cryptographically_validated': False},
             'pending': [{'source': source_key(record), 'title': record.get('title'),
-                         'signature_evidence': record.get('signature_evidence'), 'state': record['gpr_status']}
-                        for record in records if record.get('gpr_status') in
-                        {'pending_signed_confirmation', 'conflicting_edition'}],
+                         'signature_evidence': record.get('signature_evidence'), 'state': record['gpr_status'],
+                         'discovery': record.get('gpr_discovery')}
+                        for record in pending],
             'history': [event for folder in folders for event in events(folder)]}
 
 

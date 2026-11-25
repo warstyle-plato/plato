@@ -130,7 +130,7 @@ def test_nested_capture_retains_prior_pin_and_source_cache(pair, monkeypatch):
             contracts.build(PROJECT, CUT, include_history=False)
             pins = dict(context.binding_pins)
             cache = dict(context.source_cache)
-            assert pins and context.parse_refresh_budget['files'] == 1
+            assert pins and context.parse_refresh_budget['files'] == 2
             contracts.build(PROJECT, CUT, include_history=False)
             assert context.binding_pins == pins
             assert all(context.source_cache[key] is value for key, value in cache.items())

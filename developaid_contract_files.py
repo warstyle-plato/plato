@@ -13,6 +13,7 @@ disk with the time of removal and can be returned. Authenticate first.
 from __future__ import annotations
 
 import contextlib
+import copy
 import datetime as dt
 import hashlib
 import json
@@ -224,7 +225,8 @@ def _current(folder: Path, sha: str) -> dict:
         return _reread(folder, sha, record)
 
 
-def _reread(folder: Path, sha: str, record: dict, verified_bytes: bytes | None = None) -> dict:
+def _reread(folder: Path, sha: str, record: dict, verified_bytes: bytes | None = None,
+            price_provenance: dict | None = None, expected_metadata_sha256: str | None = None) -> dict:
     path, pdf = folder / f"{sha}.json", folder / f"{sha}.pdf"
     if not pdf.exists():
         record.setdefault("warnings", []).insert(
@@ -240,14 +242,38 @@ def _reread(folder: Path, sha: str, record: dict, verified_bytes: bytes | None =
             fresh["removed_at"] = record["removed_at"]
         if record.get('gpr_pending'):
             fresh['gpr_pending'] = True
+            if record.get('gpr_discovery'):
+                fresh['gpr_discovery'] = record['gpr_discovery']
+        if (not (record.get('schedule') or {}).get('lines')
+                and (fresh.get('schedule') or {}).get('lines')):
+            # Parser discovery is not evidence that a new signed edition has
+            # been accepted. Previously recognised legacy graphs keep their
+            # original unknown-signature status; only a newly found graph is
+            # held for the separate exact-source activation decision.
+            fresh['gpr_pending'] = True
+            fresh.setdefault('gpr_discovery', {'reason': 'new_graph_discovered_by_reader',
+                'from_reader': record.get('reader'), 'to_reader': documents.READER_VERSION,
+                'source_pdf_sha256': sha, 'previous_schedule_sha256': namespace.digest(record.get('schedule')),
+                'previous_metadata_sha256': hashlib.sha256(namespace.canonical(record)).hexdigest()})
+        if price_provenance:
+            import developaid_contract_price_provenance as provenance
+            marker = provenance.build(record, fresh, sha, folder.name, raw,
+                price_provenance['metadata_sha256'], price_provenance['event'], price_provenance['before'])
+            if marker is not None:
+                fresh[provenance.FIELD] = marker
     except ContractFilesProblem as exc:
         fresh = {**record, "reader": documents.READER_VERSION, "estimates": [], "schedule": None,
                  "warnings": [str(exc)]}
+    if expected_metadata_sha256:
+        current = namespace.read_bytes(path, 4*1024*1024)
+        if current is None or hashlib.sha256(current).hexdigest() != expected_metadata_sha256:
+            raise ContractFilesProblem('Исходные привязки изменились во время обновления разбора. Обновите реестр.')
     _json(path, fresh)
     return fresh
 
 
-def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]], budget: dict | None = None) -> None:
+def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]], budget: dict | None = None,
+                        approvals: dict | None = None) -> None:
     """Refresh bounded derived caches BEFORE the first ownership binding pin.
 
     The caller passes only already relevant native identity groups. Existing
@@ -258,30 +284,69 @@ def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]]
     import developaid_contract_identity as identity
     import developaid_contract_identity_store as namespace
     budget = budget if budget is not None else {'files': 0, 'bytes': 0, 'metadata_files': 0, 'metadata_bytes': 0}
+    approvals = approvals or {}
+    groups = [(tuple(identity.correction_ids(list(members)) if correction else identity._ids(list(members))), correction)
+              for members, correction in groups]
     identifiers = sorted({identifier for members, _ in groups for identifier in members})
     folders = [identity._safe_path(project, 'contract_documents', identifier) for identifier in identifiers]
+
+    def cached(path):
+        raw = namespace.read_bytes(path, 4*1024*1024)
+        budget['metadata_files'] += raw is not None
+        budget['metadata_bytes'] += len(raw or b'')
+        if budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES:
+            raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
+        if raw is None:
+            raise ContractFilesProblem('Метаданные документа изменились до обновления разбора.')
+        value = namespace.strict_json(raw)
+        if not isinstance(value, dict):
+            raise ContractFilesProblem('Метаданные документа договора не подтверждены.')
+        return value, raw
+
+    # No writer lock is acquired from inside an existing single-card lock.
+    # First identify the complete groups that actually require an upgrade.
+    stale = set()
+    for folder in folders:
+        for path in sorted(folder.glob('*.json')):
+            if re.fullmatch(r'[0-9a-f]{64}\.json', path.name):
+                value, _ = cached(path)
+                if value.get('reader') != documents.READER_VERSION and value.get('scan') is None:
+                    stale.add(folder.name)
+    groups = [(members, correction) for members, correction in groups if stale.intersection(members)]
+    if not groups:
+        return
+    identifiers = sorted({identifier for members, _ in groups for identifier in members})
+    folders = [identity._safe_path(project, 'contract_documents', identifier) for identifier in identifiers]
+    held = {str(Path(value).absolute()) for value in _held.__dict__.get('folders', set())}
+    for value in namespace._HELD_NATIVE_LOCKS.get():
+        path = Path(value)
+        if path.name == '.lock' and path.parent.parent.name == 'contract_documents':
+            held.add(str(path.parent.absolute()))
+    if held and not {str(folder.absolute()) for folder in folders} <= held:
+        raise ContractFilesProblem('Для обновления разборов нужна полная блокировка исходных карточек. '
+                                   'Обновите реестр перед повторной операцией.')
     with contextlib.ExitStack() as locks:
         for folder in sorted(folders):
-            if folder.is_dir() and not folder.is_symlink():
-                locks.enter_context(_locked(folder))
+            locks.enter_context(_locked(folder))
         # Validate under native locks, before reading or writing derived data.
+        before_by_group = {}
         for members, correction in groups:
             inventory = identity.metadata_inventory(project, list(members), correction=correction)
+            before_by_group[members] = inventory
             budget['metadata_files'] += inventory['metadata_files_read']
             budget['metadata_bytes'] += inventory['metadata_bytes_read']
+            budget['files'] += inventory.get('price_source_files_read', 0)
+            budget['bytes'] += inventory.get('price_source_bytes_read', 0)
             if budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES:
                 raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
+            if budget['files'] > MAX_PARSE_REFRESH_FILES or budget['bytes'] > MAX_PARSE_REFRESH_BYTES:
+                raise ContractFilesProblem('Объём проверки источников цены превышает предел одной сборки.')
         candidates = []
         for folder in folders:
             for path in sorted(folder.glob('*.json')):
                 if not re.fullmatch(r'[0-9a-f]{64}\.json', path.name):
                     continue
-                metadata = namespace.read_bytes(path, 4*1024*1024)
-                budget['metadata_files'] += metadata is not None
-                budget['metadata_bytes'] += len(metadata or b'')
-                if budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES:
-                    raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
-                record = namespace.strict_json(metadata)
+                record, metadata = cached(path)
                 if record.get('reader') == documents.READER_VERSION or record.get('scan') is not None:
                     continue
                 pdf = folder/(path.stem+'.pdf')
@@ -291,13 +356,75 @@ def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]]
                 raw = namespace.read_bytes(pdf, MAX_BYTES)
                 if raw is None or hashlib.sha256(raw).hexdigest() != path.stem:
                     raise ContractFilesProblem('Исходный PDF не соответствует сохранённому SHA256; обновление разбора отменено.')
-                budget['bytes'] += len(raw)
-                budget['files'] += 1
-                candidates.append((folder, path.stem, record, raw))
+                # Reserve the second verified descriptor read before any
+                # writes, so source-validation budget failure is preflight.
+                budget['bytes'] += 2*len(raw)
+                budget['files'] += 2
+                provenance_context = None
+                for members, _ in groups:
+                    if folder.name not in members:
+                        continue
+                    before = before_by_group[members]
+                    card = next((card for card in before['cards'] if card['raw_id'] == folder.name), {})
+                    previous = next((doc for doc in card.get('documents') or [] if doc['document_sha256'] == path.stem), {})
+                    if (previous.get('metadata') or {}).get('sha256') != hashlib.sha256(metadata).hexdigest():
+                        raise ContractFilesProblem('Метаданные документа изменились до обновления разбора.')
+                    event = approvals.get(members)
+                    if event and ((event['payload'].get('price_document_evidence') or {}).get('document_sha256') == path.stem
+                                  and event['payload']['roles']['price_raw_id'] == folder.name):
+                        provenance_context = {'event': event, 'before': before,
+                                              'metadata_sha256': hashlib.sha256(metadata).hexdigest()}
+                budget['metadata_files'] += 1
+                budget['metadata_bytes'] += len(metadata)
+                if budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES:
+                    raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
+                candidates.append((folder, path.stem, record, raw, provenance_context, hashlib.sha256(metadata).hexdigest()))
                 if budget['files'] > MAX_PARSE_REFRESH_FILES or budget['bytes'] > MAX_PARSE_REFRESH_BYTES:
                     raise ContractFilesProblem('Объём обновления разборов превышает предел одной сборки. Обновите документы отдельной операцией.')
-        for folder, sha, record, raw in candidates:
-            _reread(folder, sha, record, raw)
+        own_writes = {}
+        for folder, sha, record, raw, provenance_context, previous_metadata in candidates:
+            fresh = _reread(folder, sha, record, raw, provenance_context, previous_metadata)
+            written = json.dumps(fresh, ensure_ascii=False, allow_nan=False).encode('utf-8')
+            own_writes[(folder.name, sha)] = (hashlib.sha256(written).hexdigest(),
+                                              'price_reader_provenance' in fresh)
+        for folder, sha, _, _, _, _ in candidates:
+            raw = namespace.read_bytes(folder/(sha+'.pdf'), MAX_BYTES)
+            if raw is None or hashlib.sha256(raw).hexdigest() != sha:
+                raise ContractFilesProblem('Исходный PDF изменился во время обновления разбора.')
+
+        def sealed(inventory, *, after=False):
+            observed = copy.deepcopy(inventory)
+            # Diagnostic read counters change with our new derived witness;
+            # the actual ReadContext still pins every field, including them.
+            for key in ('metadata_files_read', 'metadata_bytes_read',
+                        'price_source_files_read', 'price_source_bytes_read'):
+                observed.pop(key, None)
+            for card in observed['cards']:
+                for index, document in enumerate(card['documents']):
+                    key = (card['raw_id'], document['document_sha256'])
+                    if key not in own_writes:
+                        continue
+                    expected, price_witness = own_writes[key]
+                    if after and ((document.get('metadata') or {}).get('sha256') != expected
+                            or price_witness and (document.get('price_reader_provenance') or {}).get('state') != 'verified'):
+                        raise ContractFilesProblem('Исходные привязки изменились во время обновления разбора. Обновите реестр.')
+                    card['documents'][index] = {'document_sha256': key[1], 'own_refresh_sha256': expected}
+            return observed
+
+        # Only exact bytes written by this controlled refresh may differ.
+        # An owner deadline/links/header or any other metadata edit during
+        # parsing cannot be absorbed into the first ownership binding pin.
+        for members, correction in groups:
+            after = identity.metadata_inventory(project, list(members), correction=correction)
+            budget['metadata_files'] += after['metadata_files_read']
+            budget['metadata_bytes'] += after['metadata_bytes_read']
+            budget['files'] += after.get('price_source_files_read', 0)
+            budget['bytes'] += after.get('price_source_bytes_read', 0)
+            if (budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES
+                    or budget['files'] > MAX_PARSE_REFRESH_FILES or budget['bytes'] > MAX_PARSE_REFRESH_BYTES):
+                raise ContractFilesProblem('Общий объём проверки обновлённых разборов превышает предел одной сборки.')
+            if sealed(before_by_group[members]) != sealed(after, after=True):
+                raise ContractFilesProblem('Исходные привязки изменились во время обновления разбора. Обновите реестр.')
 
 
 def _edition(record: dict) -> tuple:

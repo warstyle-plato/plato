@@ -151,6 +151,91 @@ def test_new_ds_without_gpr_preserves_graph_and_new_graph_needs_signed_evidence(
     assert gpr.events(folder)[0]['cryptographically_validated'] is False
 
 
+@pytest.mark.parametrize('old_schedule', [None, {'lines': []}])
+def test_passive_discovery_of_newer_unsigned_ds_cannot_replace_legacy_graph(card, monkeypatch, old_schedule):
+    folder, original_sha, _ = card
+    new_sha, recognised = record(folder, 'discovered-ds', {'number': '1', 'date': '2026-02-05'})
+    cached = copy.deepcopy(recognised)
+    cached.update(reader=14, schedule=old_schedule)
+    cached.pop('gpr_pending', None)
+    files._json(folder/(new_sha+'.json'), cached)
+    monkeypatch.setattr(documents, 'read', lambda raw: copy.deepcopy({key: value for key, value in recognised.items()
+        if key not in {'sha256', 'reader', 'filename', 'uploaded_at'}}))
+    current = files.listing(PROJECT, ROW['id'], CUT)
+    assert current['gpr']['source']['sha256'] == original_sha
+    assert current['gpr']['pending'][0]['source']['sha256'] == new_sha
+    fresh = files._stored(folder/(new_sha+'.json'))
+    assert fresh['gpr_pending'] is True and fresh['reader'] == 15
+    assert fresh['gpr_discovery']['reason'] == 'new_graph_discovered_by_reader'
+    assert fresh['gpr_discovery']['from_reader'] == 14
+    assert fresh['gpr_discovery']['source_pdf_sha256'] == new_sha
+    assert gpr.events(folder) == [], 'Reader discovery cannot invent an activation event.'
+    assert files.listing(PROJECT, ROW['id'], CUT)['gpr']['source']['sha256'] == original_sha
+    accepted = gpr.save(PROJECT, ROW, CUT, new_sha, current['gpr']['guard'], 'activate',
+                        'Учебная проверка подписи контрагента, страница 1', 'synthetic-owner', counterparty_signed=True)
+    assert accepted['gpr']['source']['sha256'] == new_sha
+    assert accepted['gpr']['history'][-1]['cryptographically_validated'] is False
+
+
+def test_sole_discovered_graph_has_readonly_preview_until_explicit_activation(card, monkeypatch):
+    folder, sha, recognised = card
+    cached = copy.deepcopy(recognised)
+    cached.update(reader=13, schedule=None)
+    cached.pop('gpr_pending', None)
+    files._json(folder/(sha+'.json'), cached)
+    monkeypatch.setattr(documents, 'read', lambda raw: copy.deepcopy({key: value for key, value in recognised.items()
+        if key not in {'sha256', 'reader', 'filename', 'uploaded_at'}}))
+    listed = files.listing(PROJECT, ROW['id'], CUT)
+    state = listed['gpr']
+    assert state['source'] is None and state['schedule'] is None
+    assert state['preview']['source']['sha256'] == sha
+    assert state['preview']['presentation']['rows'][0]['bars']
+    assert all(bar['state'] == 'unknown' for bar in state['preview']['presentation']['rows'][0]['bars'])
+    assert state['pending'][0]['source']['sha256'] == sha
+    with pytest.raises(files.ContractFilesProblem, match='прежняя редакция'):
+        gpr.save(PROJECT, ROW, CUT, sha, state['guard'], 'anchor',
+                 'Учебный акт передачи площадки', 'synthetic-owner', handover_date='2026-02-02')
+    accepted = gpr.save(PROJECT, ROW, CUT, sha, state['guard'], 'activate',
+                        'Учебная подпись контрагента, страница 1', 'synthetic-owner', counterparty_signed=True)
+    assert accepted['gpr']['source']['sha256'] == sha and accepted['gpr']['preview'] is None
+
+
+def test_pending_graph_does_not_accept_incomplete_or_other_source_activation(card):
+    _, _, source = card
+    source['gpr_pending'] = True
+    valid = {'schema': gpr.SCHEMA, 'action': 'activate', 'source': gpr.source_key(source),
+             'origin': 'manual_document_reference', 'counterparty_signed': True,
+             'actor': 'synthetic-owner', 'note': 'Учебная подпись контрагента, страница 1'}
+    assert gpr.accepted(source, [valid])
+    for change in [{'counterparty_signed': False}, {'schema': 'unsupported'}, {'actor': ''},
+                   {'origin': 'parser'}, {'source': {**valid['source'], 'sha256': 'f'*64}}]:
+        assert not gpr.accepted(source, [{**valid, **change}])
+
+
+def test_previously_recognised_legacy_graph_and_exact_activation_survive_reread(card, monkeypatch):
+    folder, sha, recognised = card
+    recognised['reader'] = 14
+    files._json(folder/(sha+'.json'), recognised)
+    monkeypatch.setattr(documents, 'read', lambda raw: copy.deepcopy({key: value for key, value in recognised.items()
+        if key not in {'sha256', 'reader', 'filename', 'uploaded_at'}}))
+    assert files.listing(PROJECT, ROW['id'], CUT)['gpr']['source']['sha256'] == sha
+    assert not files._stored(folder/(sha+'.json')).get('gpr_pending')
+    # A genuine exact-source activation remains authoritative if an old cache
+    # later lacks a graph; neither the price nor scan decision grants it.
+    fresh = files._stored(folder/(sha+'.json'))
+    fresh['gpr_pending'] = True
+    files._json(folder/(sha+'.json'), fresh)
+    listed = files.listing(PROJECT, ROW['id'], CUT)
+    gpr.save(PROJECT, ROW, CUT, sha, listed['gpr']['guard'], 'activate',
+             'Учебная подпись контрагента, страница 1', 'synthetic-owner', counterparty_signed=True)
+    history = copy.deepcopy(gpr.events(folder))
+    fresh.update(reader=14, schedule=None)
+    fresh.pop('gpr_pending')
+    files._json(folder/(sha+'.json'), fresh)
+    assert files.listing(PROJECT, ROW['id'], CUT)['gpr']['source']['sha256'] == sha
+    assert gpr.events(folder) == history
+
+
 def test_advance_and_handover_are_separate_conditions(card):
     folder, sha, source = card
     from developaid_contract_terms import read
@@ -356,6 +441,18 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         assert page.locator('.contract-gpr-track rect[fill="#9DC3E6"]').count() == 2
         expect(page.locator('#contractGprBody')).to_contain_text('не ежедневная история работ')
         page.screenshot(path=str(tmp_path/f'gpr-physical-projection-{width}.png'), full_page=True)
+        pending_records = gpr.project_records([{**card[2], 'gpr_pending': True}], [])
+        pending = gpr.view(PROJECT, ROW['id'], pending_records, [card[0]], CUT)
+        page.evaluate('(state)=>renderContractGpr(state)', pending)
+        expect(page.locator('#contractGprBody')).to_contain_text('Предварительный просмотр обнаруженного ГПР')
+        expect(page.locator('#contractGprDownload')).to_be_disabled()
+        assert page.locator('#contractGprHandover').count() == 0
+        expect(page.locator('[data-gpr-activate]')).to_be_visible()
+        assert page.locator('.contract-gpr-track rect[fill="#70AD47"]').count() == 0
+        assert page.locator('.contract-gpr-track rect[fill="#E06666"]').count() == 0
+        assert page.locator('.contract-gpr-track rect[fill="#D9D9D9"]').count() == 2
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.screenshot(path=str(tmp_path/f'gpr-pending-preview-{width}.png'), full_page=True)
         page.locator('#contractDialogClose').click()
         page.locator(f'tr[data-contract-id="{ROW["id"]}"] .contract-open').click()
         expect(page.locator('#contractGprHandover')).to_have_value('2026-02-02')

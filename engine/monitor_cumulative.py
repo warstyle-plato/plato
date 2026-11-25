@@ -655,7 +655,7 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                     raise contracts.ContractProblem('Исправленная карточка не представлена на выбранную дату. Обновите реестр.')
                 if (payload.get('correction_id') != correction_state['decision_id']
                         or payload.get('correction_guard') != correction_state['read_guard']):
-                    raise contracts.ContractProblem('Выбор источников изменился. Обновите реестр перед открытием карточки.')
+                    raise contracts.ContractProblem('Данные карточки отличаются от списка договоров. Закройте карточку, обновите страницу Монитора и откройте договор снова.')
                 if operation != 'documents' and payload['contract_id'] != correction_state['roles']['documents_raw_id']:
                     raise contracts.ContractProblem('Карточка документов изменилась. Обновите договор перед сохранением.')
                 row = correction.materialize(register, active)
