@@ -16,7 +16,7 @@ def inputs():
     source={'sha256':'b'*64,'contract':{'number':row['contract'],'date':row['contract_date']},
             'edition':{'kind':'agreement','date':'2026-02-01'}}
     schedule={'source_identity':source,'resources':[
-        {'category':kind,'name':kind+' на объекте','period_basis':'literal_date','source':{'page':1,'row':index},
+        {'category':kind,'name':'Количество '+('рабочих' if kind=='workers' else 'ИТР')+' на объекте','period_basis':'literal_date','source':{'page':1,'row':index},
          'values':[{'start':'2026-01-20','finish':'2026-01-20','value':count,'raw':str(count)}]}
         for index,(kind,count) in enumerate([('workers',10),('itr',2)],1)]}
     reports=[{'date':'2026-01-20','text':'ООО «Исполнитель», договор A-123 ИТР 1, рабочие 8'}]
@@ -246,3 +246,24 @@ def test_source_text_is_always_excel_text_even_if_it_starts_with_formula():
     sheet=workforce.write_sheet(Workbook(),got)
     assert sheet['H6'].data_type=='s' and sheet['H6'].value.startswith('=')
     assert not any(c.data_type=='f' for row in sheet for c in row)
+
+
+@pytest.mark.parametrize('caption',[
+    'Рабочие каменной кладки на объекте',
+    'Количество рабочих каменной кладки на объекте',
+    'Количество рабочих на объекте (каменная кладка)',
+    'Количество рабочих на объекте (отделочники,подсобники)',
+    'Всего рабочих на монтаж лифта 1',
+    'Количество рабочих на объекте Корпус 2',
+    'Количество рабочих на объекте (подсобники)'])
+def test_restrictive_or_foreign_resource_caption_does_not_become_full_roof_crew(caption):
+    values=inputs();values[2]['resources'][0]['name']=caption
+    got=view(values)['rows'][0]
+    assert got['workers_plan']==10 and got['workers_fact'] is got['workers_delta'] is None
+    assert got['itr_delta']==-1
+
+
+def test_compact_counts_keep_every_digit():
+    values=inputs();values[3][0]['text']='ООО «Исполнитель», договор A-123 ИТР12, рабочие123'
+    got=view(values)['rows'][0]
+    assert got['workers_fact']==123 and got['itr_fact']==12

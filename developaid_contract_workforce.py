@@ -56,7 +56,8 @@ def reports_revision(reports, cut):
 
 def _raw_counts(line, daily):
     """A range, expression or repeated category is not one exact headcount."""
-    patterns = {'workers': daily._WORKERS, 'itr': daily._ITR}
+    # Native legacy \w* also consumes compact count digits (рабочие12 → 2).
+    patterns = {'workers': re.compile(r'рабоч[^\W\d_]*\D{0,12}?(\d+)', re.I), 'itr': daily._ITR}
     matches = {category: list(pattern.finditer(line)) for category, pattern in patterns.items()}
     labels = list(re.finditer(r'\b(?:итр|рабоч\w*)\b', line, re.I))
     values, reasons = {}, {}
@@ -183,7 +184,7 @@ def _candidates(person, rows):
     return found, basis, references
 
 
-def _whole_resource(resource, schedule):
+def _whole_resource(resource, schedule, person, row):
     scope = resource.get('scope')
     if isinstance(scope, dict):
         scope = scope.get('text') if scope.get('complete') is True else ''
@@ -193,8 +194,33 @@ def _whole_resource(resource, schedule):
     # Repeated crew/category rows can never become a single object total.
     unique = sum(r.get('category') == resource.get('category')
                  for r in schedule.get('resources') or []) == 1
-    return unique and bool(re.search(r'\b(?:на\s+объекте|по\s+(?:всему\s+)?договору|всего\s+по\s+объекту)\b',
-                                    _text(resource.get('label'))))
+    caption = re.fullmatch(
+        r'(?:(?:необходимое\s+)?(?:количество|численность)\s+|всего\s+)'
+        r'(рабочих|рабочие|итр)\s+(?:на\s+объекте|по\s+(?:всему\s+)?договору|по\s+объекту)'
+        r'(?:\s*\(([^()]*)\))?[.:]?', _text(resource.get('label')))
+    if not unique or not caption:
+        return False
+    qualifier = caption[2]
+    if not qualifier:
+        return True
+    if resource.get('category') == 'itr':
+        return qualifier == 'назначенные по приказу'
+    # A profession list can qualify the complete crew; a work heading,
+    # corpus restriction or unrelated profession cannot. Generic assistants
+    # alone do not establish that all workers were included.
+    import developaid_monitor_contract_links as links
+    context = links._work_words(' '.join([person['party'], str(row.get('subject') or ''),
+                                        *(str(x) for x in row.get('scope') or [])]))
+    disciplines = []
+    for profession in map(str.strip, qualifier.split(',')):
+        if profession in {'подсобники', 'разнорабочие'}:
+            continue
+        if not re.fullmatch(r'[а-я]{3,}(?:ники|щики|чики|исты|ры)', profession):
+            return False
+        disciplines.append(profession)
+        if not any(len(word) >= 5 and word[:5] == profession[:5] for word in context):
+            return False
+    return bool(disciplines)
 
 
 def _binding(person, category, row, source, plans, peers, bindings, schedule):
@@ -222,7 +248,7 @@ def _binding(person, category, row, source, plans, peers, bindings, schedule):
     if len(resources) != 1:
         return False, 'В ГПР нет единственного отдельного показателя этой категории; общие бригады не сложены.', None
     resource = resources[0]
-    if not _whole_resource({**resource, 'category': category}, schedule):
+    if not _whole_resource({**resource, 'category': category}, schedule, person, row):
         return False, 'Полный состав планового ресурса ГПР не подтверждён; заголовок работ не является составом бригады.', None
     import developaid_monitor_contract_links as links
     actual_objects, actual_unclear = links._scope_info(person['party'])
