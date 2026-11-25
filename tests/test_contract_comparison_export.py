@@ -51,11 +51,14 @@ def test_native_known_values_zero_units_and_dates_survive_roundtrip():
     sheet, header = table(xlsx(cached))
     assert len(sheet.parent.worksheets) == 1 and sheet.max_column == 16
     first, zero = cached['rds_comparison']['rows']
-    assert [sheet.cell(header+1, i).value for i in (6,7,8,9,10,11,12,13,14)] == [10,.5,6,.3,-4,500,300,-200,-2]
+    assert [sheet.cell(header+1, i).value for i in (6,7,8,9,10,11,12,13,14)] == [10,.5,6,.3,-4,500,300,-200,2]
     assert sheet.cell(header+1,3).value == 'м3'
     assert sheet.cell(header+1,4).value.date() == dt.date(2026,3,1)
     assert sheet.cell(header+1,5).value.date() == dt.date(2026,3,10)
     assert sheet.cell(header+2,8).value == 0 and sheet.cell(header+2,8).data_type == 'n'
+    assert sheet.cell(6,14).value == 'Отставание на дату среза, дни'
+    assert sheet.cell(header+1,14).number_format.startswith('[Red]+0')
+    assert 'плюс — отставание' in sheet['N6'].comment.text
     assert sheet.freeze_panes == 'D7' and sheet.auto_filter.ref.startswith('A6:P')
     assert sheet.page_setup.orientation == 'landscape' and str(sheet.page_setup.paperSize) == sheet.PAPERSIZE_A3
     assert all(cell.data_type not in ('f','e') for row in sheet for cell in row)
@@ -88,7 +91,7 @@ def test_completed_row_has_signed_canonical_days_and_no_forecast_columns():
     cached=native_card(finished=True)
     sheet,header=table(xlsx(cached))
     canonical=cached['control']['lines'][0]
-    assert sheet.cell(header+1,14).value == canonical['ahead_days']-canonical['lag_days']
+    assert sheet.cell(header+1,14).value == canonical['lag_days']-canonical['ahead_days']
     assert sheet.cell(header+1,15).value.date() == dt.date(2026,3,14)
     assert sheet.cell(header+1,16).value == 4
     assert sheet.cell(header+1,14).value != 4  # Finished four days after GPR is a different metric.

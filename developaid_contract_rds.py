@@ -9,7 +9,7 @@ import developaid_contract_plan as plan
 from developaid_contract_fact import _money
 from developaid_monitor_statement_union import _unit
 
-LAYOUT = 'rds-plan-fact-v2'
+LAYOUT = 'rds-plan-fact-v3'
 FIELDS = ('number', 'name', 'unit', 'start', 'finish', 'plan_quantity', 'plan_quantity_ratio',
           'fact_quantity', 'fact_quantity_ratio', 'quantity_deviation', 'planned', 'fact', 'deviation',
           'day_deviation', 'forecast_finish', 'forecast_delay_days')
@@ -150,7 +150,7 @@ def build(listed: dict) -> dict:
                 type(volume.get('fact')) in (int, float) and math.isfinite(volume['fact']) and
                 abs(volume['fact']-row['fact_quantity']) <= 1e-6)
             if physical_known and canonical.get('lag_days') is not None and canonical.get('ahead_days') is not None:
-                row['day_deviation'] = canonical['ahead_days']-canonical['lag_days']
+                row['day_deviation'] = canonical['lag_days']-canonical['ahead_days']
             else:
                 comments['day_deviation'] = 'Нет отдельного физического показателя для этой позиции с единственной полной связью ГПР и подтверждённым объёмом выполнения.'
             finish = (canonical.get('finished') if canonical.get('state') == 'done' else

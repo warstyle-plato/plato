@@ -211,7 +211,7 @@ def test_forecast_is_existing_individual_physical_model_not_current_lag_or_legal
     row = cached['rds_comparison']['rows'][0]
     canonical = cached['control']['lines'][0]
     assert row['forecast_finish'] == canonical['forecast_finish'] == '2026-03-12'
-    assert row['forecast_delay_days'] == 2 and row['day_deviation'] == -2
+    assert row['forecast_delay_days'] == 2 and row['day_deviation'] == 2
     assert row['forecast_kind'] == 'forecast' and 'Условный прогноз' in row['comments']['forecast_finish']
     done = native_card(finished=True)['rds_comparison']['rows'][0]
     assert done['day_deviation'] == 0 and done['forecast_delay_days'] == 4
@@ -220,7 +220,7 @@ def test_forecast_is_existing_individual_physical_model_not_current_lag_or_legal
     source, found = edition(), statement()
     found['acts'][0].update(quantity=60, act_amount=6000, end='2026-01-05')
     ahead = card([source], found, cut='2026-01-10')['rds_comparison']['rows'][0]
-    assert ahead['day_deviation'] > 0 and ahead['forecast_delay_days'] == 0
+    assert ahead['day_deviation'] < 0 and ahead['forecast_delay_days'] == 0
     assert ahead['forecast_kind'] == 'forecast'
 
 
@@ -251,7 +251,7 @@ def test_ambiguous_operation_or_source_identity_never_falls_back_to_parent_days(
     assert row['day_deviation'] is None and row['forecast_delay_days'] is None
     control['operations'] = {'lines':[operation]}
     row = rds.build(cached)['rows'][0]
-    assert row['day_deviation'] == -2 and row['forecast_delay_days'] == 2
+    assert row['day_deviation'] == 2 and row['forecast_delay_days'] == 2
     source = cached['documents'][1]['schedule']['lines']
     source.append(copy.deepcopy(source[0]))
     row = rds.build(cached)['rows'][0]
