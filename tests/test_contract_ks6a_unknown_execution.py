@@ -129,6 +129,7 @@ def test_unknown_indexed_operation_preserves_known_operations_and_exports_blank_
     import io
     from openpyxl import load_workbook
     import developaid_contract_comparison_export as export
+    import developaid_contract_rds as rds
     from tests.test_contract_indexed_operations import source_case, CUT as operation_cut
     edition, found = source_case()
     missing = found['acts'].pop(1)
@@ -144,11 +145,18 @@ def test_unknown_indexed_operation_preserves_known_operations_and_exports_blank_
     assert parts['4.1.1']['readiness'] == .25
     assert parts['4.1.2']['state'] == 'unknown' and parts['4.1.2']['volume']['fact'] is None
     assert parts['4.1.3']['readiness'] == 0
-    result = comparison.build({'control': observed, 'fact': measured, 'plan': planned, 'documents': []}, operation_cut)
-    raw = export.workbook({'project': 'Учебный', 'cut': operation_cut, 'revision': 'a'*64}, result, result['lines'])
+    cached={'ok':True,'contract_id':'c'*64,'control':observed,'fact':measured,'plan':planned,
+            'documents':[{'sha256':'b'*64,'title':'Учебная РДС','estimates':edition['estimates']},
+                         {'sha256':'schedule','title':'Учебный ГПР','schedule':edition['schedule']}]}
+    cached['comparison']=comparison.build(cached,operation_cut)
+    cached['rds_comparison']=rds.build(cached)
+    meta=export.bind_snapshot('Учебный',operation_cut,'c'*64,cached,{})
+    raw = export.workbook(meta,cached['rds_comparison'],cached['rds_comparison']['rows'])
     sheet = load_workbook(io.BytesIO(raw), data_only=True).active
-    exported = next(row for row in sheet.iter_rows(values_only=True) if '\n4.1.2 ·' in str(row[0] or ''))
-    assert exported[3] is None and exported[2] is not None
+    excel_row = next(row for row in sheet if row[0].value=='4.1.2')
+    assert excel_row[6].value is None and excel_row[5].value is not None
+    assert excel_row[9].value is None and excel_row[11].value is None
+    assert 'Период без даты' in excel_row[6].comment.text
 
 
 from tests.test_contract_fact_prices_ks_by_the_edition import card  # noqa: E402,F401
