@@ -842,6 +842,8 @@ def calc_overrides(card: dict[str, Any]) -> dict[str, Any]:
 
     Вводные идут своими именами, ТЭП — в `_tep`, происхождение — в
     `_field_origin`: значение тизера после расчёта не должно выглядеть ручным.
+    Участок — в `_cadastral_query` и `_cadastral_origin`: применение ТЭП
+    сбрасывает данные прежней территории, после него карточка возвращает свои.
     """
     out: dict[str, Any] = {}
     tep: dict[str, dict[str, Any]] = {}
@@ -865,6 +867,13 @@ def calc_overrides(card: dict[str, Any]) -> dict[str, Any]:
             out[parts[1]] = row["value"]
         elif parts[0] == "tep" and len(parts) == 3:
             tep.setdefault(parts[1], {})[parts[2]] = row["value"]
+        elif path == "land.cadastral_numbers":
+            out["_cadastral_query"] = ", ".join(row["value"])
+            out["_cadastral_origin"] = {
+                "source": str(row.get("source") or "document"),
+                "text": _quote(row.get("origin"), 160),
+            }
+            continue
         else:
             continue
         origin[path] = {"source": str(row.get("source") or "document"), "text": _quote(row.get("origin"), 160)}
