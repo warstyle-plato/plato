@@ -256,3 +256,29 @@ def test_ambiguous_operation_or_source_identity_never_falls_back_to_parent_days(
     source.append(copy.deepcopy(source[0]))
     row = rds.build(cached)['rows'][0]
     assert row['day_deviation'] is None and row['forecast_finish'] is None
+
+
+def test_native_unread_physical_base_keeps_money_control_but_not_individual_days():
+    source = edition()
+    source['estimates'][0]['positions'][0]['quantity'] = None
+    source['estimates'][0]['links']['positions'][0]['quantity'] = None
+    result = card([source], statement())
+    canonical, row = result['control']['lines'][0], result['rds_comparison']['rows'][0]
+    assert canonical['basis'] == 'money' and canonical['volume'] is None
+    assert canonical['lag_days'] > 0 and row['fact_quantity'] == 15
+    assert row['fact_quantity_ratio'] is None and row['day_deviation'] is None
+    assert row['forecast_finish'] is None and row['forecast_delay_days'] is None
+
+
+def test_native_duplicate_indexed_operation_sources_do_not_create_individual_days():
+    from tests.test_contract_indexed_operations import source_case
+    source, found = source_case()
+    bindings = source['estimates'][0]['links']['positions']
+    bindings.append(copy.deepcopy(bindings[0]))
+    result = card([source], found, cut='2026-03-05')
+    canonical = result['control']['lines'][0]
+    assert 'operations' not in canonical  # Existing canonical guard rejects duplicate operation identity.
+    assert canonical['volume']['quantity'] == 500
+    assert result['rds_comparison']['rows'][0]['fact_quantity'] == 25
+    assert all(row['day_deviation'] is None and row['forecast_finish'] is None
+               for row in result['rds_comparison']['rows'])
