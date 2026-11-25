@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import stat
 import tempfile
 import threading
 from pathlib import Path
@@ -39,6 +40,8 @@ import developaid_contract_stage_profile as stage_profile
 
 MAX_BYTES = 20 * 1024 * 1024
 CHOICES = "links.json"
+MAX_PARSE_REFRESH_FILES = 64
+MAX_PARSE_REFRESH_BYTES = 64 * 1024 * 1024
 
 
 class ContractFilesProblem(ValueError):
@@ -91,13 +94,21 @@ def _locked(folder: Path):
     if key in held:
         yield
         return
+    if folder.is_symlink() or folder.parent.is_symlink():
+        raise ContractFilesProblem('Происхождение каталога договора не подтверждено.')
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         import fcntl
     except ImportError:
         raise ContractFilesProblem("Сохранение в карточке договора недоступно в этой среде.") from None
-    descriptor = os.open(folder / ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        descriptor = os.open(folder / ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        raise ContractFilesProblem('Блокировка карточки договора недоступна.') from None
     with os.fdopen(descriptor, "a+b") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ContractFilesProblem('Блокировка карточки договора не подтверждена.')
         fcntl.flock(handle, fcntl.LOCK_EX)
         held.add(key)
         try:
@@ -177,6 +188,12 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
             reason = _same_contract(record.get("contract"), row)
             if reason:
                 raise ContractFilesProblem(reason)
+        if (record.get('schedule') or {}).get('lines') and any(
+                (prior.get('schedule') or {}).get('lines') and not prior.get('removed_at')
+                for prior in _all_records(_folders(project, row['id'], row))):
+            # Existing saved graphs retain their provenance. A newly uploaded
+            # replacement needs explicit evidence of the signed current edition.
+            record['gpr_pending'] = True
         _write(folder / f"{sha}.pdf", content)
         _json(existing, record)
         return {**_summary(record), "already": False, "restored": False}
@@ -198,30 +215,89 @@ def _current(folder: Path, sha: str) -> dict:
     path = folder / f"{sha}.json"
     record = _stored(path)
     # A scan is not recognised again by a newer reader of text: its confirmed header stays as confirmed.
-    if record.get("reader") == documents.READER_VERSION or record.get("scan"):
+    if record.get("reader") == documents.READER_VERSION or record.get("scan") is not None:
         return record
     with _locked(folder):
         record = _stored(path)
-        if record.get("reader") == documents.READER_VERSION:
+        if record.get("reader") == documents.READER_VERSION or record.get("scan") is not None:
             return record
         return _reread(folder, sha, record)
 
 
-def _reread(folder: Path, sha: str, record: dict) -> dict:
+def _reread(folder: Path, sha: str, record: dict, verified_bytes: bytes | None = None) -> dict:
     path, pdf = folder / f"{sha}.json", folder / f"{sha}.pdf"
     if not pdf.exists():
         record.setdefault("warnings", []).insert(
             0, "Файл документа не сохранился: показан прежний разбор, перечитать его нечем.")
         return record
     try:
-        fresh = _record(sha, record.get("filename", ""), pdf.read_bytes(), record.get("uploaded_at", ""))
+        import developaid_contract_identity_store as namespace
+        raw = verified_bytes if verified_bytes is not None else namespace.read_bytes(pdf, MAX_BYTES)
+        if raw is None or hashlib.sha256(raw).hexdigest() != sha:
+            raise ContractFilesProblem('Исходный PDF не соответствует сохранённому SHA256; разбор не использован.')
+        fresh = _record(sha, record.get("filename", ""), raw, record.get("uploaded_at", ""))
         if record.get("removed_at"):
             fresh["removed_at"] = record["removed_at"]
+        if record.get('gpr_pending'):
+            fresh['gpr_pending'] = True
     except ContractFilesProblem as exc:
         fresh = {**record, "reader": documents.READER_VERSION, "estimates": [], "schedule": None,
                  "warnings": [str(exc)]}
     _json(path, fresh)
     return fresh
+
+
+def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]], budget: dict | None = None) -> None:
+    """Refresh bounded derived caches BEFORE the first ownership binding pin.
+
+    The caller passes only already relevant native identity groups. Existing
+    metadata validation supplies the no-follow/size/file-count boundary; the
+    same sorted card locks serialize refresh and owner document mutations.
+    Nothing here refreshes, drops or approves a previously captured pin.
+    """
+    import developaid_contract_identity as identity
+    import developaid_contract_identity_store as namespace
+    budget = budget if budget is not None else {'files': 0, 'bytes': 0, 'metadata_files': 0, 'metadata_bytes': 0}
+    identifiers = sorted({identifier for members, _ in groups for identifier in members})
+    folders = [identity._safe_path(project, 'contract_documents', identifier) for identifier in identifiers]
+    with contextlib.ExitStack() as locks:
+        for folder in sorted(folders):
+            if folder.is_dir() and not folder.is_symlink():
+                locks.enter_context(_locked(folder))
+        # Validate under native locks, before reading or writing derived data.
+        for members, correction in groups:
+            inventory = identity.metadata_inventory(project, list(members), correction=correction)
+            budget['metadata_files'] += inventory['metadata_files_read']
+            budget['metadata_bytes'] += inventory['metadata_bytes_read']
+            if budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES:
+                raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
+        candidates = []
+        for folder in folders:
+            for path in sorted(folder.glob('*.json')):
+                if not re.fullmatch(r'[0-9a-f]{64}\.json', path.name):
+                    continue
+                metadata = namespace.read_bytes(path, 4*1024*1024)
+                budget['metadata_files'] += metadata is not None
+                budget['metadata_bytes'] += len(metadata or b'')
+                if budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES:
+                    raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
+                record = namespace.strict_json(metadata)
+                if record.get('reader') == documents.READER_VERSION or record.get('scan') is not None:
+                    continue
+                pdf = folder/(path.stem+'.pdf')
+                if not pdf.exists():
+                    raise ContractFilesProblem('Исходный PDF для обновления разбора не найден. Проверьте хранилище проекта.')
+                # The parser receives these exact no-follow descriptor bytes.
+                raw = namespace.read_bytes(pdf, MAX_BYTES)
+                if raw is None or hashlib.sha256(raw).hexdigest() != path.stem:
+                    raise ContractFilesProblem('Исходный PDF не соответствует сохранённому SHA256; обновление разбора отменено.')
+                budget['bytes'] += len(raw)
+                budget['files'] += 1
+                candidates.append((folder, path.stem, record, raw))
+                if budget['files'] > MAX_PARSE_REFRESH_FILES or budget['bytes'] > MAX_PARSE_REFRESH_BYTES:
+                    raise ContractFilesProblem('Объём обновления разборов превышает предел одной сборки. Обновите документы отдельной операцией.')
+        for folder, sha, record, raw in candidates:
+            _reread(folder, sha, record, raw)
 
 
 def _edition(record: dict) -> tuple:
@@ -390,6 +466,17 @@ def document_prices(project: str, contract_id: str, cut: str, source_ids: list[s
 
 @stage_profile.stage('card_listing')
 def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = None) -> dict:
+    # One source/anchor snapshot across both workers, including projections and
+    # the exported read guard. Reads never combine old dates with a new graph.
+    folders = _folders(project, contract_id, acts)
+    with contextlib.ExitStack() as locks:
+        for folder in sorted(folders):
+            if folder.is_dir():
+                locks.enter_context(_locked(folder))
+        return _listing(project, contract_id, cut, acts)
+
+
+def _listing(project: str, contract_id: str, cut: str = "", acts: dict | None = None) -> dict:
     """Every document in the card with its links, the accumulated plan and fact on `cut` and the removed files.
 
     `acts` are the KS-6a works of the contract on `cut` (`fact.acts`); None when the register has none.
@@ -403,9 +490,12 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
                               "plan": plan.build([], cut), "fact": _fact([], None, acts, cut, performed),
                               "performed": performed}, acts, cut)
     every = _all_records(folders)
-    records = [r for r in every if not r.get("removed_at")]
+    import developaid_contract_gpr as gpr
+    history = sorted((event for folder in folders for event in gpr.events(folder)),
+                     key=lambda event: (event['recorded_at'], event['event_id']))
+    records = gpr.project_records([r for r in every if not r.get("removed_at")], history)
     # An unconfirmed scan is listed with its proposal; the plan, the fact and the act dates do not see it.
-    counted = [r for r in records if not awaits_confirmation(r)]
+    counted = gpr.counted([r for r in records if not awaits_confirmation(r)])
     acts = act_dates.resolve(acts, counted, cut)
     performed = acts_in_card.accumulated(counted, cut)
     performed['excluded'].extend({
@@ -443,10 +533,14 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
                 "removed_at": r["removed_at"]} for r in every if r.get("removed_at")]
     editions = _editions(counted, chosen)
     planned = plan.build(editions, cut)
-    return _with_control({"contract_id": contract_id, "documents": records, "removed": removed, "plan": planned,
+    result = _with_control({"contract_id": contract_id, "documents": records, "removed": removed, "plan": planned,
                           "fact": _fact(editions, planned["in_force"], acts, cut, performed),
                           "performed": performed},
                          acts, cut)
+    result['gpr'] = gpr.view(project, contract_id, records, folders, cut)
+    result['gpr']['document_source_ids'] = (acts or {}).get('document_source_ids') or []
+    result['gpr']['staffing'] = gpr.staffing(result['gpr'].get('schedule'), date=cut)
+    return result
 
 
 _SCAN_FIELDS = (("contract", "number", "номер договора"), ("contract", "date", "дата договора"),
@@ -581,6 +675,7 @@ def _with_control(listed, acts, cut):
 def _schedule_identity(records, cut):
     """Unique eligible source document; unread dates do not erase its identity."""
     eligible = [r for r in records if not r.get('removed_at') and not r.get('act')
+                and r.get('gpr_status') not in {'pending_signed_confirmation', 'conflicting_edition'}
                 and not (r.get('scan') and not r['scan'].get('confirmed_at'))
                 and (r.get('schedule') or {}).get('lines') and _date(r) and _date(r) <= cut]
     if not eligible:
@@ -644,6 +739,9 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
             "whole_contract_finish": forecast.get("whole_contract_finish"),
             **{k: forecast.get(k) for k in ("finish", "deadline", "from_register", "done", "threat", "days_over",
                                             "days_early", "passed")}}
+        if listed.get('gpr'):
+            row['schedule_control']['gpr_binding'] = {key: value for key, value in listed['gpr'].items()
+                if key in {'project', 'contract_id', 'guard', 'document_source_ids', 'source'}}
         if found.get('schedule_source'):
             row['schedule_control']['schedule_source'] = found['schedule_source']
     return register

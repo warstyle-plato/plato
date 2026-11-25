@@ -24,7 +24,8 @@ import datetime as dt
 import developaid_contract_schedule_links as links
 from developaid_monitor_statement_union import _unit
 
-EVEN_SPLIT = ("Стоимость строки распределена по дням её срока поровну: в графике нет сумм по месяцам, "
+EVEN_SPLIT = ("Стоимость строки распределена поровну по дням её полос: незакрашенные промежутки в план не входят. "
+              "Если отдельных полос нет, используется указанный срок строки. В графике нет сумм по месяцам, "
               "это допущение, а не данные графика.")
 _OUTSIDE = ("review", "extra")
 _LINKED = ("confirmed", "proposed")
@@ -40,6 +41,15 @@ def _shown(day):
 
 def done(line: dict, day: dt.date, start: dt.date | None = None) -> float:
     """Planned share of `line` by the end of `day`; the plan starts not before `start`."""
+    segments = links.dated_segments(line)
+    if segments:
+        if start and start > segments[-1][1]:
+            return 1.0 if day >= start else 0.0
+        active = [(max(begin, start) if start else begin, finish) for begin, finish in segments
+                  if not start or finish >= start]
+        total = sum((finish-begin).days+1 for begin, finish in active)
+        elapsed = sum(max(0, (min(day, finish)-begin).days+1) for begin, finish in active)
+        return min(1.0, elapsed/total) if total else 0.0
     begin, finish = _day(line["start"]), _day(line["finish"])
     if start and start > begin:
         if start > finish:
@@ -153,6 +163,7 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
     component_total = lambda code, key: (None if any(v is None for v in components[code][key]) else
                                           sum(components[code][key]))
     lines = [{"code": code, "name": dated[code]["name"], "start": dated[code]["start"],
+              **({'segments': dated[code]['segments']} if dated[code].get('segments') else {}),
               "finish": dated[code]["finish"], "amount": amount, "volume": _volume(volumes.get(code)),
               "work_amount": component_total(code, 'work'),
               "material_amount": component_total(code, 'material'),

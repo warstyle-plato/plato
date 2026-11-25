@@ -20,7 +20,7 @@ from openpyxl.utils import get_column_letter
 from developaid_contract_rds import LAYOUT, FIELDS
 from developaid_contract_fact import _money
 
-SCHEMA = "contract-rds-plan-fact-export-v3"
+SCHEMA = "contract-rds-plan-fact-export-v4"
 MAX_ROWS = 10_000
 MAX_XLSX_BYTES = 8 * 1024 * 1024
 FILTERS = {"all": "Все работы и поставки", "behind": "Отстают от плана", "ahead": "Опережают план",
@@ -60,6 +60,10 @@ def bind_snapshot(project: str, cut: str, contract_id: str, result: dict, label:
                "label": label, "source_documents": documents}
     if result.get("source_correction"):
         context["source_correction"] = result["source_correction"]
+    if result.get('gpr'):
+        context['gpr_binding'] = {key: result['gpr'][key] for key in
+            ('project', 'contract_id', 'documents_raw_id', 'document_source_ids', 'guard', 'source')
+            if key in result['gpr']}
     revision = _sha({**context, 'rds': comparison,
                      'canonical': {key: result.get(key) for key in ('documents', 'plan', 'fact', 'comparison')}})
     return {"schema": SCHEMA, "layout": LAYOUT, "rows_count": len(rows), "scope": "all_active_rds",
@@ -90,6 +94,13 @@ def select_snapshot(cached: dict, project: str, cut: str, contract_id: str,
 
 
 def require_current_sources(meta):
+    if meta.get('gpr_binding'):
+        import developaid_contract_gpr as gpr
+        import developaid_contract_files as files
+        try:
+            gpr.require_current(meta['gpr_binding'], verify_pdf=True)
+        except files.ContractFilesProblem as exc:
+            raise ExportProblem(str(exc)) from None
     correction = meta.get('source_correction')
     if not correction:
         return

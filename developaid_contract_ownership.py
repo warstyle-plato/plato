@@ -87,6 +87,7 @@ class ReadContext:
         self.pairs = {}
         self.corrections = {}
         self.source_cache = {}
+        self.parse_refresh_budget = {'files': 0, 'bytes': 0, 'metadata_files': 0, 'metadata_bytes': 0}
         for event in self.state['events']:
             if event['action'] in {'confirm', 'correct_sources'}:
                 pair = tuple(sorted({member['raw_id'] for member in event['payload']['members']}))
@@ -114,6 +115,17 @@ class ReadContext:
             roster.append(sid)
         return sorted(roster)
 
+    def _binding_inventory(self, pair):
+        """One aggregate metadata budget for initial, nested and final seals."""
+        import developaid_contract_identity as identity
+        found = identity.metadata_inventory(self.project, list(pair), correction=pair in self.corrections)
+        self.parse_refresh_budget['metadata_files'] += found['metadata_files_read']
+        self.parse_refresh_budget['metadata_bytes'] += found['metadata_bytes_read']
+        if (self.parse_refresh_budget['metadata_files'] > identity.MAX_FILES or
+                self.parse_refresh_budget['metadata_bytes'] > identity.MAX_METADATA_BYTES):
+            raise OwnershipProblem('Общий объём метаданных уточнений превышает предел одной сборки.')
+        return found
+
     def capture(self, composition):
         if not self.present or is_raw_history():
             return
@@ -126,15 +138,28 @@ class ReadContext:
         active_passes = len(relevant & self.active)
         if relevant:
             import developaid_contract_identity as identity
+            import developaid_contract_files as files
+            # Reader upgrades write derived JSON. Finish only the bounded,
+            # relevant upgrades before capturing a group's FIRST binding pin.
+            # Already captured groups keep their strict CAS, including on a
+            # nested capture; owner/source changes are never rebased away.
+            if self.binding_pins:
+                self.check()
+            fresh = relevant-set(self.binding_pins)
+            if fresh:
+                files.refresh_parse_cache(self.project, [(pair, pair in self.corrections) for pair in sorted(fresh)],
+                                          self.parse_refresh_budget)
             metadata_bytes = 0
-            self.binding_pins = {}
             for pair in relevant:
-                bindings = identity.metadata_inventory(self.project, list(pair), correction=pair in self.corrections)
+                bindings = self._binding_inventory(pair)
                 metadata_bytes += bindings['metadata_bytes_read']
                 if metadata_bytes > identity.MAX_METADATA_BYTES:
                     raise OwnershipProblem('Общий объём метаданных уточнений превышает предел одной сборки.')
-                self.binding_pins[pair] = store.digest(bindings)
-                self.source_cache[('bindings', pair)] = bindings
+                observed = store.digest(bindings)
+                if pair in self.binding_pins and self.binding_pins[pair] != observed:
+                    raise OwnershipProblem('Исходные привязки изменились во время чтения. Обновите реестр.')
+                self.binding_pins[pair] = observed
+                self.source_cache.setdefault(('bindings', pair), bindings)
         if active_passes:
             self.roster = self._roster()
             if len(self.roster) > MAX_ARCHIVES or len(set(self.roster)) != len(self.roster):
@@ -229,7 +254,7 @@ class ReadContext:
                     resolved = dict(resolved,status='source_conflict',logical_id=None,
                                     reason='Используемая исходная версия не совпала с подтверждённым уточнением.')
                     break
-            if self.binding_pins[pair] != store.digest(identity.metadata_inventory(self.project,list(pair), correction=pair in self.corrections)):
+            if self.binding_pins[pair] != store.digest(self._binding_inventory(pair)):
                 raise OwnershipProblem('Исходные привязки изменились во время сборки. Обновите реестр.')
         self.cache[pair] = resolved
         return resolved
@@ -298,7 +323,7 @@ class ReadContext:
                     raise OwnershipProblem('Исходная версия изменилась во время чтения; логическое объединение не подтверждено.')
         if self.binding_pins:
             import developaid_contract_identity as identity
-            if any(store.digest(identity.metadata_inventory(self.project,list(pair), correction=pair in self.corrections)) != digest
+            if any(store.digest(self._binding_inventory(pair)) != digest
                    for pair,digest in self.binding_pins.items()):
                 raise OwnershipProblem('Исходные привязки изменились во время чтения. Обновите реестр.')
 

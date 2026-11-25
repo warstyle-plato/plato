@@ -97,6 +97,24 @@ class MonitorContractComparisonExport(MonitorContractDocuments):
         return value
 
 
+class MonitorContractGprChange(MonitorContractDocuments):
+    model_config = {'extra': 'forbid', 'strict': True}
+    source_sha256: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
+    expected_guard: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
+    action: str = _CumulativeField(pattern=r'^(anchor|activate)$')
+    handover_date: str = _CumulativeField(default='', max_length=10)
+    advance_date: str = _CumulativeField(default='', max_length=10)
+    counterparty_signed: bool = False
+    note: str = _CumulativeField(min_length=5, max_length=1000)
+
+
+class MonitorContractGprExport(MonitorContractDocuments):
+    model_config = {'extra': 'forbid', 'strict': True}
+    cut: str = _CumulativeField(min_length=10, max_length=10)
+    ticket: str = _CumulativeField(pattern=r'^[0-9a-f]{32}$')
+    revision: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
+
+
 class MonitorContractSourceReview(MonitorContractDocuments):
     # This operation never accepts a filename, worksheet, range, path or URL.
     model_config = {"extra": "forbid"}
@@ -337,7 +355,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PAT
     "/monitor/contracts/source-duplicate-proof",
     "/monitor/contracts/source-prepared-index",
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
-    "/monitor/contracts/comparison.xlsx",
+    "/monitor/contracts/comparison.xlsx", "/monitor/contracts/gpr.xlsx", "/monitor/contracts/gpr-change",
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/contracts/document-confirm",
     "/monitor/view", "/monitor/gpr-view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
@@ -354,7 +372,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PAT
 
 @app.middleware("http")
 async def monitor_cumulative_private_headers(request: Request, call_next):
-    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS or request.url.path == "/monitor/contracts/comparison.xlsx") and request.method == 'POST':
+    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS or request.url.path in {"/monitor/contracts/comparison.xlsx", "/monitor/contracts/gpr.xlsx", "/monitor/contracts/gpr-change"}) and request.method == 'POST':
         private = {"Cache-Control": "private, no-store"}
         cap = 1024*1024 if request.url.path == "/monitor/contracts/comparison.xlsx" else 64*1024
         if request.url.path in _PDF_INTAKE_PATHS - {'/monitor/contracts/pdf-intake/result'}:
@@ -669,10 +687,19 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
             elif operation == "document-remove":
                 result = contract_files.remove(payload["project"], payload["contract_id"], payload["sha256"],
                                                restore=payload["restore"], cut=payload["cut"], acts=acts)
+            elif operation == 'document-gpr':
+                if owner_row is None:
+                    raise contracts.ContractProblem('Договор не найден на выбранную дату.')
+                import developaid_contract_gpr as gpr
+                result = gpr.save(payload['project'], owner_row, payload['cut'], payload['source_sha256'],
+                                  payload['expected_guard'], payload['action'], payload['note'], payload['actor'],
+                                  payload['handover_date'], payload['advance_date'], payload['counterparty_signed'], acts)
             else:
                 raise RuntimeError("unknown monitor operation")
             if correction_state:
                 result.update(contract_id=logical_id, documents_raw_id=documents_owner, source_correction=correction_state)
+                if result.get('gpr'):
+                    result['gpr'].update(contract_id=logical_id, documents_raw_id=documents_owner)
         else:
             raise RuntimeError("unknown monitor operation")
         import developaid_contract_stage_profile as stage_profile
@@ -681,6 +708,17 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
             import developaid_contract_comparison_export as comparison_export
             import developaid_contract_rds as rds
             encoded['rds_comparison'] = rds.build(encoded)
+            if encoded.get('gpr'):
+                import developaid_contract_gpr as gpr
+                import developaid_contract_gpr_export as gpr_export
+                encoded['gpr']['overlays'] = gpr.physical_overlays(encoded, encoded['rds_comparison'])
+                encoded['gpr']['staffing'] = gpr.workforce_sources(payload['project'], row or {}, register,
+                    payload['cut'], encoded['gpr'].get('schedule'))
+                encoded['gpr']['presentation'] = gpr_export.presentation(encoded['gpr']['schedule'] or {},
+                    encoded['gpr']['overlays'], payload['cut'])
+                encoded['gpr_export'] = gpr_export.bind_snapshot(payload['project'], payload['cut'],
+                    encoded.get('contract_id') or payload['contract_id'], encoded,
+                    {key: (row or {}).get(key) or '' for key in ('contract', 'contractor', 'contract_date')})
             encoded["comparison_export"] = comparison_export.bind_snapshot(
                 payload["project"], payload["cut"], encoded.get("contract_id") or payload["contract_id"], encoded,
                 {key: (row or {}).get(key) or "" for key in ("contract", "contractor", "contract_date")})
@@ -727,9 +765,36 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
                             label = result['comparison_export'].get('label') or {}
                             result['comparison_export'] = comparison_export.bind_snapshot(
                                 payload['project'], payload['cut'], result['contract_id'], result, label)
+                            if result.get('gpr_export'):
+                                import developaid_contract_gpr_export as gpr_export
+                                result['gpr_export'] = gpr_export.bind_snapshot(payload['project'], payload['cut'],
+                                    result['contract_id'], result, label)
                 return result
     except (ownership.OwnershipProblem, identity_store.IdentityProblem) as exc:
         return {'ok': False, 'detail': str(exc)}
+
+
+def _monitor_contract_gpr_current(value):
+    """A retained ticket must not resurrect dates or a replaced graph."""
+    import developaid_contract_gpr as gpr
+    import developaid_contract_files as files
+    import developaid_management_report_jobs as jobs
+    if value.get('pending') or value.get('ok') is not True:
+        return
+    if value.get('comparison_export'):
+        import developaid_contract_comparison_export as comparison_export
+        old_schema = value['comparison_export'].get('schema')
+        if old_schema and old_schema != comparison_export.SCHEMA:
+            raise jobs.JobProblem(409, jobs.SOURCE_CHANGED_DETAIL, code='source_changed')
+    bindings = [value['gpr']] if value.get('gpr') else []
+    bindings.extend((row.get('schedule_control') or {}).get('gpr_binding')
+                    for row in (value.get('register') or {}).get('rows') or [])
+    try:
+        for binding in bindings:
+            if binding:
+                gpr.require_current(binding)
+    except files.ContractFilesProblem:
+        raise jobs.JobProblem(409, jobs.SOURCE_CHANGED_DETAIL, code='source_changed') from None
 
 
 def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Response:
@@ -754,6 +819,13 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
         if not operation:
             if family == "contracts" and getattr(req, "offset", None) is not None:
                 result = store.poll_part(req.ticket, owner, profile, req.offset, accept_gzip=req.accept_gzip)
+                part = result.get('result_part') or {}
+                # The DTO is immutable. Seal its source/anchor at admission of
+                # the first piece and again before the final assembly piece;
+                # intermediate pieces keep the native bounded-read path.
+                # Do not decode a multi-megabyte register for every 256KB part.
+                if req.offset == 0 or (part and req.offset+jobs.RESULT_PART_BYTES >= part['total_bytes']):
+                    _monitor_contract_gpr_current(store.poll(req.ticket, owner, profile))
             else:
                 result = store.poll(req.ticket, owner, profile)
         else:
@@ -807,6 +879,14 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 elif operation == "document-confirm":
                     payload.update(contract_id=req.contract_id, sha256=req.sha256, kind=req.kind,
                                    values=req.values.model_dump())
+                elif operation == 'document-gpr':
+                    for value in (req.handover_date, req.advance_date):
+                        if value:
+                            _monitor_cumulative_day(value)
+                    payload.update(contract_id=req.contract_id, source_sha256=req.source_sha256,
+                                   expected_guard=req.expected_guard, action=req.action, handover_date=req.handover_date,
+                                   advance_date=req.advance_date, counterparty_signed=req.counterparty_signed,
+                                   note=req.note, actor=owner)
                 elif operation == "term":
                     if req.deadline:
                         _monitor_cumulative_day(req.deadline)
@@ -893,6 +973,8 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 result_policy["include_result"] = False
                 result_policy["compress_result"] = True
             result = store.start(owner, profile, fingerprint, build, req.ticket, context=source_context, **result_policy)
+        if family == 'contracts':
+            _monitor_contract_gpr_current(result)
         if result["pending"]:
             result["detail"] = ("Проверяю управленческую статью АХР." if family == "finance-management" else
                                 "Проверяю банковское отнесение АХР." if family == "finance-allocation" else
@@ -1072,6 +1154,46 @@ def monitor_finance_management_result(req: MonitorCumulativeResult) -> Response:
 @app.post("/monitor/contracts/documents", include_in_schema=False)
 def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="documents")
+
+
+@app.post('/monitor/contracts/gpr-change', include_in_schema=False)
+def monitor_contract_gpr_change(req: MonitorContractGprChange) -> Response:
+    return _monitor_cumulative_job(req, family='contracts', operation='document-gpr')
+
+
+@app.post('/monitor/contracts/gpr.xlsx', include_in_schema=False)
+def monitor_contract_gpr_xlsx(req: MonitorContractGprExport) -> Response:
+    private = {'Cache-Control': 'private, no-store'}
+    _require_admin_key(req.key, 'Монитор проекта', req.session)
+    import developaid_management_report_jobs as jobs
+    import developaid_contract_gpr_export as gpr_export
+    import developaid_contract_comparison_export as comparison_export
+    import developaid_monitor_ledgers as ledgers
+    try:
+        profile = 'monitor-cumulative-v1:contracts'
+        owner = jobs.owner_binding(_env_str('DEVELOPAID_ADMIN_KEY', '').strip(), req.session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / '.cumulative_jobs',
+                           context_validator=ledgers.validate_snapshot_job_context)
+        cached = store.poll(req.ticket, owner, profile)
+        _monitor_contract_gpr_current(cached)
+        meta = gpr_export.select_snapshot(cached, req.project.strip(), _monitor_cumulative_day(req.cut),
+                                          req.contract_id, req.revision)
+        raw = gpr_export.workbook(meta, cached)
+        # Check after generation as well: an anchor/source change in another
+        # worker cannot return an Excel of an obsolete card.
+        comparison_export.require_current_sources(meta)
+        return Response(raw, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={**private, 'Content-Disposition':
+                            gpr_export.disposition(meta)})
+    except comparison_export.ExportProblem as exc:
+        raise HTTPException(exc.status, str(exc), headers=private) from None
+    except jobs.JobProblem as exc:
+        raise HTTPException(409 if exc.status in (400, 404, 409) else 503,
+                            'Сохранённая карточка изменилась. Откройте её заново перед выгрузкой.', headers=private) from None
+    except Exception as exc:
+        logging.getLogger('developaid.monitor').error('Contract GPR export unavailable (%s)', type(exc).__name__)
+        raise HTTPException(503, 'Не удалось подготовить Excel ГПР. Повторите выгрузку из открытой карточки.',
+                            headers=private) from None
 
 
 @app.post('/monitor/contracts/pdf-intake/preview', include_in_schema=False)
