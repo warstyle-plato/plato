@@ -20,8 +20,6 @@
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -31,6 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from tests import page_blocks  # noqa: E402
 
 
 def page_function(name: str) -> str:
@@ -84,19 +83,14 @@ function activeSession(){return ''}
 
 
 def run(fetch_js: str) -> dict:
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node недоступен")
-    script = "\n".join([
-        DOM, page_plain_function("cloneValue"), page_plain_function("serverDetail"),
-        page_plain_function("landHasContour"), page_plain_function("landContourArrived"),
-        fetch_js, page_function("lookupLand"),
-        "(async()=>{const out=await lookupLand({quiet:true});"
-        "console.log(JSON.stringify({returned:out,status:nodes.cadastralStatus.innerHTML}));})()",
-    ])
-    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr[:600]
-    return json.loads(done.stdout)
+    # Настоящие зависимости запроса добирает общий стенд. Ручной список
+    # пропускал cadastralQueryMatches; ReferenceError попадал в сетевой catch
+    # и выдавал исправный ответ за ошибку соединения.
+    stdout, _ = page_blocks.run(DOM + "\n" + page_blocks.constant("CADASTRAL_NUMBER_SOURCE") + "\n" + fetch_js,
+        "(async()=>{rememberCadastralQuery(nodes.cadastralNumbers.value);"
+        "const out=await lookupLand({quiet:true});"
+        "console.log(JSON.stringify({returned:out,status:nodes.cadastralStatus.innerHTML}));})()")
+    return json.loads(stdout)
 
 
 # --- три разных исхода, три разных ответа ---------------------------------------

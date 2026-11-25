@@ -795,8 +795,12 @@ function projectParcelFacts(){
 function renderStoredCadastral(){
  const stored=inputs._cadastral_analysis;
  if(!stored)return;
+ const query=(stored.requested||stored.recognized||[]).join(', ');
+ if(inputs._cadastral_origin&&!cadastralQueryMatches(query)){
+  delete inputs._cadastral_analysis;cadastralAnalysis=null;return;
+ }
  cadastralAnalysis=cloneValue(stored);
- writeCadastralField((stored.requested||[]).join(', '));
+ writeCadastralField(cadastralQueryMatches(query)?inputs._cadastral_query:query);
  renderCadastralPreview(cadastralAnalysis);
  cadastralStatus.innerHTML='<span class="import-ok">Показана территория, сохранённая в проекте.</span>';
 }
