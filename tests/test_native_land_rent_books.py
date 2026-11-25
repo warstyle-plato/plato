@@ -109,7 +109,7 @@ def test_native_mo_indices_follow_calendar_year_and_remain_editable():
     assert partial.cell(native.SHEET, "B19") == pytest.approx(6 * 184/365)
 
 
-def test_manual_cash_horizon_retains_its_day_after_a_nonfirst_cutoff():
+def test_manual_cash_horizon_extends_for_late_cash_after_a_nonfirst_commissioning():
     w = openpyxl.Workbook()
     dates = w.active
     dates.title = "Календарь"
@@ -117,14 +117,49 @@ def test_manual_cash_horizon_retains_its_day_after_a_nonfirst_cutoff():
     x = settings(land_rent_payment_mode="manual", land_rent_payment_schedule="100%@37")
     result = rent.build(x, date(2027, 1, 5), date(2029, 1, 17), date(2030, 2, 1))
     spec = {"land_rent_inputs": x, "land_rent": result}
-    native.add(w, spec, start="'Календарь'!A1", rve="'Календарь'!B1",
+    refs = native.add(w, spec, start="'Календарь'!A1", rve="'Календарь'!B1",
         end=native.end_formula(spec, "'Аренда ЗУ'!$B$15"),
         month_formulas=[f"EDATE('Календарь'!A1,{k})" for k in range(48)])
     evaluator = Evaluator(w)
-    assert evaluator.cell(native.SHEET, "F11") == (date(2030, 2, 1)-date(1899, 12, 30)).days
-    assert evaluator.cell(native.SHEET, "F17") == 0  # Feb5 is outside the exact Feb1 fence.
-    w[native.SHEET]["A125"] = 36  # Jan5 is inside; post-RVE unknown does not erase cash.
-    assert Evaluator(w).cell(native.SHEET, "F17") == 1
+    # Project end is a minimum cash horizon. The Feb5 liability is still
+    # paid, in February's CF bucket, without moving Jan17 commissioning.
+    assert result['derived_rve']=='2029-01-17'
+    assert result['project_end']=='2030-03-01'
+    assert evaluator.cell(native.SHEET, "F11") == (date(2030, 3, 1)-date(1899, 12, 30)).days
+    assert evaluator.evaluate('=B125+0',native.SHEET)==(date(2030,2,5)-date(1899,12,30)).days
+    assert evaluator.cell(native.SHEET, "F17") == 1
+    assert evaluator.cell(native.SHEET,refs.month(37).split('!')[1])*1e6==pytest.approx(result['known_total'])
+    assert evaluator.cell(native.SHEET,'B19')*1e6==pytest.approx(result['known_total'])
+    commissioning=(date(2029,1,17)-date(1899,12,30)).days
+    assert evaluator.evaluate('=B15+0',native.SHEET)==commissioning
+    w[native.SHEET]["A125"] = 36
+    edited=Evaluator(w)
+    assert edited.cell(native.SHEET,'F17')==1
+    assert edited.evaluate('=B15+0',native.SHEET)==commissioning
+    assert edited.cell(native.SHEET,'B19')==pytest.approx(evaluator.cell(native.SHEET,'B19'))
+
+
+def test_exact_termination_caps_accrual_but_keeps_the_later_liability_payment():
+    w=openpyxl.Workbook()
+    dates=w.active;dates.title='Календарь'
+    dates['A1'],dates['B1']=date(2027,1,5),date(2029,1,17)
+    x=settings(land_rent_payment_mode='manual',land_rent_payment_schedule='100%@37',
+        land_rent_termination_date='2028-07-17')
+    result=rent.build(x,date(2027,1,5),date(2029,1,17),date(2030,2,1))
+    expected=1e6*(361/365+198/366)
+    assert result['known_total']==pytest.approx(expected)
+    assert all(month<='2028-07-01' for month in result['accrual_monthly'])
+    spec={'land_rent_inputs':x,'land_rent':result}
+    refs=native.add(w,spec,start="'Календарь'!A1",rve="'Календарь'!B1",
+        end=native.end_formula(spec,"'Аренда ЗУ'!$B$15"),
+        month_formulas=[f"EDATE('Календарь'!A1,{k})" for k in range(48)])
+    evaluator=Evaluator(w)
+    assert evaluator.cell(native.SHEET,'F10')==(date(2028,7,17)-date(1899,12,30)).days
+    assert evaluator.cell(native.SHEET,'V4')*1e6==pytest.approx(1e6*16/366)
+    assert evaluator.cell(native.SHEET,'W4')==0
+    assert evaluator.cell(native.SHEET,'F17')==1
+    assert evaluator.cell(native.SHEET,refs.month(37).split('!')[1])*1e6==pytest.approx(expected)
+    assert evaluator.cell(native.SHEET,'B19')*1e6==pytest.approx(expected)
 
 
 def test_unsupported_native_phases_do_not_freeze_common_rent():
@@ -161,7 +196,13 @@ def hotel():
 def test_native_hotel_includes_rent_in_capex_not_land_asset(hotel):
     _, result, w = hotel
     evaluator = Evaluator(w)
-    assert evaluator.cell(native.SHEET, "B19") * 1e6 == pytest.approx(result["capex"]["land_rent"])
+    assert evaluator.cell(native.SHEET, "B19") * 1e6 == pytest.approx(result["land_rent"]["cash_total"])
+    assert result["land_rent"]["development_cash_total"] == pytest.approx(result["capex"]["land_rent"])
+    operating = result["finance"]["hotel"]["totals"]["land_rent_operating"]
+    row = next(r for r in range(3, w[hw.CHECK_SHEET].max_row + 1)
+               if w[hw.CHECK_SHEET][f"A{r}"].value == "Аренда ЗУ: начислено в расходы")
+    assert evaluator.cell(hw.CHECK_SHEET, f"B{row}") == pytest.approx(operating)
+    assert operating > 0
     assert evaluator.cell(hw.INPUTS_SHEET, "C"+str(hw._ROWS["capex_total"])) == pytest.approx(result["capex"]["total"])
     assert evaluator.cell(hw.INPUTS_SHEET, "C"+str(hw._ROWS["land_total"])) == 0
     assert evaluator.cell(hw.INPUTS_SHEET, "C"+str(hw._ROWS["building_net"])) == pytest.approx(result["finance"]["hotel"]["kpi"]["building_net"])
@@ -215,7 +256,8 @@ def test_native_retail_cash_and_finance_consume_editable_rent(retail):
     evaluator = ow.evaluate(w)
     assert not report["unresolved"], report["unresolved_examples"]
     assert report["verdict"] == ow.PASSED, report["mismatches"]
-    assert evaluator.cell(native.SHEET, "B19") * 1e6 == pytest.approx(result["capex"]["land_rent"])
+    assert evaluator.cell(native.SHEET, "B19") * 1e6 == pytest.approx(result["land_rent"]["cash_total"])
+    assert result["land_rent"]["development_cash_total"] == pytest.approx(result["capex"]["land_rent"])
     sheet = w[ow.CAPEX_SHEET]
     row = next(r for r in range(1, sheet.max_row+1) if sheet[f"A{r}"].value == "Аренда земельного участка")
     assert evaluator.cell(ow.CAPEX_SHEET, f"B{row}") == pytest.approx(2)
@@ -225,8 +267,8 @@ def test_native_retail_cash_and_finance_consume_editable_rent(retail):
     report_sheet = report["comparisons"][0]["report"] if report["comparisons"] else ow.REPORT_SHEET
     qualifier = evaluator.cell(native.SHEET, "L13")
     assert qualifier and qualifier in ow.evaluate(w).cell(report_sheet, "A2")
-    # Only the active object's build duration changes, not project/RnS or
-    # holding/exit dates. Its later commissioning prolongs the common lease.
+    # Later commissioning moves the same retained operating period and
+    # prolongs construction rent, without changing project/RnS inputs.
     w[native.SHEET]["B9"] = 100
     inputs = w[ow.INPUTS_SHEET]
     months_row = next(r for r in range(1, inputs.max_row+1) if inputs[f"A{r}"].value == "Срок стройки")

@@ -4,6 +4,8 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import io
+import json
+import re
 
 import openpyxl
 import pytest
@@ -67,12 +69,52 @@ def test_previous_retained_archives_are_read_as_separate_source_versions(api):
     assert len({s['snapshot_id'] for s in data['sources']})==2
 
 
+@pytest.mark.parametrize('field,difference', [
+    ('context_headings','items.context_headings'),
+    ('planned_amount_basis','reference.planned_amount_basis'),
+    ('completed_amount_basis','reference.completed_amount_basis'),
+])
+def test_composition_proof_explains_cached_definition_without_values_or_neighbours(api,field,difference):
+    content=source_book()
+    day=(dt.date.today()-dt.timedelta(days=2)).isoformat()
+    old=ledgers.store_archive('Fixture',archive([('KS.xlsx',content)]),day,'KS.zip')
+    path=ledgers._root('Fixture')/(old['snapshot_id']+'.json')
+    manifest=json.loads(path.read_text())
+    item=manifest['ledgers'][0]['items'][0]
+    item[field]=([{'name':'PRIVATE_STALE_MARKER'}] if field=='context_headings' else
+                 'with_vat' if item.get(field)!='with_vat' else 'without_vat')
+    path.write_text(json.dumps(manifest))
+    ledgers.store_archive('Fixture',archive([('KS.xlsx',content),
+        ('PRIVATE_OTHER.xlsx',source_book(number='PRIVATE_OTHER_CONTRACT'))]),
+        (dt.date.today()-dt.timedelta(days=1)).isoformat(),'KS-new.zip')
+    register=contracts.build('Fixture',TODAY,include_history=False)
+    row=next(row for row in register['rows']if row['contract']=='A-12')
+    before={p:p.read_bytes()for p in ledgers._root('Fixture').iterdir()if p.is_file()}
+    data=review.review('Fixture',row['id'],TODAY)
+    proof=data['composition_proof']
+    assert proof['scope']=='selected_card_verified_sources_only' and proof['complete']
+    assert len(proof['sources'])==2
+    prior=next(source for source in proof['sources']if source['snapshot_id']==old['snapshot_id'])
+    assert prior['source_parse_state']=='current' and prior['parser_schema_current']
+    assert not prior['same_family_as_latest_input']
+    assert prior['same_family_as_latest_original']
+    assert difference in prior['different_coordinate_definition_fields']
+    encoded=json.dumps(proof)
+    assert 'PRIVATE_STALE_MARKER'not in encoded and 'PRIVATE_OTHER'not in encoded
+    for source in proof['sources']:
+        for observation in (source['composition'],source['verified_original']):
+            assert all(re.fullmatch('[0-9a-f]{64}',value)for value in observation['definition_sha256'].values())
+    assert all(path.read_bytes()==value for path,value in before.items())
+
+
 def test_a_missing_original_is_unknown_not_proof_of_missing_dates(api):
     _,row=saved()
     next(ledgers._root('Fixture').glob('*.zip')).unlink()
     data=review.review('Fixture',row['id'],TODAY)
     assert data['state']=='incomplete' and data['source_count']==0
     assert data['unavailable_originals'] and 'даты не объявлены отсутствующими' in data['unavailable_originals'][0]['reason']
+    assert data['composition_proof']['unverified_inputs_omitted']==1
+    assert not data['composition_proof']['sources']
 
 
 def test_source_sha_drift_is_a_failure_not_cached_old_success(api):

@@ -1,7 +1,7 @@
 """Plan and fact of the contract's works in natural volumes, three percentages, lag, overdue and forecast.
 
 The plan is the edition in force on the cut (`developaid_contract_plan`), the
-fact is the acts КС-2 (or the KS-6a) priced by the estimate
+fact is the KS-6a (or КС-2 when no statement is usable) priced by the estimate
 (`developaid_contract_fact`); both lie on the same ГПР lines. Methodology of
 12.11.2026 (docs/contract_schedule_control.md):
 
@@ -11,8 +11,8 @@ fact is the acts КС-2 (or the KS-6a) priced by the estimate
   cut, readiness = fact ÷ the whole volume, deviation = (fact − plan) ÷ plan, with
   the deviation also in volume; no percent when its base is zero;
 - the contract (rule 9, owner's decision 3А): readiness and plan done on the cut
-  are the natural readiness of every work weighted by its cost in the estimate;
-  a work is counted at most whole, so over-volume of one work never makes
+  include natural readiness of works and separately measured material deliveries, weighted by their costs;
+  works and materials each weigh their separately priced contribution, capped at whole; over-volume never makes
   another unfinished work look done;
 - lag (rule 10, decision 5А) = days back from the cut to the day when the
   accumulated plan equalled today's readiness; ahead = days forward to the day
@@ -40,15 +40,18 @@ import datetime as dt
 import developaid_contract_plan as plan
 from developaid_monitor_statement_union import _unit
 
+CALCULATION_REVISION = 'contract-rds-plan-fact-v3'
+
 ASSUMPTION = ("Отставание в днях — на сколько дней назад от даты среза план нарастающим итогом был равен "
               "сегодняшнему факту. Просрочка считается отдельно: сколько дней прошло после срока работы по "
               "графику, а работа не закончена. Прогноз считает, что отставание строки сохранится до её "
               "окончания: срок отстающей строки сдвигается на число дней отставания, а срок остальных строк "
               "остаётся по графику. Работа закончена, когда выполнен весь её объём; дата окончания — конец "
               "последнего периода КС по ней.")
-WEIGHTS = ("Готовность работ — готовность каждой работы в натуре, взвешенная стоимостью работы без материалов. "
-           "Поставка материалов учитывается отдельно и не подтверждает выполнение работ. "
-           "Работа учитывается не больше чем целиком: сверхобъём одной работы не закрывает другую.")
+WEIGHTS = ("Общая готовность учитывает работы и поставку материалов с весами по их отдельной стоимости в расчёте. "
+           "Вклад — стоимость компонента, умноженная на его готовность. Готовность работ и поставка показаны отдельно: поставка не подтверждает монтаж. "
+           "Каждый компонент каждой строки учитывается не больше чем целиком: избыток материалов не закрывает работы. "
+           "План поставки распределён по той же строке ГПР, что и её стоимость; отдельный срок поставки не выдумывается.")
 _ROUND = 1.0  # A ruble: the plan is spread over days, so a smaller gap is rounding, not a deviation.
 _SHARE = 1e-6  # Of a volume: the KS and the estimate print the same numbers, only float noise differs.
 
@@ -107,6 +110,66 @@ def _volume(line, share, volumes, money):
 
 def _ratio(part, whole):
     return part / whole if whole else None
+
+
+def _materials(lines, facts, day, start):
+    """Delivery has its own quantity, price and dates; never reuse installed work quantities."""
+    rows = []
+    for line in lines:
+        amount = line.get('material_amount', 0.0)
+        if amount == 0:
+            continue
+        got = facts.get(line['code']) or {'material_fact': 0.0, 'material_volumes': []}
+        actual = got.get('material_fact')
+        begin, finish = _span(line, start)
+        curve = lambda d, line=line: plan.done(line, d, start)
+        due = curve(day)
+        volume = _volume({'volume': line.get('material_volume')}, due,
+                         got.get('material_volumes') or [], actual)
+        unknown = amount is None or amount < 0 or actual is None
+        ready = None if unknown else volume['fact']/volume['quantity'] if volume else _ratio(actual, amount)
+        tol = _SHARE if volume else _ROUND/amount if amount else _SHARE
+        state, lag, ahead, forecast = (('unknown', 0, 0, None) if ready is None else
+                                      _measure(curve, ready, due, begin, finish, day, tol))
+        finished = got.get('material_last') if state == 'done' else None
+        rows.append({'code': line['code'], 'name': line['name'] + ' — поставка материалов',
+            'component': 'material', 'supply_only': bool(line.get('supply_only')),
+            'start': line['start'], 'finish': line['finish'], 'due': finish.isoformat(),
+            'amount': amount, 'planned': amount*due if amount is not None else None,
+            'fact': actual, 'volume': volume, 'basis': 'volume' if volume else 'money',
+            'deviation': actual-amount*due if actual is not None and amount is not None else None,
+            'readiness': ready, 'plan_share': due,
+            'plan_done': ready/due if ready is not None and due > tol else None,
+            'percent': ready/due-1 if ready is not None and due > tol else None,
+            'state': state, 'lag_days': lag, 'ahead_days': ahead,
+            'overdue_days': None if unknown else (day-finish).days if state != 'done' and day > finish else 0,
+            'behind_amount': max(amount*(due-min(max(ready,0),1)),0) if ready is not None else None,
+            'forecast_finish': forecast.isoformat() if forecast else None,
+            'finished': finished, 'late_days': (_day(finished)-finish).days if finished else None,
+            'date_unknown': state == 'done' and not finished,
+            'reason': 'Стоимость или объём поставки материалов не подтверждены.' if unknown else
+                      'Дата завершения поставки не подтверждена.' if state == 'done' and not finished else ''})
+    return rows
+
+
+def _component(rows, amount_key, lines, day, start):
+    """One capped contribution per component of a schedule line, on its own plan curve."""
+    amount = None if any(r.get(amount_key) is None for r in rows) else sum(r[amount_key] for r in rows)
+    known = amount is not None and all(r.get('readiness') is not None and r[amount_key] >= 0 for r in rows)
+    planned = sum(r[amount_key]*r['plan_share'] for r in rows) if amount is not None else None
+    counted = sum(r[amount_key]*(1.0 if r['state'] == 'done' else min(max(r['readiness'],0.0),1.0))
+                  for r in rows) if known else None
+    ready = counted/amount if known and amount else None
+    result = {'amount': amount, 'planned': planned, 'counted': counted, 'readiness': ready,
+              'plan_share': planned/amount if amount else None, 'lag_days': None, 'ahead_days': None}
+    if ready is not None:
+        spans = [_span(line,start) for line in lines]
+        curve = lambda d: sum(line.get(amount_key,line['amount'])*plan.done(line,d,start) for line in lines)/amount
+        _,lag,ahead,_ = _measure(curve,ready,result['plan_share'],min(b for b,_ in spans),
+                                  max(f for _,f in spans),day,_ROUND/amount,
+                                  all(r['state']=='done' for r in rows))
+        result.update(lag_days=lag,ahead_days=ahead)
+    return result
 
 
 def _operation_rows(line, got, day, start, physical_groups):
@@ -169,6 +232,8 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
     result = {"cut": cut, "assumption": ASSUMPTION, "weights": WEIGHTS, "note": "", "total": None, "lines": [],
               "behind": [], "ahead": [], "done": [], "overdue": [], "forecast": None, "left_out": _left_out(fact),
               "source": fact.get("source"), "source_note": fact.get("source_note") or "",
+              "confirmation": fact.get("confirmation"),
+              'act_evidence': fact.get('act_evidence'),
               "preliminary": bool(fact.get("preliminary")), "data_gaps": _data_gaps(fact)}
     current = next((e for e in planned.get("editions") or [] if e.get("in_force")), None)
     if current is None:
@@ -185,9 +250,7 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
     done_by_code = {x["code"]: x for x in fact.get("lines") or []}
     finishes = []
     work_lines = [line for line in current['lines'] if not line.get('supply_only')]
-    if not work_lines:
-        result['note'] = 'В сопоставленном плане только поставка материалов: готовность работ не рассчитана.'
-        return result
+    result['materials'] = _materials(current['lines'], done_by_code, day, start)
     for line in work_lines:
         got = done_by_code.get(line["code"]) or {"fact": 0.0, "work_fact": 0.0, "material_fact": 0.0,
                                                 "volumes": [], "last": None, "complete": False}
@@ -197,8 +260,12 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
         work_amount = line.get('work_amount', line['amount'])
         work_fact = got.get('work_fact', got['fact'] if 'work_amount' not in line else None)
         volume = _volume(line, due, got["volumes"], work_fact)
-        unknown = not volume and (work_amount is None or work_fact is None)
-        if volume:
+        if got.get('quantity_incomplete'):
+            volume = _volume(line, due, [], 0.0)
+            if volume:
+                volume.update(fact=None, behind=None, deviation=None)
+        unknown = bool(got.get('quantity_incomplete')) or not volume and (work_amount is None or work_fact is None)
+        if volume and not unknown:
             ready, tol = volume["fact"] / volume["quantity"], _SHARE
         elif unknown:
             ready, tol = 0.0, _SHARE
@@ -219,7 +286,8 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
                "plan_done": _ratio(ready, due) if not unknown and due > tol else None,
                "percent": _ratio(ready, due) - 1 if not unknown and due > tol else None,
                "state": state, "lag_days": lag, "ahead_days": ahead,
-               "overdue_days": (day - finish).days if state != "done" and day > finish else 0,
+               "overdue_days": None if unknown else (day - finish).days if state != "done" and day > finish else 0,
+               **({'reason': ' '.join(got.get('reasons') or [])} if unknown else {}),
                "behind_amount": (0.0 if finished else max(work_amount * (due-ready), 0.0)
                                  if work_amount is not None and not unknown else None),
                "volume": volume,
@@ -244,38 +312,50 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
                                                 key=lambda r: -r["late_days"])]
     result["overdue"] = [r["code"] for r in sorted((r for r in rows if r["overdue_days"]),
                                                    key=lambda r: -r["overdue_days"])]
-    if any(r['work_amount'] is None or r['readiness'] is None for r in rows):
-        result['note'] = 'Готовность сопоставленных работ не рассчитана: стоимость или объём работ не отделены от материалов.'
+    components = result['components'] = {
+        'work': _component(rows,'work_amount',work_lines,day,start),
+        'material': _component(result['materials'],'amount',
+                    [dict(line,amount=line.get('material_amount')) for line in current['lines']
+                     if line.get('material_amount',0) != 0],day,start)}
+    composition_unknown = any(line.get('work_amount',line['amount']) is None or
+        line.get('material_amount',0) is None or line.get('work_amount',line['amount']) < 0 or
+        line.get('material_amount',0) < 0 or abs(line.get('work_amount',line['amount']) +
+            line.get('material_amount',0) - line['amount']) > _ROUND for line in current['lines'])
+    if composition_unknown or any(r['work_amount'] is None or r['readiness'] is None for r in rows) or any(
+            r['amount'] is None or r['readiness'] is None for r in result['materials']):
+        result['note'] = ('Готовность сопоставленных работ не рассчитана: для части работ КС-6а не подтверждены даты или объёмы.'
+                          if fact.get('quantity_incomplete') else
+                          'Общая готовность не рассчитана: стоимость или объём работ и поставки не отделены от материалов или не подтверждены.')
         result['data_gaps'].append(result['note'])
         return result
-    spans = [_span(line, start) for line in work_lines]
+    spans = [_span(line, start) for line in current['lines']]
     first, last = min(b for b, _ in spans), max(f for _, f in spans)
-    whole = sum(r['work_amount'] for r in rows)
+    work_whole = sum(r['work_amount'] for r in rows)
+    whole = work_whole + sum(r['amount'] for r in result['materials'])
     if not whole:
-        result['note'] = 'Стоимость работ без материалов не определена: готовность работ не рассчитана.'
+        result['note'] = 'Стоимость сопоставленного состава не определена: общая готовность не рассчитана.'
         return result
     work_planned = sum(r['work_amount'] * r['plan_share'] for r in rows)
-    curve = lambda d: sum(line.get('work_amount', line['amount']) * plan.done(line, d, start)
-                          for line in work_lines) / whole
-    # Every work weighs its cost; a work counts at most whole, a finished one whole.
-    counted = sum(r["work_amount"] * (1.0 if r["state"] == "done" else min(max(r["readiness"], 0.0), 1.0))
-                  for r in rows)
+    curve = lambda d: sum(line['amount'] * plan.done(line, d, start)
+                          for line in current['lines']) / whole
+    # A separate cap for work and material on every line; no cross-component compensation.
+    counted = sum(component['counted'] for component in components.values())
     ready = counted / whole if whole else 0.0
-    due = work_planned / whole
+    due = sum(component['planned'] for component in components.values()) / whole
     tol = _ROUND / whole if whole else 1.0
-    all_done = all(r["state"] == "done" for r in rows)
+    all_done = all(r["state"] == "done" for r in rows + result['materials'])
     state, lag, ahead, _ = _measure(curve, ready, due, first, last, day, tol, all_done)
     amounts = [r['fact'] for r in fact.get('lines') or []
                if r['code'] in {line['code'] for line in current['lines']}]
     total_fact = None if any(v is None for v in amounts) else sum(amounts)
     result["total"] = {"amount": current['total'], "planned": current["planned"], "fact": total_fact,
-                       "work_amount": whole, "work_planned": work_planned,
+                       "work_amount": work_whole, "work_planned": work_planned,
                        "deviation": total_fact - current["planned"] if total_fact is not None else None,
                        "readiness": ready, "plan_share": due,
                        "plan_done": ready / due if due > tol else None,
                        "percent": ready / due - 1 if due > tol else None,
                        "state": state, "lag_days": lag, "ahead_days": ahead,
-                       "behind_amount": max(work_planned - counted, 0.0),
+                       "behind_amount": max(due*whole - counted, 0.0),
                        "shortfall": None if any(r['shortfall'] is None for r in rows) else sum(r["shortfall"] for r in rows),
                        "by_volume": sum(1 for r in rows if r["basis"] == "volume"),
                        "by_money": sum(1 for r in rows if r["basis"] == "money"),
@@ -284,7 +364,14 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
                        "preliminary": result["preliminary"],
                        # KS periods left out of the fact: the lag and the deviation are counted without them.
                        "incomplete": bool(result["left_out"]["count"] or result['data_gaps'])}
+    for row in result['materials']:
+        finish = row['forecast_finish'] or row['finished']
+        if finish:
+            finishes.append((_day(finish),dict(row,code=row['code']+'::material')))
     result["forecast"] = _forecast(finishes, deadline, deadline_label, last, current, day)
+    if any(row['date_unknown'] for row in result['materials']):
+        result['forecast'].update(finish=None,done=False,threat=False,days_over=0,days_early=0,drivers=[],
+                                  note='Дата завершения части поставок не подтверждена: общий прогноз не определён.')
     forecast = result["forecast"]
     result["total"]["overdue_days"] = (day - _day(forecast["deadline"])).days \
         if forecast["passed"] and not all_done else 0
@@ -300,9 +387,11 @@ def _left_out(fact):
 def _data_gaps(fact):
     gaps = ([f'Позиций КС с неподтверждённым разделением работ и материалов: {len(fact["component_gaps"])}.']
             if fact.get('component_gaps') else [])
-    if fact.get('missing_acts'):
-        gaps.append('В карточке нет актов КС-2 № ' + ', '.join(fact['missing_acts']) +
-                    ', которые указаны в сводной. Их выполнение в расчёт не вошло.')
+    if fact.get('source_incomplete'):
+        gaps.append('Выполнение рассчитано по загруженным КС-2; полнота комплекта актов не подтверждена.')
+        unread = (fact.get('act_evidence') or {}).get('unread_count', 0)
+        if unread:
+            gaps.append(f'Актов КС-2 без прочитанных позиций: {unread}; их объёмы в расчёт не вошли.')
     if fact.get('unread'):
         gaps.append(f'Работ КС-6а без подтверждённой истории выполнения: {len(fact["unread"])}.')
     outside = sum(v.get('count', 0) for v in (fact.get('outside') or {}).values())

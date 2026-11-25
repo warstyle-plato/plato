@@ -1875,7 +1875,7 @@ def link_sales(project: str, sales_project: str, author: str,
     name = str(sales_project or "").strip()
     if name and name not in sales_projects(data_dir):
         raise ValueError(f"В отчёте о продажах нет проекта «{name}».")
-    record = {"sales_project": name, "by": author,
+    record = {"sales_project": name, "by": author, "revision": os.urandom(16).hex(),
               "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
     folder = monitor._project_dir(project)
     # Два воркера: запись через временный файл и замену, читатель видит
@@ -2626,6 +2626,7 @@ def _bookings_line(block: dict[str, Any] | None, kind: str) -> str:
     deals = [item for item in period if item["outcome"] == "deal"]
     dropped = [item for item in period if item["outcome"] == "dropped"]
     unknown = [item for item in period if item["outcome"] == "unknown"]
+    registering = [item for item in period if item["outcome"] == "registering"]
     if period:
         parts = []
         if deals:
@@ -2637,6 +2638,8 @@ def _bookings_line(block: dict[str, Any] | None, kind: str) -> str:
                          f"без сделки ({names})")
         if unknown:
             parts.append(f"по {len(unknown)} договора в загруженной контрактации пока нет")
+        if registering:
+            parts.append(f"{len(registering)} передано на регистрацию по отчёту отдела продаж")
         text = (f"Брони за {PERIODS[kind]}: из списка ушли {len(period)} — "
                 + ", ".join(parts) + ".")
     else:
@@ -4418,6 +4421,9 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     raw_reconciliation = (limit.get("reconciliation") or
                           (limit.get("own_money") or {}).get("reconciliation") or {}).get(
                               "observation_scope") == "raw_saved_sources"
+    from developaid_funding_reconciliation import chapter_disclosure_notes, display_rows as reconciliation_display_rows
+
+    chapter_notes = chapter_disclosure_notes(limit, _rub) if raw_reconciliation else {}
     sections = ((limit.get("budget_composition") or {}).get("sections") or []) if need else []
     add("Утверждённый бюджет", _rub(need["approved"]) if need else None,
         "Без налогов." if raw_reconciliation else (("по разделам финмодели " + ", ".join(item["code"] for item in sections)
@@ -4436,7 +4442,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     if limit.get("known"):
         canonical = (own or {}).get("reconciliation")
         add("Лимит банка", _rub(canonical["bank_limit_total"] if canonical else limit.get("bank_limit")),
-            "Полный лимит, включая оплаты." if raw_reconciliation else "; ".join(filter(None, [
+            chapter_notes.get("bank_limits", "Полный лимит, включая оплаты.") if raw_reconciliation else "; ".join(filter(None, [
                 "смета банка: в неё засчитываются все оплаты, кредитом и своими деньгами"
                 if own else "",
                 _by_chapter_words(limit.get("limit_by_chapter")) or "по смете РСС",
@@ -4473,11 +4479,21 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                 # diagnostic canonical row remains in the Funding block below.
                 if row["key"] in {"paid_at_cut", "available_bank_limit"}:
                     note = row["note"]
+                    if row["key"] == "available_bank_limit" and chapter_notes.get("available_limits"):
+                        from developaid_funding_reconciliation import calculation_note
+
+                        note = chapter_notes["available_limits"] + " " + calculation_note(reconciliation)
                     if row["value"] is None and not reconciliation.get("calculation"):
                         note = " ".join(filter(None, (note, _payment_total_gap_note(reconciliation))))
                     add(row["label"], row.get("prefix", "") + _rub(row["value"]) if row["value"] is not None else None, note)
                 elif row["key"] == "calculated_additional":
-                    add_need(row["label"], row["note"], reconciliation=reconciliation)
+                    note = row["note"]
+                    if chapter_notes.get("need_bridge"):
+                        generated = next(item["note"] for item in reconciliation_display_rows(reconciliation)
+                                         if item["key"] == "calculated_additional")
+                        if note == generated:
+                            note = ""
+                    add_need(row["label"], note, reconciliation=reconciliation)
         else:
             add("Оплачено с начала проекта", _rub(own["paid"]),
                 f"из них кредитом {_rub(own['borrowed'])}, своими деньгами {_rub(own['own_paid'])}")
@@ -4932,7 +4948,7 @@ def _sales_depth_html(block: dict[str, Any], kind: str) -> str:
              _pct(item["amount"] / total)] for item in payments]))
     pool = block.get("pool") or {}
     if pool.get("products"):
-        out.append("<h3>Остаток нераспроданного</h3>")
+        out.append("<h3>Остаток по квартирографии или плану финмодели</h3>")
         out.append(_table(["Тип", "Продано лотов", "Всего лотов", "Продано м²", "Всего м²",
                            "Осталось м²"], [
             [esc(p["product"]), f"{p['sold_units']:.0f}",
@@ -4941,7 +4957,7 @@ def _sales_depth_html(block: dict[str, Any], kind: str) -> str:
              _area(max(0.0, p["pool_area"] - p["sold_area"])) if p["pool_area"] else "—"]
             for p in pool["products"]]))
     elif block.get("state") == "ok":
-        out.append("<p class='note'>Остаток нераспроданного не посчитан: в отчёте о продажах "
+        out.append("<p class='note'>Сверка остатка с квартирографией и планом не выполнена: в отчёте о продажах "
                    "нет квартирографии или плана финмодели по объёмам.</p>")
     return "\n".join(out)
 
@@ -5350,7 +5366,7 @@ _CONTRACT_PERFORMANCE_FIELDS = (
     'completion_ratio', 'monetary_comparable', 'completed_works', 'completed_materials', 'works_materials_split',
     'works_materials_note', 'progress', 'statement_progress', 'summary_progress', 'reported_performance_sources',
     'observation_forecast', 'risk', 'advance', 'warnings', 'performance_basis', 'date_evidence', 'rss_match',
-    'logical_ownership', 'raw_observations', 'raw_member_ids', 'logical_id', 'source_snapshot_id')
+    'logical_ownership', 'source_correction', 'raw_observations', 'raw_member_ids', 'logical_id', 'source_snapshot_id')
 
 
 def contract_risks(project: str, end: Any) -> dict[str, Any]:
@@ -5510,7 +5526,11 @@ def _contract_performance_details(row: dict[str, Any]) -> str:
                 body += '<div>'+esc(point['reason'])+'</div>'
             body += '</td></tr>'
         body += '</tbody></table>'
-    if row.get('logical_ownership'):
+    if row.get('source_correction'):
+        body += '<p>Реквизиты уточнены владельцем. Цена и выполнение показаны по выбранным источникам.</p>'
+        if row['source_correction'].get('warning'):
+            body += '<p>'+esc(row['source_correction']['warning'])+'</p>'
+    elif row.get('logical_ownership'):
         body += '<p>Исходные карточки сохранены отдельно. Финансовый источник, срок и общий прогноз между ними не выбраны.</p>'
         for source_row in row.get('raw_observations') or []:
             heading = ' · '.join(str(value) for value in
@@ -5546,11 +5566,12 @@ def _contract_performance_html(block: dict[str, Any]) -> str:
         if row.get('contract_date'):
             name += ' от '+_day(row['contract_date'])
         ownership = row.get('logical_ownership') or {}
-        caption = ('Единый договор: исходные карточки отдельно' if ownership.get('resolution_status') == 'confirmed' else
+        caption = ('Реквизиты уточнены' if row.get('source_correction') else
+                   'Единый договор: исходные карточки отдельно' if ownership.get('resolution_status') == 'confirmed' else
                    'Принадлежность исходных карточек не подтверждена' if ownership else
                    'КС-2 по сводной' if _work_closing_summary(row) else 'Накопительные КС-6а')
         name += '</div><div class="contract-caption">'+caption+'</div>'
-        if row.get('logical_ownership'):
+        if row.get('logical_ownership') and not row.get('source_correction'):
             name += '<div class="contract-ownership-summary"><p>Финансовый источник, срок и общий прогноз между карточками не выбраны.</p>'
             for raw in row.get('raw_observations') or []:
                 source = 'Исходная карточка '+str(raw.get('contract') or 'без номера')

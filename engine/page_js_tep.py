@@ -2240,6 +2240,7 @@ async function applyMoscowNormativeTep(area,density,keepRows){
   warnings:(data.warnings||[]).concat(skipped?[skipped]:[])});
 }
 async function applyNormativeTep(densityOverride,keepRows){
+ const moOwner=inputs,moEpoch=moTerritoryEpoch,moRun=moCalculateRun;
  // Нормативный пересчёт ручного и кадастрового ТЭП: квартиры = площадь ×
  // плотность, остальное — от населения нормативами региона. Чьи нормативы,
  // решает `classRegion()`: Москва — свои (`applyMoscowNormativeTep`), область
@@ -2287,6 +2288,7 @@ async function applyNormativeTep(densityOverride,keepRows){
   const response=await fetch('/mo/calculate',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(body)});
   data=await response.json();
+  if(moOwner!==inputs||moEpoch!==moTerritoryEpoch||moRun!==moCalculateRun||classRegion()!=='mo')return null;
   if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать нормативный ТЭП');
   Object.entries(data.tep||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
   // Обратный счёт от вписанных метров: строка, которую человек вписал, остаётся
@@ -2300,6 +2302,9 @@ async function applyNormativeTep(densityOverride,keepRows){
   const keepRegion=inputs.vri_region;
   Object.assign(inputs,data.inputs||{});
   delete inputs._mo_vri_relief;
+  if(inputs.mo_vri_benefits?.applied&&data.vri?.payment_before_compensation_rub!=null){
+   inputs.mo_vri_benefits.applied={gross_rub:data.vri.payment_before_compensation_rub,net_mln:data.vri.payment_used_mln};
+  }
   const parcels=((data.vri||{}).parcels||[]).length;
   // Плата за ВРИ считается от УПКС конкретных участков; без кадастра расчёта
   // нет, и введённая руками сумма не затирается нулём. Регион ВРИ без

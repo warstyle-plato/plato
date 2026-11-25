@@ -1000,6 +1000,8 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
     by_snapshot = composition["by_snapshot"]
     warnings = list(composition["warnings"])
     primary, unresolved = composition["primary"], composition["unresolved"]
+    import developaid_contract_pdf_intake as pdf_intake
+    pdf_sources = pdf_intake.sources(project, cut)
     summary_sources = composition["summaries"]
     rss, rss_day = [], None
     if primary:
@@ -1033,6 +1035,8 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
         # retains its own archive; a summary never replaces detailed KS.
         row_snapshot = by_snapshot.get(first.get("archive_snapshot_id")) or snapshot or {}
         identity = _identity(first)
+        pdf_source_ids = [source['contract_id'] for source in pdf_sources
+                          if _identity(source['evidence']['identity']) == identity]
         matched = [entry for entry in extras if entry not in ledger_items and identity and not _reference_differences(identity, entry)
                    and claims.get(id(entry), 0) == 1]
         items = ledger_items + matched
@@ -1051,7 +1055,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                          "РСС: полная сумма договора" if rss_amount is not None else "Полная сумма договора не подтверждена")
         from developaid_contract_files import document_prices, ContractFilesProblem
         try:
-            amount_documents = document_prices(project, identifier, cut)
+            amount_documents = document_prices(project, identifier, cut, source_ids=pdf_source_ids)
         except ContractFilesProblem as exc:
             amount_documents = None
             row_warnings.append(str(exc))
@@ -1083,7 +1087,9 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
         detail_history = None
         if len({ledger.get('archive_snapshot_id') for ledger, _ in physical_sources}) > 1:
             from developaid_contract_detail_history import compose
-            detail_history = compose(physical_sources, cut)
+            from developaid_monitor_statement_sources import statement_family_map
+            detail_history = compose(physical_sources, cut,
+                                     statement_families=statement_family_map(physical_sources))
             physical = detail_history['items']
             row_warnings.extend(detail_history['warnings'])
         money_parts: dict = {}
@@ -1115,7 +1121,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
         # earlier text. An agreement changing only prices does not erase it.
         from developaid_contract_files import document_terms, ContractFilesProblem
         try:
-            deadline_documents = document_terms(project, identifier, cut)
+            deadline_documents = document_terms(project, identifier, cut, source_ids=pdf_source_ids)
         except ContractFilesProblem as exc:
             deadline_documents = None
             row_warnings.append(str(exc))
@@ -1235,6 +1241,8 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                 "period_dates_known": bool(ledger.get("period_dates_known")),
                 "future_periods_excluded": future_excluded,
                 "label": "Сумма сохранённых итогов позиций этой ведомости; справочно, период закрытия не установлен"})
+        from developaid_monitor_statement_sources import unique_statement_sources
+        references = unique_statement_sources(references, physical_sources)
         physical = physical_sections(physical)
         summary_only = not any(ledger.get('kind') == 'ledger' for ledger in ledger_items)
         row = {"id": identifier, "contractor": str(first.get("contractor") or ""),
@@ -1274,7 +1282,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                "scope": sorted({str(item.get("scope") or "") for item in physical if item.get("scope")}),
                "performance_basis": ('Денежное закрытие по КС-2 из сводной; не физическая готовность и не объёмы КС-6а'
                    if summary_only else "Денежное выполнение только по загруженным накопительным и завершённым датированным периодам; не оплата и не физическая готовность"),
-               "performance_source_count": len(physical_sources), "reported_performance_sources": references}
+               "performance_source_count": len(references), "reported_performance_sources": references}
         if summary_items:
             latest_summary = max(summary_items, key=lambda item: str(item.get('source_date') or ''))
             row['summary_source_date'] = latest_summary.get('source_date')
@@ -1318,12 +1326,13 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
                 row['statement_progress'] = {'state': 'unknown', 'ratio': None,
                     'why': 'В истории КС есть неполные или противоречивые наблюдения. Общий процент не выбран автоматически.'}
             elif detail_history is not None:
-                # Raw references stay visible. The numeric union qualifies
-                # only the base sources of the projected work-year rows.
+                # Qualify the base sources of projected rows, including older
+                # immutable bindings represented by one identical statement.
                 from developaid_monitor_statement_union import _source as source_key
+                from developaid_monitor_statement_sources import statement_source_keys
                 active = {source_key(item.get('source')) for item in physical}
                 row['statement_progress'] = statement_union(dict(row,
-                    reported_performance_sources=[ref for ref in references if source_key(ref.get('source')) in active]))
+                    reported_performance_sources=[ref for ref in references if statement_source_keys(ref) & active]))
             else:
                 row["statement_progress"] = statement_union(row)
         row["risk"] = contract_risk.forecast(
@@ -1372,6 +1381,7 @@ def _build_raw(project: str, cut: str = "", *, include_history: bool = True,
         result['counts']['contracts_from_documents'] = len(rows)
         result['counts']['contracts_from_closing_summary_only'] = sum(row['source_kind'] == 'closing_summary' for row in rows)
         result['source_coverage']['closing_summary_sections'] = len(summary_sources)
+    result = pdf_intake.attach(project, cut, result)
     if include_history:
         import developaid_monitor_contract_history as progress_history
         with ownership.raw_history():
@@ -1470,7 +1480,7 @@ def confirm_header_date(project: str, cut: str, snapshot_id: str, **fields) -> d
         raise ContractProblem(str(exc)) from None
 
 
-def set_term(project: str, contract_id: str, deadline: str, note: str = "") -> dict:
+def set_term(project: str, contract_id: str, deadline: str, note: str = "", *, _locked_raw_row=None) -> dict:
     """Save one explicit contractual deadline, independently of GPR dates."""
     if not re.fullmatch(r"[0-9a-f]{64}", str(contract_id or "")):
         raise ContractProblem("Выберите договор из списка.")
@@ -1481,14 +1491,22 @@ def set_term(project: str, contract_id: str, deadline: str, note: str = "") -> d
         raise ContractProblem("Срок договора нужен в виде ГГГГ-ММ-ДД.")
     if not isinstance(note, str) or len(note) > 500:
         raise ContractProblem("Пояснение к сроку должно быть не длиннее 500 символов.")
-    if find_raw_row(build(project), contract_id) is None:
-        raise ContractProblem("Договор не найден в текущих данных выбранного проекта.")
+    if _locked_raw_row is None:
+        if find_raw_row(build(project), contract_id) is None:
+            raise ContractProblem("Договор не найден в текущих данных выбранного проекта.")
+    else:
+        import developaid_contract_identity_store as identity_store
+        if (_locked_raw_row.get('id') != contract_id
+                or str(_terms_path(project).with_suffix('.lock')) not in identity_store._HELD_NATIVE_LOCKS.get()):
+            raise ContractProblem('Привязка срока к исходной карточке не подтверждена.')
     path = _terms_path(project)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     import fcntl
     fd = os.open(path.with_suffix(".lock"), os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(fd, "a+b") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        import developaid_contract_identity_store as identity_store
+        if str(path.with_suffix(".lock")) not in identity_store._HELD_NATIVE_LOCKS.get():
+            fcntl.flock(handle, fcntl.LOCK_EX)
         data = _read_terms(project)
         if deadline:
             record = {"deadline": deadline, "note": note,

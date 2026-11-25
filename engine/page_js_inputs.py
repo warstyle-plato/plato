@@ -16,7 +16,7 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 # ruff: noqa
 
 PAGE += r"""const TERRITORY_MARKERS=['_glavapu_import','_other_region','_field_origin','_manual_tep_import','_mo_calc','_mo_vri_relief','_cadastral_analysis','_cadastral_query','_cadastral_origin',
- '_site_area_user_set','_site_density_user_set','_krt_site','_demolition_source','_land_buyout_source','_vri_relief_source','vri_mpt_override'];
+ '_site_area_user_set','_site_density_user_set','_krt_site','_demolition_source','_land_buyout_source','_vri_relief_source','vri_mpt_override','mo_vri_benefits'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
 // данные участка, и сбрасывать их при смене территории нельзя.
@@ -46,6 +46,7 @@ function territoryClearedNote(){
 }
 
 function resetTerritoryData(options){
+ if(options&&options.keepMoVriDraft)invalidateMoVriRelief();else resetMoTerritoryDraft();
  // Очерёдность — решение пользователя, а не свойство территории. При тихом
  // пересчёте параметров Подмосковья участок тот же, и сбрасывать её нельзя.
  const keepPhasing=!!(options&&options.keepPhasing);
@@ -69,6 +70,9 @@ function resetTerritoryData(options){
   // К1, К2 и расстояние при пустом поле считаются сами (по расстоянию → по
   // району → 1,0): пустое поле — не ноль, и сброс ставит пустоту.
   inputs[key]=SITE_ONLY_INPUTS.includes(key)?'':0;
+ });
+ if(!keepLeaseTerms)Object.keys(INPUT_DEFAULT).filter(key=>key.startsWith('land_rent_')).forEach(key=>{
+  inputs[key]=cloneValue(INPUT_DEFAULT[key]);
  });
  syncMoCompensation();
  TERRITORY_MARKERS.forEach(key=>{delete inputs[key]});
@@ -1982,6 +1986,8 @@ function renderInputs(){
      // остальные, — отсюда берут подпись и единицу окно классов и строка
      // отклонений в отчёте; здесь оно только не рисуется. Выход ДО создания
      // узла: наполовину нарисованное поле оставило бы в сетке пустую клетку.
+     // Nonresidential ownership is edited beside the contract rent terms.
+     if(id==='land_right'&&withoutHousing())return;
      if(notOnInputs(id)||strategyHides(id))return;
      const own=moved.has(id)?null:fieldSection(id);
      if(own&&own!==section){
@@ -2077,7 +2083,7 @@ function renderInputs(){
      }
      // При смене права сначала обновляем аренду и её базу из ЕГРН: форма
      // собственности не содержит этих полей, а запрос должен уже читать их.
-     el.onchange=()=>{if(partialTepEditInput(id,el,type))return;if(id==='vri_required')return vriRequiredToggled(el);if(OFFICE_CLASS_FIELDS[id])return setOfficeClass(OFFICE_CLASS_FIELDS[id],el.value);const classRegionBefore=classRegion();const valueBefore=inputs[id];inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='land_rights_cost_mln'){vriFeeClearedMln=0;syncVriRequiredBox()}if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='social_population_method')socialPopulationSwitched(valueBefore);{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else parkingFieldByHand(parkOwner,id);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(id==='land_right'){renderLandRentEditor();refreshGroupPeeks();return calculate()}if(id==='vri_relief_mode'||id==='vri_financing_mode'){renderInputs();return calculate()}if(VRI_SHARE_FIELDS.includes(id))refreshVriSharesNote();if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const modeSwitched=id==='social_area_source';const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(modeSwitched||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{if(partialTepEditInput(id,el,type))return;if(id==='vri_required')return vriRequiredToggled(el);if(OFFICE_CLASS_FIELDS[id])return setOfficeClass(OFFICE_CLASS_FIELDS[id],el.value);const classRegionBefore=classRegion();const valueBefore=inputs[id];inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='land_rights_cost_mln'){vriFeeClearedMln=0;syncVriRequiredBox()}if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='social_population_method')socialPopulationSwitched(valueBefore);{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else parkingFieldByHand(parkOwner,id);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){invalidateMoCalculation();normalizeMoVriRegion();followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(id==='land_right'){renderLandRentEditor();refreshGroupPeeks();return calculate()}if(id==='vri_relief_mode'||id==='vri_financing_mode'){renderInputs();return calculate()}if(VRI_SHARE_FIELDS.includes(id))refreshVriSharesNote();if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const modeSwitched=id==='social_area_source';const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(modeSwitched||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Кнопка «Подобрать» у срока кредита объекта с доходным методом.
      if(typeof loanTermPickField==='function'&&loanTermPickField(id))wrap.appendChild(loanTermPickNode(id));

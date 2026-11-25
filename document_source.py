@@ -172,27 +172,37 @@ class _DeadlineResponse(http.client.HTTPResponse):
 
 class _PinnedHTTPS(http.client.HTTPSConnection):
     def __init__(self, host: str, endpoints: tuple[Any, ...], timeout: float) -> None:
+        self._deadline = time.monotonic() + timeout
         super().__init__(host, port=443, timeout=timeout, context=trust_context())
         self._endpoints = endpoints
-        self._deadline = time.monotonic() + timeout
         self.response_class = lambda sock, *args, **kwargs: _DeadlineResponse(
             sock, *args, deadline=self._deadline, **kwargs)
 
     def connect(self) -> None:
         last_error: OSError | None = None
         for family, socktype, proto, _, address in self._endpoints:
+            _remaining(self._deadline)
             raw = socket.socket(family, socktype, proto)
+            wrapped = None
             try:
                 raw.settimeout(_remaining(self._deadline))
                 raw.connect(address)
-                self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+                # TCP and TLS share one absolute deadline. A completed TCP
+                # connect must not give the handshake its original timeout.
+                raw.settimeout(_remaining(self._deadline))
+                wrapped = self._context.wrap_socket(raw, server_hostname=self.host)
+                wrapped.settimeout(_remaining(self._deadline))
+                self.sock = wrapped
                 return
             except OSError as exc:
-                raw.close()
                 last_error = exc
-            except BaseException:
-                raw.close()
-                raise
+            finally:
+                if wrapped is None or self.sock is not wrapped:
+                    try:
+                        if wrapped is not None:
+                            wrapped.close()
+                    finally:
+                        raw.close()
         raise last_error or OSError("No checked endpoint")
 
 

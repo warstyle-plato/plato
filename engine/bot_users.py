@@ -301,6 +301,9 @@ def project_save(owner: int, name: str, payload: dict[str, Any],
     body = json.dumps(payload or {}, ensure_ascii=False)
     if len(body.encode("utf-8")) > _PROJECT_PAYLOAD_LIMIT:
         raise HTTPException(status_code=413, detail="Проект слишком велик для хранилища")
+    payload = json.loads(body)
+    if isinstance(payload.get("inputs"), dict):
+        normalize_mo_vri_region(payload["inputs"])
     directory = _project_dir(owner)
     directory.mkdir(parents=True, exist_ok=True)
     existing = sorted(directory.glob("*.json"))
@@ -1007,7 +1010,8 @@ class SiteChatAccessRequest(BaseModel):
 async def _site_chat_access_private_response(request: Request, call_next):
     response = await call_next(request)
     if request.url.path in {"/monitor/site-chats/access", "/monitor/site-chats/authorize",
-                            "/monitor/site-chats/revoke"}:
+                            "/monitor/site-chats/revoke", "/monitor/sales-followups",
+                            "/internal/monitor/sales-followups"}:
         # Custom key headers are not an HTTP cache partition. Include denials
         # and validation responses as well as successful owner operations.
         response.headers["Cache-Control"] = "private, no-store"
@@ -1465,7 +1469,7 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
     from market_search import sales_dialogue, sales_store
 
     try:
-        with _site_chat_access(req.chat_id, "sales:" + req.action, req.project) as project:
+        with _site_chat_access(req.chat_id, "sales:reply" if req.action == "candidate" else "sales:" + req.action, req.project) as project:
             if req.action == "send":
                 return {"bound": project, "authorized": True}
             with sales_dialogue.origin_lock(sales_store.default_dir()):
@@ -1479,6 +1483,14 @@ def _apply_sales_chat(req: SalesChatRequest, project: str) -> dict[str, Any]:
     import developaid_management_report as management_report
 
     sales_project = ((management_report.sales_link(project) or {}).get("sales_project") or "")
+    if req.action == "candidate":
+        if not sales_project:
+            return {"candidate": False}
+        from market_search import sales_followups, sales_store
+        return sales_followups.ingest(sales_store.default_dir(), sales_project,
+            _sales_followup_scope(project, req.chat_id), message_id=req.message_id,
+            reply_to_id=0, quoted="", text=req.text, author_id=req.author_id,
+            author=req.author, telegram_date=req.telegram_date, candidate=True)
     if req.action == "reply":
         from market_search import sales_dialogue, sales_questions, sales_store
 
@@ -1506,6 +1518,17 @@ def _apply_sales_chat(req: SalesChatRequest, project: str) -> dict[str, Any]:
         # нынешнему проекту. Telegram ID сообщения уникален только ВНУТРИ чата.
         target = where if origin else where / "unattributed"
         key = origin or str(req.chat_id)
+        followup_error = ""
+        if origin:
+            from market_search import sales_followups
+            try:
+                # Write-ahead event + full Telegram provenance before the raw
+                # append: a crash between files cannot silently lose a checkpoint.
+                sales_followups.ingest(where, origin, _sales_followup_scope(project, req.chat_id),
+                    message_id=req.message_id, reply_to_id=req.reply_to_id, quoted=req.reply_text,
+                    text=req.text, author_id=req.author_id, author=req.author, telegram_date=req.telegram_date)
+            except (ValueError, RuntimeError) as exc:
+                followup_error = str(exc)[:160]
         with sales_questions.lock(target, key):
             saved = sales_dialogue.reply(
                 target, key, chat_id=req.chat_id, message_id=req.message_id,
@@ -1513,7 +1536,7 @@ def _apply_sales_chat(req: SalesChatRequest, project: str) -> dict[str, Any]:
                 author=req.author, author_id=req.author_id, telegram_date=req.telegram_date,
                 allow_legacy=not bool(origin))
         return {"sales_project": origin, "reply_saved": saved,
-                "reply_unattributed": not bool(origin)}
+                "reply_unattributed": not bool(origin), "followup_error": followup_error}
     _site_chat_title_seen(int(req.chat_id or 0), req.title)
     from market_search import salesroom, sales_store
     if not sales_project:
@@ -1548,14 +1571,26 @@ def _apply_sales_chat(req: SalesChatRequest, project: str) -> dict[str, Any]:
         if day and len(updated.get("messages") or []) > len((current or {}).get("messages") or []):
             contracting = (kept.get("sources") or {}).get("contracting") or {}
             try:
+                payload = contracting.get("data") or {}
+                source_day = (payload.get("as_of") if payload.get("as_of_provenance") == "uploader_declared"
+                              else contracting.get("at"))
                 found = sales_questions.questions(
-                    updated, contracting.get("data"), contracting.get("at"), day,
+                    updated, contracting.get("data"), source_day, day,
                     set(sales_questions.load_asked(where, sales_project))
                     | sales_dialogue.asked_keys(where, sales_project),
                     snapshot=((kept.get("sources") or {}).get("chessboard") or {}).get("data"),
                     report_text=req.text)
                 ask = sales_questions.message(found)
                 if ask:
+                    from market_search import sales_followups
+                    for item in found:
+                        if item.get("baseline"):
+                            try:
+                                item["baseline"]["source_sha256"] = sales_followups.digest(contracting.get("data"))
+                                item["baseline"]["as_of"] = (contracting.get("data") or {}).get("as_of")
+                                item["baseline"]["as_of_provenance"] = (contracting.get("data") or {}).get("as_of_provenance")
+                            except (ValueError, TypeError):
+                                item["baseline"]["source_sha256"] = ""
                     # Сначала записать, потом отправить: несработавшая отправка
                     # потеряет вопрос, а не повторит его.
                     sales_questions.remember(where, sales_project, found, day)
@@ -1566,6 +1601,130 @@ def _apply_sales_chat(req: SalesChatRequest, project: str) -> dict[str, Any]:
     return {"bound": project, "sales_project": sales_project,
             "messages": len(updated.get("messages") or []), "ask": ask,
             "ask_error": ask_error, "ask_id": ask_id}
+
+
+def _sales_followup_scope(project: str, chat_id: int) -> dict[str, Any]:
+    """Caller already holds _site_chat_access; never reacquire its flock."""
+    import site_chat_access
+    import developaid_management_report as management
+    from market_search import sales_followups
+    link = management.sales_link(project) or {}
+    sales_project = str(link.get("sales_project") or "")
+    if not sales_project:
+        raise HTTPException(409, "Проект не связан с отчётом о продажах.")
+    grant = (site_chat_access.load(_site_chat_grants_path()).get(str(chat_id)) or {}).get("grant")
+    return {"chat_id": chat_id, "monitor_project": project, "sales_project": sales_project,
+            "grant_sha256": sales_followups.digest(grant), "link_sha256": sales_followups.digest(link)}
+
+
+from pydantic import Field as _SalesFollowupField
+
+
+class SalesFollowupRequest(BaseModel):
+    chat_id: int = 0
+    project: str = ""
+    sales_project: str = ""
+    key: str = ""
+    sign: str = ""
+    action: str = "status"
+    details: dict[str, Any] = _SalesFollowupField(default_factory=dict)
+    delivery_id: str = ""
+    claim_id: str = ""
+    attempt_id: str = ""
+    message_id: int = 0
+    error: str = ""
+
+
+@app.post("/monitor/sales-followups", include_in_schema=False)
+def monitor_sales_followups(req: SalesFollowupRequest) -> Any:
+    """Owner metadata only; manager answers schedule checks through Telegram Reply."""
+    _require_admin_key(req.key, "Контроль ответов отдела продаж")
+    from fastapi.responses import JSONResponse
+    import site_chat_access
+    from market_search import sales_dialogue, sales_followups, sales_store, sales_questions
+    try:
+        with _site_chat_access(req.chat_id, "sales:send", req.project) as project:
+            scope = _sales_followup_scope(project, req.chat_id)
+            where, sales_project = sales_store.default_dir(), scope["sales_project"]
+            if req.sales_project and req.sales_project != sales_project:
+                raise HTTPException(409, "Связь с проектом продаж изменилась.")
+            with sales_dialogue.origin_lock(where):
+                if req.action == "attest":
+                    value = sales_followups.attest(where, sales_project, req.details)
+                elif req.action == "cancel":
+                    sales_followups.stop(where, sales_project, req.chat_id)
+                    value = {"cancelled": True}
+                elif req.action == "status":
+                    with sales_questions.lock(where, sales_project):
+                        contracts, sha = sales_followups.source(where, sales_project)
+                        state = sales_followups.load(where, sales_project)
+                        state = dict(state, **{kind: {key: item for key, item in state[kind].items()
+                            if item["scope"]["chat_id"] == req.chat_id and item["scope"]["monitor_project"] == project}
+                            for kind in ("events", "deliveries")})
+                        state["seen"] = [item for item in state["seen"] if item.startswith(str(req.chat_id) + ":")]
+                        state["ingestions"] = {key:item for key,item in state["ingestions"].items()
+                            if item["scope"]["chat_id"] == req.chat_id and item["scope"]["monitor_project"] == project}
+                        value = {"scope": scope, "source_sha256": sha,
+                                 "state": state,
+                                 "batches": {key: batch for key, batch in sales_dialogue.load(where, sales_project)["batches"].items()
+                                             if batch["chat_id"] == req.chat_id},
+                                 "source_targets": [sales_followups.identity(row) for row in (contracts or {}).get("rows") or []]}
+                else:
+                    raise HTTPException(400, "Допустимы status, attest, cancel; ручного создания контроля нет.")
+            return JSONResponse(value, headers={"Cache-Control": "private, no-store"})
+    except site_chat_access.AccessDenied as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@app.post("/internal/monitor/sales-followups", include_in_schema=False)
+def internal_monitor_sales_followups(req: SalesFollowupRequest) -> dict[str, Any]:
+    expected = _web_login_sign("sales-followups", 0)
+    if not hmac.compare_digest(str(req.sign).encode(), expected.encode()):
+        raise HTTPException(403, "Подпись не сошлась.")
+    import site_chat_access
+    from market_search import sales_dialogue, sales_followups, sales_store
+    where = sales_store.default_dir()
+    if req.action == "poll":
+        references, errors = sales_followups.scopes(where)
+        out, done = [], set()
+        for old_project, old in references:
+            scope_id = (old_project, old["chat_id"])
+            if scope_id in done:
+                continue
+            done.add(scope_id)
+            try:
+                with _site_chat_access(old["chat_id"], "sales:send") as project:
+                    current = _sales_followup_scope(project, old["chat_id"])
+                    with sales_dialogue.origin_lock(where):
+                        if current["sales_project"] != old_project:
+                            sales_followups.stop(where, old_project, old["chat_id"], "Связь проекта изменена.")
+                        else:
+                            out.extend(dict(item, sales_project=old_project) for item in sales_followups.poll(where, old_project, current))
+            except (site_chat_access.AccessDenied, HTTPException):
+                try:
+                    with sales_dialogue.origin_lock(where):
+                        sales_followups.stop(where, old_project, old["chat_id"], "Доступ группы отозван или изменён.")
+                except (ValueError, RuntimeError):
+                    errors.append({"scope_id": sales_followups.digest(list(scope_id)), "error": "Не читается отозванный журнал контроля продаж."})
+            except (ValueError, RuntimeError):
+                errors.append({"scope_id": sales_followups.digest(list(scope_id)), "error": "Не читается журнал контроля продаж; отправка этого проекта остановлена."})
+        return {"items": out, "errors": errors}
+    try:
+        with _site_chat_access(req.chat_id, "sales:send", req.project) as project:
+            scope = _sales_followup_scope(project, req.chat_id)
+            if scope["sales_project"] != req.sales_project:
+                raise HTTPException(409, "Связь проекта изменилась.")
+            with sales_dialogue.origin_lock(where):
+                if req.action == "begin":
+                    return sales_followups.begin(where, req.sales_project, scope, req.delivery_id, req.claim_id)
+                if req.action == "receipt":
+                    return {"saved": sales_followups.receipt(where, req.sales_project, scope,
+                        req.delivery_id, req.attempt_id, req.message_id, req.error)}
+                raise HTTPException(400, "Неизвестное действие контроля.")
+    except site_chat_access.AccessDenied as exc:
+        raise HTTPException(403, str(exc)) from exc
 
 
 class SiteChatsRequest(BaseModel):

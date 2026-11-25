@@ -401,6 +401,14 @@ async function calculate(){
  // страница только принимает его ответ: иначе поле показывало бы одно
  // число, а расчёт шёл по другому. Происхождение подписано у поля.
  applyInputMigrations((phaseBundle||lastResult||{}).input_migrations);
+ const moUpdate=(phaseBundle||lastResult||{}).mo_vri_benefits_update;
+ if(moUpdate&&moUpdate.inputs&&startedAtReset===resetRun){
+  Object.assign(inputs,moUpdate.inputs);
+  (moUpdate.removed_inputs||[]).forEach(key=>{delete inputs[key]});
+  const feeField=document.getElementById('f_land_rights_cost_mln');
+  if(feeField)feeField.value=inputs.land_rights_cost_mln;
+  if(typeof renderMoVriRelief==='function')renderMoVriRelief();
+ }
  if(startedAtReset!==resetRun){
   // Между стартом расчёта и его ответом человек нажал «Сбросить».
   lastResult=null;phaseBundle=null;blankResultSurfaces();return null;
@@ -802,7 +810,7 @@ function pfStepRows(f){
 }
 
 function renderPhaseComparison(){
- if(!phaseBundle||phaseBundle.mode!=='phased'){phaseComparisonCard.style.display='none';return}
+ if(!phaseBundle||phaseBundle.mode!=='phased'){phaseComparisonCard.style.display='none';renderReportToc();return}
  const c=phaseBundle.comparison||[],cons=phaseBundle.consolidated;
  // Состав, порядок и числа таблицы решает движок (`phase_comparison_table`):
  // тот же ответ печатает PDF, и две раскладки одного сравнения не разойдутся.
@@ -904,10 +912,10 @@ function selectReportView(view){
 }
 function renderPhaseReportControls(){
  if(!document.getElementById('phaseReportControls'))return;
- if(!phaseBundle||phaseBundle.mode!=='phased'){phaseReportControls.style.display='none';phaseComparisonCard.style.display='none';return}
+ if(!phaseBundle||phaseBundle.mode!=='phased'){phaseReportControls.style.display='none';phaseComparisonCard.style.display='none';renderReportToc();return}
  phaseReportControls.style.display='flex';
  const b=[['all','Весь проект'],...phaseBundle.phases.map((p,i)=>[`phase${i+1}`,p.name]),['compare','Сравнение очередей']];
- phaseReportControls.innerHTML=b.map(([k,l])=>`<button class="btn ${reportView===k?'active':''}" onclick="selectReportView('${k}')">${l}</button>`).join('')
+ phaseReportControls.innerHTML=b.map(([k,l])=>`<button class="btn ${reportView===k?'active':''}" onclick="selectReportView('${k}')">${l}</button>`).join('');renderReportToc()
 }
 // Предложный падеж сразу, а не выведенный заменой окончаний: «в марте 2031»
 // читается человеком, и склонять его правилом «я→е, а→е» — способ однажды

@@ -1,7 +1,7 @@
-"""Этап 3 «Договоров»: факт по актам КС-2, сверка с КС-6а, натуральные объёмы и три процента работы.
+"""Факт по КС-6а, сверка с КС-2, натуральные объёмы и три процента работы.
 
-Методика владельца 12.11.2026 (docs/contract_schedule_control.md): факт работ — объёмы актов КС-2,
-накопительная КС-6а — сверка; работа меряется в своих единицах, деньги — вторичны; у работы три
+Методика владельца с уточнением 19.11.2026: факт работ — объёмы КС-6а,
+акты КС-2 — сверка; работа меряется в своих единицах, деньги — вторичны; у работы три
 процента — выполнение плана на дату, готовность и отклонение; готовность договора взвешена
 стоимостью работ; отставание и просрочка считаются отдельно. Документы и ведомость выдуманы:
 репозиторий публичный, документы владельца в него не попадают.
@@ -27,18 +27,18 @@ def _volumes(quantity, unit="м3"):
 
 # --- факт по КС-2 и сверка с КС-6а ----------------------------------------------------
 
-def test_the_fact_is_the_acts_ks2_and_the_ks6a_only_reconciles_them(card):  # noqa: F811
+def test_the_fact_stays_ks6a_when_ks2_is_uploaded_for_reconciliation(card):  # noqa: F811
     by_ks6a = files.listing("Учебный", CONTRACT, "2026-02-04", fact.acts(REGISTER_ROW))
     assert by_ks6a["fact"]["source"] == "ks6a" and by_ks6a["fact"]["total"] == 5500.0
-    assert by_ks6a["fact"]["source_note"] == "Актов КС-2 в карточке нет: факт взят из накопительной КС-6а."
+    assert by_ks6a["fact"]["source_note"] == fact.FROM_KS6A
     files.store("Учебный", ROW, "КС-2 2.pdf", act_pdf())
     got = files.listing("Учебный", CONTRACT, "2026-02-04", fact.acts(REGISTER_ROW))
     done = got["fact"]
     # Акт № 2: стены 0,5 м3 по цене расчёта 8 000 ₽ за м3; доли строк ГПР 1.1 и 1.2 — 3/8 и 5/8.
-    assert (done["source"], done["source_note"], done["total"], done["review"]) == ("ks2", "", 4000.0, [])
-    assert [(x["code"], x["fact"], x["volumes"]) for x in done["lines"]] == [
-        ("1.1", 1500.0, _volumes(0.1875)), ("1.2", 2500.0, _volumes(0.3125))]
-    # КС-6а не добавляет факт: плиты и лестницы есть только в ней, и сверка это называет.
+    assert done['source'] == 'ks6a' and done['source_note'] == fact.FROM_KS6A
+    assert done['total'] == by_ks6a['fact']['total'] == 5500.0
+    assert done['lines'] == by_ks6a['fact']['lines']
+    # Плиты и лестницы остаются в факте КС-6а, хотя в загруженном КС-2 их нет.
     reconciliation = done["reconciliation"]
     assert (reconciliation["same"], reconciliation["differs"], reconciliation["only_ks2"],
             reconciliation["only_ks6a"]) == (0, 1, 0, 4)
@@ -46,7 +46,7 @@ def test_the_fact_is_the_acts_ks2_and_the_ks6a_only_reconciles_them(card):  # no
                                          "ks6a": 0.75, "same": False}
     total = got["control"]["total"]
     assert (total["fact"], total["readiness"], total["plan_done"]) == pytest.approx(
-        (4000.0, 4 / 11, 0.4))
+        (5500.0, 0.5, 0.55))
     # Факт двух сопоставленных работ известен. Остальные работы исходного
     # ГПР остаются вне расчёта: это не готовность всего договора.
     coverage = got["comparison"]["coverage"]
@@ -54,14 +54,14 @@ def test_the_fact_is_the_acts_ks2_and_the_ks6a_only_reconciles_them(card):  # no
     assert coverage["calculated"] < coverage["source_works"]
     assert total["incomplete"] is True
     assert got["control"]["forecast"]["whole_contract_finish"] is None
-    assert got["control"]["source"] == "ks2"
+    assert got["control"]["source"] == "ks6a"
 
 
 def test_the_same_act_uploaded_twice_counts_once(card):  # noqa: F811
     files.store("Учебный", ROW, "КС-2 2.pdf", act_pdf())
     files.store("Учебный", ROW, "КС-2 2 копия.pdf", act_pdf(twice=True))
     got = files.listing("Учебный", CONTRACT, "2026-02-04", fact.acts(REGISTER_ROW))
-    assert got["fact"]["source"] == "ks2" and got["fact"]["total"] == 4000.0
+    assert got["fact"]["source"] == "ks6a" and got["fact"]["total"] == 5500.0
 
 
 # --- натуральные объёмы и три процента ------------------------------------------------
@@ -132,7 +132,7 @@ def test_automatic_links_and_a_preliminary_fact_are_named_in_the_report():
 # --- страница -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("width", [390, 1440])
-def test_the_card_shows_the_ks2_fact_and_the_reconciliation_in_plain_words(card, width):  # noqa: F811
+def test_the_card_shows_the_ks6a_fact_and_the_ks2_reconciliation(card, width):  # noqa: F811
     from playwright.sync_api import expect
 
     from test_monitor_cumulative_controls import browser_page
@@ -144,17 +144,17 @@ def test_the_card_shows_the_ks2_fact_and_the_reconciliation_in_plain_words(card,
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
         page.locator("#contractComparisonMethodology > details > summary").click()
         facts = page.locator(".contract-fact-audit")
-        expect(page.locator("#contractComparisonInfo")).to_contain_text("Факт по КС-2 — по периодам выполнения.")
+        expect(page.locator("#contractComparisonInfo")).to_contain_text("Факт по накопительной КС-6а.")
         state = facts.locator(".contract-fact-reconcile-state")
         expect(state).to_have_text("Акты КС-2 и накопительная КС-6а расходятся: позиций с разным объёмом — 1, "
-                                   "только в актах КС-2 — 0, только в КС-6а — 4. Факт считается по актам КС-2.")
+                                   "только в актах КС-2 — 0, только в КС-6а — 4. Факт считается по накопительной КС-6а.")
         facts.get_by_text("Сверка актов КС-2 с накопительной КС-6а (5)").click()
         first = facts.locator(".contract-fact-reconcile tbody tr").first.locator("td")
         expect(first.nth(2)).to_have_text("0,5")
         expect(first.nth(3)).to_have_text("0,75")
         expect(first.nth(4)).to_have_text("объём разный")
         assert first.nth(3).get_attribute("data-label") == "По КС-6а"
-        expect(page.locator("#contractCardSummary")).to_contain_text("40 %")
-        expect(page.locator("#contractCardSummary")).to_contain_text("Готовность сопоставленных работ: 36,4 %")
+        expect(page.locator("#contractCardSummary")).to_contain_text("55 %")
+        expect(page.locator("#contractCardSummary")).to_contain_text("Общая готовность в расчёте: 50 %")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert errors == []

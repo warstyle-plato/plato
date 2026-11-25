@@ -65,6 +65,110 @@ def check() -> None:
     remaining()
 
 
+def post_bytes(request, timeout: float, max_bytes: int = 5*1024*1024) -> bytes:
+    """POST to a configured service within the active document's deadline.
+
+    Reuse the source reader's bounded DNS pool, pinned sockets and total header
+    deadline. This path never follows redirects or accepts URL credentials.
+    Public source URLs still use document_source.read_url and its public-IP gate.
+    """
+    import http.client
+    import io
+    import socket
+    import urllib.error
+    import urllib.parse
+    import document_source
+
+    until = deadline()
+    if until is None:
+        raise RuntimeError('Bounded document transport requires an active operation')
+    until = min(until,time.monotonic()+remaining(timeout))
+    target = urllib.parse.urlsplit(request.full_url)
+    if (target.scheme not in {'http','https'} or not target.hostname
+            or target.username is not None or target.password is not None
+            or target.fragment or any(c in request.full_url for c in '\r\n\\')):
+        raise ValueError('Адрес сервиса проверки территории настроен некорректно.')
+    port = target.port or (443 if target.scheme == 'https' else 80)
+    response = connection = None
+    try:
+        endpoints = tuple((*row[:4],(row[4][0],port,*row[4][2:]))
+                          for row in document_source._resolve(target.hostname,until))
+        check()
+        left = document_source._remaining(until)
+        if target.scheme == 'https':
+            connection = document_source._PinnedHTTPS(target.hostname,endpoints,left)
+            connection.port = port
+        else:
+            # Configured core URLs can be private HTTP endpoints. DNS is already
+            # bounded above; connect directly to those resolved socket addresses.
+            class PinnedHTTP(http.client.HTTPConnection):
+                def connect(self):
+                    last = None
+                    for family,kind,proto,_,address in endpoints:
+                        sock = socket.socket(family,kind,proto)
+                        try:
+                            check()
+                            sock.settimeout(document_source._remaining(until))
+                            sock.connect(address)
+                            self.sock = sock
+                            return
+                        except BaseException as exc:
+                            sock.close()
+                            if not isinstance(exc,OSError):
+                                raise
+                            last = exc
+                    raise last or OSError('No configured service endpoint')
+            connection = PinnedHTTP(target.hostname,port,timeout=left)
+            connection.response_class = lambda sock,*a,**kw:document_source._DeadlineResponse(
+                sock,*a,deadline=until,**kw)
+        headers = dict(request.header_items())
+        headers['Accept-Encoding'] = 'identity'
+        path = urllib.parse.urlunsplit(('','',target.path or '/',target.query,''))
+        connection.request(request.get_method(),path,body=request.data,headers=headers)
+        check()
+        response = connection.getresponse()
+        check()
+        declared = response.getheader('Content-Length')
+        if declared is not None:
+            try:
+                declared = int(declared)
+            except (ValueError,TypeError):
+                raise ValueError('Сервис проверки территории передал некорректный размер ответа.') from None
+            if not 0 <= declared <= max_bytes:
+                raise ValueError('Ответ сервиса проверки территории превышает допустимый размер.')
+        chunks,size = [],0
+        while True:
+            check()
+            chunk = response.read1(min(64*1024,max_bytes+1-size))
+            check()
+            document_source._remaining(until)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > max_bytes:
+                raise ValueError('Ответ сервиса проверки территории превышает допустимый размер.')
+            chunks.append(chunk)
+        if declared is not None and size != declared:
+            raise ValueError('Ответ сервиса проверки территории пришёл не полностью.')
+        raw = b''.join(chunks)
+        if not 200 <= response.status < 300:
+            raise urllib.error.HTTPError(request.full_url,response.status,response.reason,
+                                         response.headers,io.BytesIO(raw))
+        return raw
+    except document_source.DocumentSourceError as exc:
+        check()
+        if exc.code == 'source_timeout':
+            raise TimeoutError('Configured document service deadline') from None
+        raise RuntimeError('Сервер проверки территории не найден или занят.') from None
+    finally:
+        try:
+            if response is not None:
+                response.close()
+        finally:
+            if connection is not None:
+                connection.close()
+
+
 def delivery_check() -> None:
     delivery_remaining()
 

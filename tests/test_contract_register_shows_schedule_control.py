@@ -34,13 +34,36 @@ def _register():
 
 def assert_behind_with_scope(observed):
     assert {key: observed[key] for key in BEHIND} == BEHIND
-    assert set(observed) == set(BEHIND) | {'coverage', 'forecast_scope', 'whole_contract_finish', 'data_gaps'}
+    assert set(observed) == set(BEHIND) | {'coverage', 'forecast_scope', 'whole_contract_finish', 'data_gaps', 'confirmation', 'components', 'act_evidence'}
+    # В карточке нет КС-2: прочитанный подытог 0 не становится итогом документов.
+    assert observed['act_evidence'] == {'acts': [], 'count': 0, 'total': None,
+                                        'known_total': 0.0, 'unread_count': 0}
+    assert observed['components']['work']['readiness'] == observed['readiness']
+    assert observed['components']['material']['amount'] == 0
+    assert observed['confirmation']['upload_required'] is True
     coverage = observed['coverage']
     assert (coverage['calculated'], coverage['source_works'], coverage['source_rows'], coverage['unknown']) == (3, 4, 6, 1)
     assert coverage['source_known'] and coverage['partial']
     assert coverage['calculation_start'] == '2026-02-01' and coverage['prior_periods'] == 1
     assert observed['data_gaps']
     assert observed['forecast_scope'] == 'matched_works' and observed['whole_contract_finish'] is None
+
+
+def test_register_keeps_uploaded_act_total_apart_from_the_statement_schedule_fact(card):  # noqa: F811
+    from tests.test_contract_fact_dates_ks6_periods_by_acts import act_pdf
+
+    stored = files.store(PROJECT, REGISTER_ROW, 'Учебный КС-2.pdf', act_pdf())
+    observed = files.register_control(PROJECT, _register(), CUT)['rows'][0]['schedule_control']
+    own = files.listing(PROJECT, CONTRACT, CUT, fact.acts(REGISTER_ROW))
+    evidence = observed['act_evidence']
+    assert evidence == own['fact']['act_evidence'] == own['comparison']['act_evidence']
+    assert {k: evidence[k] for k in ('count', 'total', 'known_total', 'unread_count')} == {
+        'count': 1, 'total': 4000.0, 'known_total': 4000.0, 'unread_count': 0}
+    act, = evidence['acts']
+    assert (act['sha256'], act['number'], act['filename'], act['date'], act['finish']) == (
+        stored['sha256'], '2', 'Учебный КС-2.pdf', '2026-02-03', '2026-02-03')
+    assert act['positions'] > 0 and act['total'] == 4000.0
+    assert (observed['source'], observed['fact'], observed['readiness']) == ('ks6a', 5500.0, 0.5)
 
 
 def test_the_row_carries_the_card_numbers_and_says_why_they_are_missing(card):  # noqa: F811
@@ -114,10 +137,10 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         # The same native result is presented once, in the modal work table.
         more = opened(page, CONTRACT)
         expect(more.locator('#contractCardSummary')).to_contain_text('55 %')
-        expect(more.locator('#contractCardSummary')).to_contain_text('Готовность сопоставленных работ: 50 %')
+        expect(more.locator('#contractCardSummary')).to_contain_text('Общая готовность в расчёте: 50 %')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('06.02.2026')
         expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Не определён')
-        expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Оценка сопоставленных работ')
+        expect(more.locator('#contractCardSummary [data-label="Прогноз окончания"]')).to_contain_text('Прогноз работ и поставок в расчёте')
         expect(more.locator('#contractComparisonInfo')).to_contain_text('Не учтено периодов КС: 2')
         first=more.locator('[data-comparison-code="1.1"]')
         expect(first).to_contain_text('Отставание: 3 дня')

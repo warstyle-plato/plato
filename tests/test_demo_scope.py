@@ -158,7 +158,7 @@ def test_a_link_without_the_section_is_refused_by_name(block):
 
 
 @pytest.mark.parametrize("block", ALL)
-def test_a_link_with_the_section_reads_it(block):
+def test_a_link_with_the_section_reads_it(block, offline_krt_catalogue):
     session, browser = claim(invite([block]))
     reader, _name = READS[block]
     answer = reader(session, browser)
@@ -240,7 +240,7 @@ def monitor_routes() -> dict[str, bool]:
 
 # Чтение монитора и сводки — названо явно. Новый маршрут попадает в запись,
 # пока его не перенесли сюда; лишнее «чтение» в коде роняет эту проверку.
-MONITOR_READS = {"/monitor/snapshots", "/monitor/view", "/monitor/view/result", "/monitor/gpr-view", "/monitor/gpr-brief",
+MONITOR_READS = {"/monitor/snapshots", "/monitor/view", "/monitor/view/result", "/monitor/gpr-view",
                  "/monitor/rewritten", "/monitor/ask",
                  "/monitor/doubts", "/monitor/crew", "/monitor/daily/summary",
                  "/monitor/photo", "/monitor/report/projects", "/monitor/report",

@@ -450,6 +450,108 @@ def need_breakdown(own: dict, comp: dict, cut: str, known: bool,
             "coverage_columns_reason": "Значения и год колонок «Банк/Резерв» требуют отдельной проверки заголовков; отсутствие покрытия в файле не установлено"}
 
 
+def chapter_disclosure(funding: dict) -> dict:
+    """Explain the displayed B/P/L subtraction, separately from programme gaps.
+
+    Legacy own-money rows can replace model budgets with a schedule. Their
+    amounts are not a decomposition of the approved-budget headline. Use the
+    monetary chapter map and observed RSS payments, with explicit total fences.
+    """
+    own = funding.get("own_money") or {}
+    r = own.get("reconciliation") or funding.get("reconciliation") or {}
+    values = calculation_values(r)
+    chapters = r.get("bank_chapters")
+    if (not isinstance(chapters, list) or not chapters
+            or any(not isinstance(ch, str) or not ch for ch in chapters)
+            or len(set(chapters)) != len(chapters)):
+        return {}
+    def agrees(parts, total):
+        total = number(total)
+        return (total is not None and all(number(v) is not None for v in parts)
+                and abs(sum(parts) - total) <= max(.01, abs(total) * 1e-12))
+    # Old DTOs may retain direct values or display rows from another build.
+    # Do not attach a valid new split beside a different visible headline.
+    for key in ("budget", "paid_at_cut", "bank_limit_total", "available_bank_limit", "calculated_additional"):
+        direct = number(r.get(key))
+        if direct is not None and not agrees([direct], values.get(key)):
+            return {}
+    limits = funding.get("limit_by_chapter") or {}
+    if set(limits) != set(chapters):
+        return {}
+    limits = {ch: number(limits[ch]) for ch in chapters}
+    if not agrees(list(limits.values()), values.get("bank_limit_total")):
+        return {}
+    if not agrees(list(limits.values()), r.get("bank_limit_total")):
+        return {}
+    result = {"bank_limits": [{"chapter": ch, "amount": limits[ch]} for ch in chapters]}
+    if isinstance(r.get("display_rows"), list):
+        for key in ("paid_at_cut", "available_bank_limit"):
+            rendered = [row.get("value") for row in r["display_rows"] if row.get("key") == key]
+            if len(rendered) != 1 or not agrees(rendered, values.get(key)):
+                return result
+    observed = (own.get("payment_observation") or {}).get("by_chapter") or {}
+    if set(observed) != set(chapters):
+        return result
+    if not values.get("partial") and any(observed[ch].get("complete") is not True for ch in chapters):
+        return result
+    paid = {ch: number(observed[ch].get("total")) for ch in chapters}
+    if not agrees(list(paid.values()), values.get("paid_at_cut")):
+        return result
+    available = {ch: max(0., limits[ch] - paid[ch]) for ch in chapters}
+    if not agrees(list(available.values()), values.get("available_bank_limit")):
+        return result
+    result["available_limits"] = [{"chapter": ch, "amount": available[ch]} for ch in chapters]
+    approved = funding.get("approved_by_chapter") or {}
+    if set(approved) != set(chapters):
+        return result
+    approved = {ch: number(approved[ch]) for ch in chapters}
+    components = r.get("components") or []
+    unallocated = [number(c.get("amount")) for c in components if c.get("kind") == "unallocated_budget"]
+    outside = [number(c.get("amount")) for c in components if c.get("kind") == "outside_bank_scope"]
+    if (len(unallocated) != 1 or unallocated[0] is None
+            or len(outside) != 1 or outside[0] != 0
+            or not agrees([*approved.values(), unallocated[0]], values.get("budget"))):
+        return result
+    rows = [{"chapter": ch, "amount": approved[ch] - paid[ch] - available[ch]} for ch in chapters]
+    balance = sum(row["amount"] for row in rows) + unallocated[0]
+    floor = max(0., -balance)
+    if not agrees([balance, floor], values.get("calculated_additional")):
+        return result
+    result["need_bridge"] = {"chapters": rows, "unallocated_budget": unallocated[0],
+                             "zero_floor": floor, "partial": bool(values.get("partial"))}
+    return result
+
+
+def chapter_disclosure_notes(funding: dict, money) -> dict:
+    """One wording for the Monitor and report, including signed contributions."""
+    data = chapter_disclosure(funding)
+    def words(rows):
+        return "; ".join(f'глава {row["chapter"]} — {money(row["amount"])}' for row in rows)
+    notes = {key: "По главам РСС: " + words(data[key]) + "."
+             for key in ("bank_limits", "available_limits") if data.get(key)}
+    bridge = data.get("need_bridge")
+    if bridge:
+        text = "Состав расчёта по главам РСС: " + words(bridge["chapters"])
+        if abs(bridge["unallocated_budget"]) > .005:
+            text += "; бюджет без денежной главы — " + money(bridge["unallocated_budget"])
+        if bridge["zero_floor"] > .005:
+            text += ". Итог ограничен нулём"
+        notes["need_bridge"] = text + "."
+    own = funding.get("own_money") or {}
+    r = own.get("reconciliation") or funding.get("reconciliation") or {}
+    admin = ((r.get("admin_expenses") or {}).get("rows") or [])
+    total = next((row for row in admin if row.get("label") == "Всего АХР"), {})
+    amount, plan = number(total.get("total")), number(total.get("model_plan"))
+    if amount is not None:
+        notes["admin_budget"] = ("Их бюджет — " + money(amount)
+                                 + ("; план ФМ — " + money(plan) if plan is not None else "") + ".")
+    elif plan is not None:
+        notes["admin_budget"] = "План ФМ по АХР — " + money(plan) + "."
+    if notes.get("admin_budget"):
+        notes["admin_budget"] += " Отдельная потребность АХР не определена."
+    return notes
+
+
 def display_rows(r: dict) -> list[dict]:
     """Shared labels and values; the browser never reconstructs the equation."""
     calculation = calculation_values(r)

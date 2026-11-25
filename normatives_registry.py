@@ -27,8 +27,10 @@ from typing import Any
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from normative_sources import registry_path
+
 _ROOT = Path(__file__).resolve().parent
-_REGISTRY_PATH = _ROOT / "data" / "normatives" / "registry.json"
+_REGISTRY_PATH = registry_path(_ROOT)
 _STATE_PATH = Path(
     os.getenv("NORMATIVES_STATE_FILE", "").strip()
     or (_ROOT / "data" / "normatives" / "check_state.json")
@@ -232,6 +234,7 @@ PAGE_LEVELS: tuple[tuple[str, str], ...] = (
     ("rules", "Своды правил"),
     ("moscow", "Москва"),
     ("mo", "Московская область"),
+    ("cost_norms", "Нормативы цены строительства"),
     ("product", "Правовая рамка сервиса"),
 )
 IMPACT_LABELS = {

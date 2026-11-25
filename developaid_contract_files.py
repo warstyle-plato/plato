@@ -35,7 +35,6 @@ import developaid_contract_scan as scan
 import developaid_contract_schedule_links as links
 import developaid_contract_terms as terms
 import developaid_contract_price as price
-import developaid_monitor as monitor
 import developaid_contract_stage_profile as stage_profile
 
 MAX_BYTES = 20 * 1024 * 1024
@@ -51,7 +50,14 @@ def _directory(project: str, contract_id: str) -> Path:
         raise ContractFilesProblem("Выберите договор из списка.")
     if not str(project or "").strip():
         raise ContractFilesProblem("Выберите проект.")
-    return monitor._project_dir(project) / "contract_documents" / contract_id
+    # Initial source commits pin this namespace while native merge holds the
+    # same global aliases lock. Follow that pin even if aliases change late.
+    import developaid_contract_identity_store as namespace
+    try:
+        root = namespace.project_root(project)
+    except namespace.IdentityProblem as exc:
+        raise ContractFilesProblem(str(exc)) from None
+    return root / "contract_documents" / contract_id
 
 
 def _write(path: Path, data: bytes) -> None:
@@ -76,6 +82,10 @@ _held = threading.local()
 @contextlib.contextmanager
 def _locked(folder: Path):
     """One writer per card across both workers; a thread already holding the card's lock goes on."""
+    import developaid_contract_identity_store as identity_store
+    if str(folder / ".lock") in identity_store._HELD_NATIVE_LOCKS.get():
+        yield
+        return
     held = _held.__dict__.setdefault("folders", set())
     key = str(folder)
     if key in held:
@@ -148,6 +158,7 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
     if not content.startswith(b"%PDF"):
         raise ContractFilesProblem("Файл не открылся как PDF. Сохраните документ в PDF заново, например выгрузкой из системы электронного документооборота, и загрузите ещё раз.")
     sha = hashlib.sha256(content).hexdigest()
+    folder = _document_folder(project, row.get('id'), sha, {'document_source_ids': row.get('document_source_ids') or []})
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Identity inventory/CAS shares this native lock, including first upload.
     with _locked(folder):
@@ -254,6 +265,26 @@ def _records(folder: Path) -> list[dict]:
     return records
 
 
+def _folders(project: str, contract_id: str, found: dict | None = None) -> list[Path]:
+    """Native archive IDs stay unchanged; initial PDF folders stay at their source IDs."""
+    identifiers = [contract_id, *((found or {}).get('document_source_ids') or [])]
+    return [_directory(project, identifier) for identifier in dict.fromkeys(identifiers)]
+
+
+def _all_records(folders: list[Path]) -> list[dict]:
+    records = {}
+    for folder in reversed(folders):
+        records.update({record['sha256']: record for record in _records(folder)})
+    return sorted(records.values(), key=lambda r: (_edition(r), r.get('uploaded_at', ''), r['sha256']))
+
+
+def _document_folder(project: str, contract_id: str, sha: str, found: dict | None = None) -> Path:
+    if not re.fullmatch(r'[0-9a-f]{64}', str(sha or '')):
+        raise ContractFilesProblem('Документ не найден в карточке: обновите карточку.')
+    folders = _folders(project, contract_id, found)
+    return next((folder for folder in folders if (folder / (sha+'.json')).exists()), folders[0])
+
+
 def _in_force(records: list[dict]):
     """Each estimate with the latest schedule at or before its edition."""
     current = None
@@ -347,16 +378,14 @@ def _choices(folder: Path) -> dict:
     return stored.get("choices") or {}
 
 
-def document_terms(project: str, contract_id: str, cut: str) -> dict:
+def document_terms(project: str, contract_id: str, cut: str, source_ids: list[str] | None = None) -> dict:
     """Source-bound conditions, read from the same saved PDFs as the card."""
-    folder = _directory(project, contract_id)
-    return terms.resolve(_records(folder) if folder.is_dir() else [], cut)
+    return terms.resolve(_all_records(_folders(project, contract_id, {'document_source_ids': source_ids or []})), cut)
 
 
-def document_prices(project: str, contract_id: str, cut: str) -> dict:
+def document_prices(project: str, contract_id: str, cut: str, source_ids: list[str] | None = None) -> dict:
     """Explicit full price from saved clauses; never an estimate's maximum total."""
-    folder = _directory(project, contract_id)
-    return price.resolve(_records(folder) if folder.is_dir() else [], cut)
+    return price.resolve(_all_records(_folders(project, contract_id, {'document_source_ids': source_ids or []})), cut)
 
 
 @stage_profile.stage('card_listing')
@@ -365,20 +394,25 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
 
     `acts` are the KS-6a works of the contract on `cut` (`fact.acts`); None when the register has none.
     """
-    folder = _directory(project, contract_id)
+    folders = _folders(project, contract_id, acts)
     cut = cut or dt.date.today().isoformat()
-    if not folder.is_dir():
-        acts = act_dates.resolve(acts, [])
+    if not any(candidate.is_dir() for candidate in folders):
+        acts = act_dates.resolve(acts, [], cut)
         performed = acts_in_card.accumulated([], cut)
         return _with_control({"contract_id": contract_id, "documents": [], "removed": [],
                               "plan": plan.build([], cut), "fact": _fact([], None, acts, cut, performed),
                               "performed": performed}, acts, cut)
-    every = _records(folder)
+    every = _all_records(folders)
     records = [r for r in every if not r.get("removed_at")]
     # An unconfirmed scan is listed with its proposal; the plan, the fact and the act dates do not see it.
     counted = [r for r in records if not awaits_confirmation(r)]
-    acts = act_dates.resolve(acts, counted)
+    acts = act_dates.resolve(acts, counted, cut)
     performed = acts_in_card.accumulated(counted, cut)
+    performed['excluded'].extend({
+        'number': r['act'].get('number'), 'date': r['act'].get('date'),
+        'sha256': r.get('sha256'), 'filename': r.get('filename'),
+        'reason': 'скан, значения не подтверждены'}
+        for r in records if awaits_confirmation(r) and r.get('act'))
     for record in records:
         notes = _scan_notes(record) if record.get("scan") else []
         if not record.get("contract"):
@@ -400,7 +434,7 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
         if record.get("schedule"):
             # Редактор связей предлагает строки по тому же правилу, что сервер.
             record["schedule"] = {**record["schedule"], "unfit": links.unfit(record["schedule"])}
-    chosen = _choices(folder)
+    chosen = {key: value for candidate in reversed(folders) for key, value in _choices(candidate).items()}
     for record, _, estimate, schedule in _in_force(counted):
         result = choices.apply(_proposal(record, estimate, schedule), chosen, schedule and schedule["schedule"])
         estimate["links"] = {**result, "schedule": schedule["title"] if schedule else "",
@@ -443,7 +477,7 @@ def confirm_scan(project: str, row: dict, sha256: str, kind: str, values: dict, 
     `kind` is what the document is (contract, agreement, act) and `values` its header as the user
     confirmed it; each value that differs from the recognised one is named as corrected by hand.
     """
-    folder = _directory(project, row.get("id"))
+    folder = _document_folder(project, row.get('id'), sha256, acts)
     if not re.fullmatch(r"[0-9a-f]{64}", str(sha256 or "")) or not (folder / f"{sha256}.json").exists():
         raise ContractFilesProblem("Документ не найден в карточке: обновите карточку.")
     if kind not in ("contract", "agreement", "act"):
@@ -498,7 +532,7 @@ def _day(text: str) -> str | None:
 
 
 def _fact(editions, in_force, acts, cut, performed):
-    """The fact on `cut`: the acts КС-2 of the card, else the KS-6a with the dates the acts gave its periods."""
+    """KS-6a fact on `cut`, with dates and confirmation supplied by the КС-2."""
     return {**fact.build(editions, in_force, acts, cut, performed),
             "act_dates": (acts or {}).get("act_dates") or []}
 
@@ -519,10 +553,13 @@ def _with_control(listed, acts, cut):
     listed["control"] = control.build(listed["plan"], listed["fact"], deadline, label, cut)
     # Known source dates are useful even before money/fact can be matched.
     # They are a source-plan interval, never a legal deadline or a forecast.
-    if listed["control"].get("total") is None:
-        source = _schedule_source(listed.get("documents") or [], cut)
-        if source:
-            listed["control"]["schedule_source"] = source
+    current = next((edition for edition in listed['plan'].get('editions') or [] if edition.get('in_force')), None)
+    source_sha = (current or {}).get('schedule_sha256')
+    records = listed.get('documents') or []
+    source = _schedule_source([record for record in records if record['sha256'] == source_sha]
+                              if source_sha else records, cut)
+    if source:
+        listed['control']['schedule_source'] = source
     identity = _schedule_identity(listed.get('documents') or [],cut)
     # The new undated, source-only fallback needs an explicit contract binding.
     # Keep the existing dated-interval/control policy unchanged.
@@ -562,10 +599,12 @@ def _schedule_source(records, cut):
     dated = [r for r in lines if r.get('start') and r.get('finish') and r['start'] <= r['finish']]
     if not dated:
         return None
+    precision = {line['date_precision'] for line in lines if line.get('date_precision')}
     return {'start': min(r['start'] for r in dated), 'finish': max(r['finish'] for r in dated),
             'title': record.get('title') or _title(record), 'date': _date(record),
             'sha256': record['sha256'], 'dated': len(dated), 'undated': len(lines)-len(dated),
-            'assumption': record['schedule'].get('assumption') or '', 'basis': 'source_gpr'}
+            'assumption': record['schedule'].get('assumption') or '',
+            'date_precision': next(iter(precision)) if len(precision) == 1 else None, 'basis': 'source_gpr'}
 
 
 def _register_control_raw(project: str, register: dict, cut: str) -> dict:
@@ -577,7 +616,7 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
     for row in register.get("rows") or []:
         try:
             acts = stage_profile.call('card_acts', fact.acts, row)
-            listed = listing(project, row["id"], cut, acts)
+            listed = listing(project, row.get("_documents_raw_id") or row["id"], cut, acts)
         except ContractFilesProblem as exc:
             row["schedule_control"] = {"documents": None, "note": str(exc)}
             continue
@@ -595,8 +634,11 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
                                          "readiness", "plan_share", "plan_done", "overdue_days", "overdue_works",
                                          "auto", "incomplete")},
             "source": found.get("source"), "preliminary": bool(found.get("preliminary")),
+            "confirmation": found.get("confirmation"),
+            'act_evidence': found.get('act_evidence'),
             "left_out": found["left_out"],
             "coverage": found.get("coverage"),
+            "components": found.get("components") or {},
             "data_gaps": found["data_gaps"],
             "forecast_scope": forecast.get("scope"),
             "whole_contract_finish": forecast.get("whole_contract_finish"),
@@ -612,21 +654,41 @@ def register_control(project: str, register: dict, cut: str) -> dict:
     import developaid_contract_ownership as ownership
     with ownership.read_scope(project, cut) as context:
         context.require_current(register)
-        if 'raw_rows' not in register:
+        if not ownership.has_raw_views(register):
             return _register_control_raw(project, register, cut)
-        enriched = _register_control_raw(project, ownership.raw_view(register), cut)
-        return ownership.refresh(register, enriched)
+        raw = ownership.raw_view(register)
+        corrected_ids = {identifier for state in register['logical_ownership']['states'].values()
+                         if state.get('membership_confirmed') for identifier in state['member_ids']}
+        # Historical raw controls are read lazily when their card is opened.
+        # Do not calculate all duplicate source folders and then throw them away.
+        _register_control_raw(project, dict(raw, rows=[row for row in raw['rows'] if row['id'] not in corrected_ids]), cut)
+        result = ownership.refresh(register, raw)
+        import developaid_contract_correction as correction
+        for row in result['rows']:
+            if not row.get('source_correction'):
+                continue
+            try:
+                active = correction.materialize(result, row)
+                active['_documents_raw_id'] = row['source_correction']['roles']['documents_raw_id']
+                _register_control_raw(project, {'rows': [active]}, cut)
+                row['schedule_control'] = active['schedule_control']
+            except correction.store.IdentityProblem as exc:
+                row['schedule_control'] = {'state': 'unknown', 'documents': None, 'note': str(exc)}
+        return result
 
 
 def save_links(project: str, contract_id: str, sha256: str, estimate: int, picked: list[dict],
                clear: bool = False, cut: str = "", acts: dict | None = None) -> dict:
     """Confirm, choose or clear links of positions of one estimate; all positions or none are saved."""
-    folder = _directory(project, contract_id)
-    if not folder.is_dir():
+    source_folder = _document_folder(project, contract_id, sha256, acts)
+    if not (source_folder / (sha256+'.json')).is_file():
         # No documents, no card folder: an id without a card does not get an empty folder.
         raise ContractFilesProblem("Расчёт не найден среди документов карточки: обновите карточку.")
+    # Choices belong to the visible card/position, not to the PDF's physical
+    # folder. This primary overlay can also suppress inherited source choices.
+    folder = _directory(project, contract_id)
     with _locked(folder):
-        records = [r for r in _records(folder) if not r.get("removed_at")]
+        records = [r for r in _all_records(_folders(project, contract_id, acts)) if not r.get("removed_at")]
         found = next(((record, current, schedule) for record, index, current, schedule in _in_force(records)
                       if record["sha256"] == sha256 and index == estimate), None)
         if found is None:
@@ -640,7 +702,7 @@ def save_links(project: str, contract_id: str, sha256: str, estimate: int, picke
                 raise ContractFilesProblem("Позиция не найдена в расчёте: обновите карточку.")
             item = positions[index]
             if clear:
-                stored.pop(item["key"], None)
+                stored[item['key']] = None  # An explicit clear masks lower-priority source folders.
                 continue
             try:
                 stored[item["key"]] = choices.decide(item, schedule and schedule["schedule"], choice.get("lines"),
@@ -654,7 +716,7 @@ def save_links(project: str, contract_id: str, sha256: str, estimate: int, picke
 def remove(project: str, contract_id: str, sha256: str, *, restore: bool = False, cut: str = "",
            acts: dict | None = None) -> dict:
     """Take a file out of the card, or return it; the file itself is kept."""
-    folder = _directory(project, contract_id)
+    folder = _document_folder(project, contract_id, sha256, acts)
     if not re.fullmatch(r"[0-9a-f]{64}", str(sha256 or "")) or not (folder / f"{sha256}.json").exists():
         raise ContractFilesProblem("Документ не найден в карточке: обновите карточку.")
     with _locked(folder):

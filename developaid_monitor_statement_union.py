@@ -113,7 +113,8 @@ def statement_union(row: dict) -> dict:
             observation = dates[0]
     if observation is None:
         return fail('observation_date_unknown', 'Дата наблюдения годового итога не подтверждена.')
-    qualifications = {}
+    from developaid_monitor_statement_sources import statement_source_keys
+    qualifications, aliases, source_references = {}, {}, {}
     for reference in references:
         source = _source(reference.get('source'))
         if not all(source):
@@ -140,6 +141,12 @@ def statement_union(row: dict) -> dict:
         if key in qualifications and qualifications[key] != qualification:
             return fail('source_qualification_conflict', 'Один источник имеет разные основания сравнения.', source=source)
         qualifications[key] = qualification
+        source_references[key] = reference
+        for alias in statement_source_keys(reference):
+            alias_key = alias, year
+            if alias_key in aliases and aliases[alias_key] != key:
+                return fail('source_qualification_conflict', 'Один источник отнесён к разным ведомостям.', source=alias)
+            aliases[alias_key] = key
     result['source_count'] = len(qualifications)
     tax_bases = {qualification[0] for qualification in qualifications.values()}
     if len(tax_bases) != 1:
@@ -148,7 +155,7 @@ def statement_union(row: dict) -> dict:
     for item in items:
         source = _source(item.get('source'))
         year = item.get('period_year')
-        key = source, year
+        key = aliases.get((source, year), (source, year))
         if key not in qualifications:
             return fail('position_source_unverified', 'Позиция не относится к квалифицированной годовой ведомости.',
                         source=source, position=item.get('position'))
@@ -187,8 +194,7 @@ def statement_union(row: dict) -> dict:
             return fail('plan_changed', 'План или цена одной работы различаются между ведомостями; общий процент не выбран.',
                         source=source, position=item.get('position'))
         works[work] = definition
-        reference = next(reference for reference in references
-                         if _source(reference.get('source')) == source and reference.get('period_year') == year)
+        reference = source_references[key]
         annual, error = _annual(item, reference, observation.year)
         if error:
             return fail(error, 'Для позиции не подтверждён сопоставимый годовой итог выполнения.',

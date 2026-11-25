@@ -1,13 +1,11 @@
 """Accumulated fact of a contract: KS quantities priced by the Расчёт and laid on the ГПР lines.
 
-The fact is read from the positions of the acts КС-2 of the card, accumulated
-from the start of the construction (`developaid_contract_acts.accumulated`);
-the cumulative KS-6a is then a control reconciliation beside it. A card without
-acts КС-2 takes the fact from the KS-6a, and says so (owner's decision 1А of
-12.11.2026).
+The cumulative KS-6a has priority. If it is absent or wholly unreadable,
+uploaded acts КС-2 supply the quantities, with their scope explicitly labelled.
+The two sources are never added together. A partly readable KS-6a retains its
+unknown works instead of filling them with acts (owner's clarification of 24.11.2026).
 
-A fact row is one act КС-2 position or one dated period of one work of the
-cumulative KS-6a. It belongs
+A fact row is one dated period of one work of the cumulative KS-6a. It belongs
 to the edition of the plan in force on the last day of its period, and its money
 is the quantity × the unit price of that edition's «Расчёт» (owner's decision
 4А), not the sum written in the KS. The row finds its position by number, or by
@@ -25,8 +23,7 @@ work was accepted before the agreement and is shown beside the plan, not in it.
 With the KS-6a as the fact, a line is complete by volume (owner's decision А)
 when every position linked to it has KS-6a works and each of them reached its
 full volume of the statement by the cut; the money of a complete line may stay
-below its cost in the estimate. With the acts КС-2 the line is complete when its
-natural fact reaches its volume in the estimate (`developaid_contract_control`).
+below its cost in the estimate. КС-2 never replaces that source volume.
 The last day of the line is the end of its last KS period up to the cut.
 """
 from __future__ import annotations
@@ -37,6 +34,7 @@ import re
 
 import developaid_contract_schedule_links as links
 import developaid_contract_acts as contract_acts
+from developaid_contract_act_dates import compact_number
 from developaid_monitor_contracts import _norm
 from developaid_monitor_statement_union import _unit
 
@@ -45,7 +43,9 @@ ASSUMPTION = ("Работы периода КС относятся к редак
               "Деньги факта — объём КС × цена за единицу этой редакции, а не сумма, записанная в КС.")
 _STATUSES = ("review", "extra", "missing")
 _LINKED = ("confirmed", "proposed")
-FROM_KS6A = "Актов КС-2 в карточке нет: факт взят из накопительной КС-6а."
+FROM_KS6A = "Выполнение рассчитано по накопительной КС-6а. Акты КС-2 используются для сверки и подтверждения."
+FROM_KS2 = ("Выполнение рассчитано по позициям загруженных актов КС-2: пригодная для расчёта КС-6а отсутствует. "
+            "Полнота комплекта актов не подтверждена. Итоги актов показаны отдельно от факта по графику.")
 
 
 def _day(iso):
@@ -63,7 +63,10 @@ def acts(row: dict | None) -> dict | None:
     """
     if row is None:
         return None
-    found, unread, works, sums, groups = [], [], [], {}, []
+    if row.get('source_kind') == 'contract_document':
+        return {**unavailable(row.get('performance_basis') or 'КС этого договора не предоставлены.'),
+                'document_source_ids': row.get('document_source_ids') or []}
+    found, unread, works, sums, groups, zero_acts = [], [], [], {}, [], []
     for index, item in enumerate(row.get("physical_items") or []):
         if item.get('is_group') and not item.get('is_duplicate'):
             groups.append({'number': item.get('position') or '', 'name': item.get('name') or '',
@@ -86,6 +89,7 @@ def acts(row: dict | None) -> dict | None:
                            "reported_quantity": item.get("reported_completed_quantity"),
                            "periods": [{"label": p.get("label") or "", "quantity": p.get("quantity"),
                                         "material_quantity": p.get('material_quantity'),
+                                        "amount_split": p.get('amount_split') is True,
                                         "work_amount": p.get('work_amount'), "material_amount": p.get('material_amount'),
                                         "amount": p.get("amount"), "start": p.get("date_start"),
                                         "end": p.get("date_end"), "source": p.get("source") or {}}
@@ -95,28 +99,36 @@ def acts(row: dict | None) -> dict | None:
                       "unit": item.get("unit") or "", "plan_quantity": item.get("plan_quantity"),
                       "basis": item_basis})
         for period in item.get("periods") or []:
-            if not period.get("quantity") and not period.get("material_quantity") and not period.get("amount"):
-                continue  # Nothing done in this period; a sum without a volume goes to review in `build`.
             period_basis = period.get('quantity_basis') if period.get('quantity_basis') in ('work', 'material') else item_basis
             quantity = period.get('quantity')
             if period_basis == 'material' and quantity is None:
                 quantity = period.get('material_quantity')
-            found.append({"number": item.get("position") or "", "name": item.get("name") or "",
+            observation = {"number": item.get("position") or "", "name": item.get("name") or "",
                           "unit": item.get("unit") or "", "quantity": quantity,
                           "basis": period_basis,
                           "quantity_material": period.get('material_quantity'),
                           "amount_components": {'work': period.get('work_amount'),
                                                 'material': period.get('material_amount'), 'total': period.get('amount')},
                           "act_amount": period.get("amount"), "start": period.get("date_start"),
-                          "end": period["date_end"], "label": period.get("label") or "",
+                          "end": period.get("date_end"), "label": period.get("label") or "",
                           "item": index,
-                          "source": period.get("source") or item.get("source") or {}})
+                          "source": period.get("source") or item.get("source") or {}}
+            if not period.get("quantity") and not period.get("material_quantity") and not period.get("amount"):
+                reported = item.get('reported_completed_quantity')
+                cumulative = reported if reported is not None else item.get('completed_quantity')
+                if type(cumulative) in (int, float) and cumulative == 0 and \
+                        type(period.get('quantity')) in (int, float) and period['quantity'] == 0:
+                    zero_acts.append(observation)
+                continue  # Explicit zeros remain evidence, without changing the financial-period stream.
+            found.append(observation)
     summary = [act for source in row.get("financial_sources") or [] for act in source.get("acts") or []]
     return {"acts": found, "unread": unread, "works": len(works), "items": works, "period_amounts": sums,
+            'document_source_ids': row.get('document_source_ids') or [],
             'physical_groups': groups,
             "summary_acts": summary,
             "deadline": row.get("deadline"), "deadline_label": (row.get("deadline_source") or {}).get("label") or "",
-            "deadline_manual": (row.get("deadline_source") or {}).get("label") == "Указан вручную"}
+            "deadline_manual": (row.get("deadline_source") or {}).get("label") == "Указан вручную",
+            **({'zero_acts': zero_acts} if zero_acts else {})}
 
 
 def unavailable(reason: str) -> dict:
@@ -273,6 +285,43 @@ def _sum_money(values):
     return result
 
 
+def _rds_observation(records, current, act, components, edition):
+    """Retain the existing typed match and component calculation before GPR allocation.
+
+    This is source evidence for active RDS rows, including rows with no GPR link.
+    It changes neither period pricing nor any existing financial accumulator.
+    """
+    matched = match(act, current['estimates'])
+    if isinstance(matched, str):
+        return
+    estimate, index, how = matched
+    record = records.setdefault((estimate, index), {
+        'estimate': estimate, 'index': index, 'how': how,
+        'estimate_sha256': current.get('estimate_sha256'),
+        'work_quantity': 0.0, 'material_quantity': 0.0,
+        'work_observed': False, 'material_observed': False,
+        'work_amount': 0.0, 'material_amount': 0.0, 'amount': 0.0,
+        'periods': 0, 'sources': [], 'priced_editions': [], 'reasons': []})
+    if act.get('basis') != 'material':
+        record['work_observed'] = True
+        record['work_quantity'] = _add_money(record['work_quantity'], components['work_quantity'])
+    record['material_observed'] |= components['material_quantity'] is not None
+    record['material_quantity'] = _add_money(record['material_quantity'], components['material_quantity'])
+    for component in ('work_amount', 'material_amount'):
+        record[component] = _add_money(record[component], components[component])
+    _accumulate_money(record, components['total'], known_value=components['known_total'])
+    record['periods'] += 1
+    evidence = {'source': act.get('source') or {}, 'label': act.get('label') or '',
+                'start': act.get('start'), 'end': act.get('end'),
+                'material_basis': components['material_basis']}
+    if evidence not in record['sources']:
+        record['sources'].append(evidence)
+    if edition['title'] not in record['priced_editions']:
+        record['priced_editions'].append(edition['title'])
+    if components['reason'] and components['reason'] not in record['reasons']:
+        record['reasons'].append(components['reason'])
+
+
 def _money(value):
     if value is None:
         return 'сумма не определена'
@@ -287,11 +336,11 @@ def _month_ends(first: dt.date, last: dt.date):
 
 
 def from_acts(performed: dict | None) -> list[dict]:
-    """Fact rows of the acts КС-2 in force up to the cut: one row per act and position of the estimate."""
+    """КС-2 rows for reconciliation or fallback fact: one row per act and position."""
     rows = []
     for position in (performed or {}).get("positions") or []:
         for part in position["parts"]:
-            if not part["quantity"] and not part.get('quantity_material'):
+            if part["quantity"] is None and not part.get('quantity_material'):
                 continue
             rows.append({"number": position["number"], "name": part["name"] or position["name"],
                          "unit": position["unit"], "quantity": part["quantity"], "act_amount": part["amount"],
@@ -304,17 +353,57 @@ def from_acts(performed: dict | None) -> list[dict]:
     return rows
 
 
-def _missing_acts(performed: dict | None, found: dict | None, cut: str) -> list[str]:
-    """Only acts explicitly observed by this contract's dated summary can be missing.
+def _period_act(label):
+    compact = compact_number(label)
+    if compact is not None:
+        return contract_acts.edition({'number': compact})
+    match = re.fullmatch(r'\s*(?:(?:акт\s+)?КС\s*-?\s*2|акт)?\s*№\s*(\d+(?:\s*[/.-]\s*\d+)*)\s*',
+                         str(label or ''), re.I)
+    return contract_acts.edition({'number': match[1]}) if match else None
 
-    Do not infer gaps from consecutive numbering or combine their volumes with
-    uploaded acts. Full normalized numbers keep different years distinct.
-    """
-    present = {contract_acts.edition(a) for a in (performed or {}).get('acts') or []}
-    expected = {contract_acts.edition(a) for a in (found or {}).get('summary_acts') or []
-                if a.get('date') and a['date'] <= cut}
-    return sorted((n for n in expected-present if n is not None),
-                  key=lambda n: (tuple(map(int, re.findall(r'\d+', n))), n))
+
+def _proved_zero_work(work):
+    """A separate zero work component is proof; missing quantity is not zero."""
+    periods = work.get('periods') or []
+    return bool(periods) and work.get('reported_quantity') == 0 and all(
+        period.get('quantity') in (None, 0)
+        and (period.get('amount_split') is True and period.get('work_amount') == 0 or
+             period.get('quantity') == 0 and not any(period.get(field) for field in
+                 ('amount', 'material_quantity', 'work_amount', 'material_amount')))
+        for period in periods)
+
+
+def confirmation(performed: dict | None, found: dict | None, cut: str, reconciliation=None) -> dict:
+    """Document confirmation is separate from the completeness of KS-6a facts."""
+    if found is None or found.get('problem'):
+        return {'state': 'no_statement', 'missing_acts': [], 'upload_required': False, 'message': ''}
+    expected = {contract_acts.edition(act) for act in found.get('summary_acts') or []
+                if act.get('date') and act['date'] <= cut}
+    periods = [*(found.get('acts') or []),
+               *(period for work in found.get('unread') or [] for period in work.get('periods') or [])]
+    expected.update(_period_act(period.get('label')) for period in periods
+                    if (not period.get('end') or period['end'] <= cut)
+                    and any(period.get(field) for field in ('quantity', 'material_quantity', 'quantity_material',
+                                                          'amount', 'act_amount')))
+    expected.discard(None)
+    present = {contract_acts.edition(act) for act in [*(performed or {}).get('acts', []),
+                                                    *(performed or {}).get('excluded', [])]
+               if not act.get('day') or act['day'] <= cut}
+    present.discard(None)
+    missing = sorted(expected-present, key=lambda n: (tuple(map(int, re.findall(r'\d+', n))), n))
+    upload = bool(missing or not present)
+    issues = [message for act in found.get('act_dates') or [] for message in act.get('warnings') or []]
+    differs = bool(issues or reconciliation and (reconciliation['differs'] or reconciliation['only_ks2']
+                                                 or reconciliation['only_ks6a']))
+    verified = bool(reconciliation and not differs and not found.get('unread')
+                    and not (performed or {}).get('excluded'))
+    message = ('Загрузите КС-2' + (' № ' + ', '.join(missing) if missing else '') + ' для подтверждения.'
+               if upload else 'КС-2 и КС-6а расходятся: проверьте сверку.' if differs else
+               'Объёмы работ по КС-6а совпадают с КС-2.' if verified else
+               'КС-2 загружены; для подтверждения проверьте даты и позиции актов.')
+    return {'state': 'pending' if upload else 'differs' if differs else 'confirmed' if verified else 'review',
+            'expected_acts': sorted(expected), 'missing_acts': missing,
+            'upload_required': upload, 'message': message, 'issues': issues}
 
 
 def reconcile(performed: dict | None, found: dict | None, cut: str) -> dict | None:
@@ -351,43 +440,59 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
           performed: dict | None = None) -> dict:
     """The fact on `cut` by the lines of the edition `in_force` (sha256) of the plan.
 
-    `performed` are the acts КС-2 of the card accumulated on `cut`; when they bring positions the fact is
-    theirs, otherwise the KS-6a works of `found` (`acts`).
+    KS-6a supplies the fact when at least one of its works is readable.
+    Otherwise `performed` supplies КС-2 quantities, never added to the statement.
     """
     result = {"cut": cut, "assumption": ASSUMPTION, "total": 0.0, "lines": [], "months": [], "positions": [],
               "outside": {status: {"count": 0, "amount": 0.0} for status in _STATUSES},
               "before": None, "review": [], "unread": [], "price_differs": 0, "after_cut": 0, "note": "",
               "source": None, "source_note": "", "preliminary": False, "reconciliation": None,
-              "materials": [], "component_gaps": [], 'material_statement': statement_materials(found, cut),
-              'physical_groups': (found or {}).get('physical_groups') or []}
-    rows = from_acts(performed)
-    if rows:
-        result["source"] = "ks2"
-        result["preliminary"] = any(a["preliminary"] for a in rows)
-        result["after_cut"] = (performed or {}).get("later") or 0
-        result["reconciliation"] = reconcile(performed, None if (found or {}).get("problem") else found, cut)
-        # The KS-6a works without a dated period are not reconciled: they are named, not dropped.
-        result["unread"] = [] if (found or {}).get("problem") else (found or {}).get("unread") or []
-        result['missing_acts'] = _missing_acts(performed, found, cut)
+              "materials": [], 'rds_positions': [], 'rds_unread': [],
+              "component_gaps": [], 'material_statement': statement_materials(found, cut),
+              'physical_groups': (found or {}).get('physical_groups') or [],
+              'act_evidence': (performed or {}).get('evidence')}
+    result['reconciliation'] = reconcile(performed, None if (found or {}).get('problem') else found, cut)
+    result['confirmation'] = confirmation(performed, found, cut, result['reconciliation'])
+    act_rows = from_acts(performed)
+    statement_usable = found is not None and not found.get('problem') and bool(found.get('works'))
+    if not statement_usable and act_rows:
+        result['source'], result['source_note'] = 'ks2', FROM_KS2
+        if found is not None:
+            problem = (found.get('problem') or
+                       ('В КС-6а не прочитаны объёмы ни одной работы.' if found.get('unread') else
+                        'В КС-6а нет позиций работ для расчёта.'))
+            result['source_note'] += ' ' + problem
+        result['source_incomplete'] = True
+        result['physical_groups'] = []
+        result['confirmation'] = {'state': 'acts_only', 'missing_acts': [], 'upload_required': False,
+                                  'message': 'Выполнение по загруженным КС-2; полнота комплекта актов не подтверждена.'}
+        rows = act_rows
+        result['preliminary'] = any(row.get('preliminary') for row in rows)
+        result['after_cut'] = (performed or {}).get('later') or 0
     elif found is None:
-        result["note"] = ("Актов КС-2 в карточке нет, а накопительная КС-6а этого договора на дату среза "
-                          "не найдена: факт не рассчитан.")
+        result['total'] = None
+        result["note"] = "Накопительная КС-6а этого договора на дату среза не найдена: загрузите КС-6а для расчёта выполнения."
         return result
     elif found.get("problem"):
-        result["note"] = f"Актов КС-2 в карточке нет, а факт по КС-6а не рассчитан. {found['problem']}"
+        result['total'] = None
+        result["note"] = f"Выполнение по КС-6а не рассчитано. {found['problem']}"
         return result
     else:
         result["source"], result["source_note"] = "ks6a", FROM_KS6A
-        result["unread"] = found["unread"]
-        rows = found["acts"]
+        result["unread"] = found.get("unread") or []
+        rows = found.get("acts") or []
+        result['preliminary'] = any(row.get('preliminary') for row in rows)
     current = next((e for e in editions if e["sha256"] == in_force), None)
     if current is None:
+        result['total'] = None
         result["note"] = "Нет редакции плана, действующей на дату среза: факт не с чем сопоставить."
         return result
     if result["source"] == "ks6a" and not found.get("works"):
         # No work with a known quantity: a zero here would be a missing KS-6a, not an answer.
-        result["note"] = ("Актов КС-2 в карточке нет, а в накопительной КС-6а этого договора нет выполнения "
-                          "с датированными периодами до даты среза.")
+        result['total'] = None
+        result["note"] = ("В КС-6а не подтверждены даты или объёмы выполнения до среза. Причины указаны по работам."
+                          if result['unread'] else
+                          "В накопительной КС-6а нет позиций работ для расчёта выполнения.")
         return result
     dated = sorted((e for e in editions if e.get("date")), key=lambda e: e["date"])
     start = _day(current["start"]) if current.get("start") else None
@@ -400,7 +505,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
     known_lines = {}
     work_money, material_money, material_volumes = {}, {}, {}
     unknown_work, unknown_material = set(), set()
-    last, done_quantity, position_facts = {}, {}, {}
+    last, material_last, done_quantity, position_facts, rds_positions = {}, {}, {}, {}, {}
     for act in rows:
         end = _day(act["end"])
         if end > _day(cut):
@@ -436,6 +541,8 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         position = edition["estimates"][e]["positions"][i]
         price = _price(position)
         components = _components(act, position)
+        if start is None or end >= start:
+            _rds_observation(rds_positions, current, act, components, edition)
         money = components['total']
         if price is None and all(_price(position, part) is None for part in ('work', 'material')):
             result['review'].append({**act, 'edition': edition['title'],
@@ -486,6 +593,8 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
                         unit = material_volumes.setdefault(code, {}).setdefault(
                             _unit(position["unit"]), {"unit": position["unit"], "quantity": 0.0})
                         unit['quantity'] += components['material_quantity'] * share
+                    if share and (components['material_quantity'] or components['material_amount']):
+                        material_last[code] = max(material_last.get(code, act['end']), act['end'])
                 dated_money.append((end, money))
                 dated_known_money.append((end, components['known_total']))
                 _accumulate_money(result, money, 'total', 'known_total', components['known_total'])
@@ -511,6 +620,67 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
             else row["act_amount"] + act["act_amount"]
         row["periods"] += 1
         row["last"] = max(row["last"], act["end"])
+    # A missing dated row is not zero when that very position has unread KS-6a.
+    # Resolve uncertainty by the same strict position and link rules as fact;
+    # never assign an unread position by its caption alone.
+    uncertain = {}
+    # Explicit dated zero-only statement rows are omitted from financial flows.
+    # Preserve their source proof for physical RDS cells, never infer zeros from absence.
+    if result['source'] == 'ks6a':
+        for act in (found or {}).get('zero_acts') or []:
+            if not act.get('end') or act['end'] > cut or start and _day(act['end']) < start:
+                continue
+            matched = match(act, current['estimates'])
+            if isinstance(matched, str):
+                continue
+            e, i, _ = matched
+            _rds_observation(rds_positions, current, act,
+                             _components(act, current['estimates'][e]['positions'][i]), current)
+    for work in result['unread']:
+        matched = match(work, current['estimates'])
+        if isinstance(matched, str):
+            continue
+        e, i, _ = matched
+        position = current['estimates'][e]['positions'][i]
+        result['rds_unread'].append({'estimate': e, 'index': i,
+            'estimate_sha256': current.get('estimate_sha256'),
+            'work_zero_proved': _proved_zero_work(work),
+            'reason': work.get('reason') or 'Объём в КС-6а не подтверждён.'})
+        observed = rds_positions.get((e, i))
+        if observed is not None:
+            observed.setdefault('known_amount', observed['amount'] or 0.0)
+            observed['amount'] = None
+            observed['material_quantity'] = observed['material_amount'] = None
+            if not _proved_zero_work(work):
+                observed['work_quantity'] = observed['work_amount'] = None
+            observed['reasons'].append(work.get('reason') or 'Объём в КС-6а не подтверждён.')
+        key = links.position_key(position)
+        link = links_now.get(key)
+        if not link or link['status'] not in _LINKED:
+            continue
+        zero_work = _proved_zero_work(work)
+        for target in link['lines']:
+            if not target['share']:
+                continue
+            code = target['code']
+            item = uncertain.setdefault(code, {'quantity_incomplete': False, 'reasons': []})
+            reason = work.get('reason') or 'В КС-6а не подтверждены даты или объёмы выполнения.'
+            if reason not in item['reasons']:
+                item['reasons'].append(reason)
+            item['quantity_incomplete'] |= not zero_work
+            lines[code] = None
+            if not zero_work:
+                unknown_work.add(code)
+                observed = position_facts.setdefault(code, {}).setdefault(key,
+                    {'key': key, 'quantity': 0.0, 'last': None, 'sources': []})
+                observed['known_quantity'] = observed.get('known_quantity', observed['quantity'])
+                observed['quantity'] = None
+            if position.get('amount', {}).get('material') != 0:
+                unknown_material.add(code)
+    if uncertain:
+        result['known_total'] = result.get('known_total', result['total'])
+        result['total'] = None
+        result['quantity_incomplete'] = any(item['quantity_incomplete'] for item in uncertain.values())
     order = [line["code"] for line in links.leaves(current.get("schedule"))]
     # Every work of the statement, done or not yet, belongs to its position of the edition in force.
     items_of = {}
@@ -539,10 +709,13 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
                         'work_fact': None if code in unknown_work else work_money.get(code, 0.0),
                         'material_fact': None if code in unknown_material else material_money.get(code, 0.0),
                         'material_volumes': list(material_volumes.get(code, {}).values()),
-                        "last": last.get(code), "complete": complete(code)}
+                        'material_last': material_last.get(code),
+                        "last": last.get(code), "complete": complete(code) and not uncertain.get(code, {}).get('quantity_incomplete'),
+                        **uncertain.get(code, {})}
                        for code in order if code in lines]
     result['component_gaps'] = list(dict.fromkeys(result['component_gaps']))
     result["positions"] = list(positions.values())
+    result['rds_positions'] = list(rds_positions.values())
     if result['total'] is None or any(p['amount'] is None for p in result['positions']) or \
             any(v['amount'] is None for v in result['outside'].values()) or \
             (result.get('before') and result['before']['amount'] is None):
@@ -554,6 +727,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         for end in _month_ends(first, day):
             relevant = [m for d, m in dated_money if d <= end]
             total = _sum_money(relevant)
-            result['months'].append({'month': end.isoformat()[:7], 'fact': total,
-                **({'known_fact': sum(m for d, m in dated_known_money if d <= end)} if total is None else {})})
+            result['months'].append({'month': end.isoformat()[:7], 'fact': None if uncertain else total,
+                **({'known_fact': sum(m for d, m in dated_known_money if d <= end)}
+                   if total is None or uncertain else {})})
     return result

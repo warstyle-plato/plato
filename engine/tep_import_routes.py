@@ -197,20 +197,30 @@ def _glavapu_analysis_payload(numbers: list[str], timeout: float = 30.0) -> dict
             "User-Agent": USER_AGENT,
         },
     )
+    import document_processing
+    document_budget = document_processing.deadline() is not None
     try:
-        with urllib.request.urlopen(external_request, timeout=timeout) as response:
-            raw = response.read(5 * 1024 * 1024 + 1)
+        if document_budget:
+            raw = document_processing.post_bytes(external_request,timeout)
+        else:
+            with urllib.request.urlopen(external_request, timeout=timeout) as response:
+                raw = response.read(5 * 1024 * 1024 + 1)
     except urllib.error.HTTPError as exc:
+        try:
+            reason = _external_error_message(exc)
+        finally:
+            if document_budget:
+                exc.close()
         raise HTTPException(
             status_code=400 if 400 <= exc.code < 500 else 502,
             # Отказ калькулятора — его ответ «такой территории не знаю», и
             # человеку он нужен своими словами, а сам ответ — в скобках.
             detail=("Калькулятор ГлавАПУ не нашёл территорию по этим номерам. Он знает "
                     "только участки Москвы, поэтому проверьте номер "
-                    f"(ответ калькулятора: «{_external_error_message(exc)}»)."
+                    f"(ответ калькулятора: «{reason}»)."
                     if 400 <= exc.code < 500 else
                     "Калькулятор ГлавАПУ не ответил как следует, повторите попытку позже "
-                    f"(ответ калькулятора: «{_external_error_message(exc)}»)."),
+                    f"(ответ калькулятора: «{reason}»)."),
         ) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise HTTPException(
@@ -248,9 +258,15 @@ def _glavapu_probe_numbers(numbers: list[str]) -> dict[str, bool | None]:
     verdicts: dict[str, bool | None] = {}
     if not numbers:
         return verdicts
+    import document_processing
+    document_budget = document_processing.deadline() is not None
     workers = max(1, min(_GLAVAPU_PROBE_WORKERS, len(numbers)))
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_glavapu_knows_number, number): number for number in numbers}
+        if document_budget:
+            futures = {pool.submit(contextvars.copy_context().run,_glavapu_knows_number,number): number
+                       for number in numbers}
+        else:
+            futures = {pool.submit(_glavapu_knows_number,number):number for number in numbers}
         for future in concurrent.futures.as_completed(futures):
             number = futures[future]
             try:

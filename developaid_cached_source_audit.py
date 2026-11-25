@@ -530,6 +530,8 @@ NATIVE_REPLAY_FIELDS=NATIVE_REPLAY_FIELDS | frozenset(('commercial_costs_mln '
     'pf_draw_total_mln full_cost_per_saleable_th_per_sqm full_cost_per_total_area_th_per_sqm '
     'capex_per_total_area_th_per_sqm construction_cost_per_gns_th_per_sqm '
     'construction_cost_per_saleable_th_per_sqm average_apartment_price_th_per_sqm').split())
+# Project-owned registration lag from the canonical engine/inputs.py literal.
+NATIVE_REPLAY_FIELDS=NATIVE_REPLAY_FIELDS | frozenset({'land_rent_registration_months'})
 # Strings are not arbitrary exportable leaves. Only these closed economic
 # enums and canonical date fields survive. Other text is an explicit omission.
 REPLAY_ENUMS = {

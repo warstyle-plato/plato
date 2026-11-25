@@ -59,14 +59,20 @@ def _save(data_dir: Path, project: str, data: dict[str, Any]) -> None:
 
 
 def prepare(data_dir: Path, project: str, chat_id: int, items: list[dict[str, Any]],
-            today: str) -> str:
+            today: str, *, batch_id: str = "") -> str:
     data = load(data_dir, project)
-    batch_id = uuid.uuid4().hex
+    batch_id = batch_id or uuid.uuid4().hex
     items = items[:sales_questions.MAX_QUESTIONS]
+    if batch_id in data["batches"]:
+        old = data["batches"][batch_id]
+        if old["chat_id"] != chat_id or old["text"] != html.unescape(sales_questions.message(items)):
+            raise ValueError("Идентификатор сообщения уже связан с другим вопросом.")
+        return batch_id
     data["batches"][batch_id] = {
         "chat_id": chat_id, "asked_at": today, "message_id": 0,
         "text": html.unescape(sales_questions.message(items)),
-        "questions": [{"key": item["key"], "kind": item["kind"], "text": item["text"]}
+        "questions": [{"key": item["key"], "kind": item["kind"], "text": item["text"],
+                       **{key: item[key] for key in ("subject", "baseline", "expected_event") if key in item}}
                       for item in items], "replies": [],
     }
     _save(data_dir, project, data)

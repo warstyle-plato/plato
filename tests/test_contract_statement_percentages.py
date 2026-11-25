@@ -105,10 +105,12 @@ def test_old_saved_import_does_not_lose_known_tax_mismatch(context, original_ava
     assert {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()} == before
 
 
-def test_overlapping_statement_copies_get_their_own_ratio_not_a_combined_execution(context):
+def test_identical_statement_copies_share_one_ratio_without_becoming_dated_execution(context):
     row, = source_view(context, count=2)['rows']
     assert row['completed'] is None and row['completion_ratio'] is None
-    assert len(row['reported_performance_sources']) == 2
+    assert len(row['reported_performance_sources']) == 1
+    assert row['performance_source_count'] == 1
+    assert len(row['reported_performance_sources'][0]['source_copies']) == 1
     assert all(x['completed'] == 700 and x['planned'] == 1020
                for x in row['reported_performance_sources'])
 

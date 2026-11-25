@@ -145,7 +145,7 @@ def test_real_browser_component_has_a_visible_source_and_working_preview_apply(m
     # Один разрешитель PAGE: браузер берёт тот же автоматически собранный набор,
     # который выполнил сценарий на node, а не список функций, переписанный руками.
     _shown, taken, _ = stand(money, "\n".join([
-        "(async()=>{renderMoVriRelief();nodes.moVriGross.value='100';moVriReliefEdited(true);nodes.moCompensation.value='10';",
+        "(async()=>{renderMoVriRelief();moVriBenefitModeChanged();nodes.moVriGross.value='100';moVriReliefEdited(true);nodes.moCompensation.value='10';",
         "await previewMoVriRelief();await applyMoVriRelief();console.log('{}')})().catch(e=>{console.error(e);process.exit(1)});",
     ]))
     start = core.PAGE.index('<details class="card" id="moVriReliefPanel"')
@@ -154,7 +154,7 @@ def test_real_browser_component_has_a_visible_source_and_working_preview_apply(m
     script = state_prelude() + "\n" + "\n".join(page_blocks.piece(name) for name in taken)
     html = inject_mpt_panel('<!doctype html><html><head><base href="https://fixture.invalid/">' + style
                             + '</head><body><div id="vri" class="panel active">' + core.PAGE[start:end]
-                            + '</div><script>' + script + '\nrenderMoVriRelief();</script></body></html>')
+                            + '</div><script>' + script + '\nrenderMoVriRelief();document.getElementById("moVriBenefitMode").value="manual";moVriBenefitModeChanged();</script></body></html>')
     if not os.environ.get("CHROMIUM_EXECUTABLE_PATH"):
         chromium_or_skip()
     with sync_playwright() as pw:

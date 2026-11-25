@@ -2067,8 +2067,11 @@ def _telegram_intake_region(numbers: list[str]) -> str:
     route = cadastral_route(numbers, None)
     if route in ("other", "mixed"):
         return route
+    import document_processing
     try:
         analysis = analyze_cadastral_territory(CadastralAnalysisRequest(cadastral_numbers=numbers))
+    except (document_processing.Cancelled,document_processing.Expired):
+        raise
     except Exception:  # noqa: BLE001
         analysis = None
     route = cadastral_route(numbers, analysis)
@@ -3536,10 +3539,24 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
                        else "ответ Платону не сохранён: сообщение вопроса не найдено")
             if result.get("reply_saved") and result.get("reply_unattributed"):
                 outcome += " без привязки к проекту: исторический вопрос"
+            if result.get("followup_error"):
+                outcome += "; отложенный контроль не подготовлен: " + str(result["followup_error"])
             _telegram_group_seen(chat, outcome)
         except Exception as exc:
             _telegram_group_seen(chat, "ответ Платону не сохранён: " + str(exc)[:80])
         return
+    from market_search import sales_followups, salesroom
+    if (not original and not (message.get("from") or {}).get("is_bot") and sales_followups.looks_like_answer(text)
+            and not (parsed and parsed.get("contractors"))
+            and not salesroom.is_sales_report(text)):
+        try:
+            result = _sales_chat_store(chat, message, text, taken_at, action="candidate")
+            if result.get("candidate"):
+                _telegram_group_seen(chat, "приглашение ответить через Reply подготовлено; обычное сообщение не связано с вопросами")
+                return
+        except Exception:
+            _telegram_group_seen(chat, "связь сообщения с вопросами не установлена")
+            return
     if not parsed or not parsed.get("contractors"):
         from market_search import salesroom
 
@@ -3735,16 +3752,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         _telegram_handle_manual_document(chat_id, {**photo, "file_name": "тизер.jpg"})
         return
     if re.fullmatch(r"https://\S+", text):
-        import document_source
-        try:
-            loaded = document_source.read_url(text)
-            document = ({"text": loaded["text"], "pages": 1, "pages_read": 1,
-                         "filename": loaded["filename"], "recognized": False, "reason": ""}
-                        if "text" in loaded else document_intake.extract_text(loaded["data"], loaded["filename"]))
-            document["source"] = loaded["source"]
-            _telegram_handle_intake_document(chat_id, b"", loaded["filename"], document_override=document)
-        except document_source.DocumentSourceError as exc:
-            _telegram_send_message(chat_id, "Не удалось прочитать ссылку: " + html.escape(str(exc)))
+        _telegram_handle_intake_url(chat_id, text)
         return
     document = message.get("document")
     if isinstance(document, dict):

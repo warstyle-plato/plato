@@ -157,11 +157,10 @@ def test_the_pdf_shows_one_underground_parking() -> None:
     with pymupdf.open(stream=data, filetype="pdf") as doc:
         text = "\n".join(page.get_text() for page in doc)
     flat = " ".join(text.split())
-    assert "Осталось от жилья" in flat
-    assert "в расчёт не входит" in flat
+    assert "Осталось от жилья" not in flat
     assert "435" not in flat.replace(" ", ""), "итог мест включает места МКД"
-    assert "5215" not in flat.replace(" ", "").split("Осталосьотжилья")[0], \
-        "метры паркинга МКД стоят в ТЭП до строки об остатке"
+    assert "5215" not in flat.replace(" ", ""), \
+        "метры паркинга МКД попали в отчёт"
     # Цены и темп продуктов МКД — не предпосылки нежилого расчёта.
     for label in ("Стартовая цена квартир", "Цена подземного машино-места",
                   "Доля продаж до РВЭ"):
@@ -280,6 +279,11 @@ def test_the_book_counts_what_the_engine_counts(phasing) -> None:
     assert meta["missing"] == [], meta["missing"]
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     evaluator = Evaluator(book)
+    assert x["land_right"]=="ownership"
+    assert meta["land_rent"]["status"]=="not_applicable"
+    assert meta["land_rent"].get("land_exposures",[])==bundle["consolidated"]["land_rent"].get("land_exposures",[])
+    if "Аренда ЗУ" in book:
+        assert evaluator.cell("Аренда ЗУ","B19")==0
     clean_x, clean_t = _vavilov()
     clean_t["underground_parking"].update(units=0, gns=0, total_area=0)
     clean_x.update(underground_manual_spaces=0, underground_manual_gns_sqm=0)

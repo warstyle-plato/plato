@@ -1,11 +1,11 @@
-"""A proved commencement date does not prove project eligibility; the deduction is a user-entered sum."""
+"""A preliminary valuation or an entered sum does not prove project eligibility."""
 import json
 
 import pytest
 
 import normatives_registry as registry
 
-WARNING = "Уменьшение Ксу* в расчёте — по сумме компенсации, которую вписал пользователь"
+WARNING = "Предварительная оценка Ксу* по обязательствам 1310-ПП или ручная сумма соглашения"
 COMMENCEMENT = "Настоящее постановление вступает в силу на следующий день после дня его официального опубликования."
 
 

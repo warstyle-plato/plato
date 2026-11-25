@@ -409,6 +409,17 @@ _MODEL_VRI_LABELS: dict[str, str] = {
 }
 
 
-def _safe_file_stem(value: str, fallback: str = "DevelopAid") -> str:
-    stem = re.sub(r"[^0-9A-Za-zА-Яа-яЁё _-]+", "_", str(value or "")).strip(" _")
-    return (stem[:60] or fallback)
+def _safe_file_stem(value: str, fallback: str = "DevelopAid", *, spaces: bool = True) -> str:
+    import unicodedata
+
+    value = unicodedata.normalize("NFC", str(value or ""))
+    stem = re.sub(r"[^\w -]+" if spaces else r"[^\w-]+", "_", value, flags=re.UNICODE).strip(" _")[:60]
+    # Keep room for the document label, date and extension on common filesystems.
+    while len(stem.encode("utf-8")) > 160:
+        stem = stem[:-1]
+    return stem.rstrip(" _") or fallback
+
+
+def _project_export_filename(label: str, subject: str, extension: str, *, spaces: bool = True) -> str:
+    stem = _safe_file_stem(subject, "", spaces=spaces)
+    return f"DevelopAid_{label}{'_' + stem if stem else ''}_{date.today().isoformat()}.{extension}"

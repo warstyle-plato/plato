@@ -36,7 +36,7 @@ import re
 from math import fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 10
+READER_VERSION = 14
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -45,7 +45,11 @@ _GENITIVE = {'января': 1, 'февраля': 2, 'марта': 3, 'апре�
              'августа': 8, 'сентября': 9, 'октября': 10, 'ноября': 11, 'декабря': 12}
 # A date in figures (16.03.2026) or in words («16» марта 2026 г.).
 _WHEN = (r'(?:\d\d\.\d\d\.\d{4}|[«"“]?\d{1,2}[»"”]?\s+(?:' + '|'.join(_GENITIVE) + r')\s+\d{4})')
-_CONTRACT = re.compile(r'Договор\w*\s+подряда\s+№\s*(.+?)\s+(?:от\s+(' + _WHEN + r')|на\s+выполнение)', re.I)
+_CONTRACT_HEADER = r'Договор\w*\s+подряда\s+№'
+# An undated running header must not borrow a later annex's dated reference.
+# Keep searching for a complete reference instead of joining two headings.
+_CONTRACT = re.compile(_CONTRACT_HEADER + r'\s*((?:(?!' + _CONTRACT_HEADER +
+                       r').)+?)\s+(?:от\s+(' + _WHEN + r')|на\s+выполнение)', re.I)
 _AGREEMENT = re.compile(r'Дополнительн\w+\s+соглашени\w+\s+№\s*(\d+)(?:\s+от\s+(' + _WHEN + r'))?', re.I)
 # The date line under the title («г. Москва «16» марта 2026 г.») follows it closely.
 _DATELINE = 400
@@ -73,6 +77,10 @@ _ACT_FORM = (re.compile(r'АКТ\s+О\s+ПРИ[ЕЁ]МКЕ\s+ВЫПОЛНЕНН�
 _ACT_ROW = 14.0
 _ACT_BELOW = 30.0
 _ACT_COLUMN = 25.0
+
+
+class ContractHeaderAmbiguity(ValueError):
+    """Skipped running headings disagree with the source's dated reference."""
 
 
 def _space(text):
@@ -126,6 +134,26 @@ def _dated(text, start):
     return _date(match[0]) if match else None
 
 
+def _check_skipped_contract_headers(text, contract):
+    """Only an undated header skipped by the boundary may repeat this reference."""
+    previous = list(re.finditer(_CONTRACT_HEADER, text[:contract.start()], re.I))
+    if not previous:
+        return
+    from developaid_monitor_contracts import _contract_number as identity_number
+    for index, header in enumerate(previous):
+        if _CONTRACT.match(text, header.start()):
+            continue  # A complete earlier reference was not skipped by this fix.
+        end = previous[index+1].start() if index+1 < len(previous) else contract.start()
+        fragment = text[header.end():end]
+        number = re.split(r'\bПриложение\s*№|\b(?:Генподрядчик|Подрядчик)\s*[:_]',
+                          fragment, maxsplit=1, flags=re.I)[0]
+        number = re.sub(r'\s+к\s*$', '', number, flags=re.I).strip()
+        if number and identity_number(_contract_number(number), reference=True) != \
+                identity_number(_contract_number(contract[1]), reference=True):
+            raise ContractHeaderAmbiguity('Реквизиты договора в заголовках документа неоднозначны: номера различаются. '
+                                          'Проверьте исходный PDF и загрузите документ одного договора.')
+
+
 def identity(text):
     """Contract and agreement named on the first page; absent parts stay None.
 
@@ -136,6 +164,8 @@ def identity(text):
     agreement = _AGREEMENT.search(text)
     after = agreement.end() if agreement else 0
     contract = _CONTRACT.search(text, after) or _CONTRACT.search(text)
+    if contract:
+        _check_skipped_contract_headers(text, contract)
     contract_date = _date(contract[2]) if contract and contract[2] else contract and _dated(text, contract.end())
     agreement_date = None
     if agreement:
@@ -351,6 +381,10 @@ def _estimate_rows(cells, page_number, state, warnings):
         if all(v is None for v in price+money) and (not unit and quantity is None or _CODE.match(number)):
             # A numbered heading may give the volume of its works and leave the cost to them.
             title = _space(' '.join(row[1:7]) if not unit else row[1])
+            if title:
+                state.setdefault('structure', []).append({'before_position': len(state['positions']),
+                    'number': number if _CODE.match(number) else '', 'name': title,
+                    'page': page_number, 'unit': unit or None, 'quantity': quantity})
             if title.lower().startswith('раздел'):
                 state['section'], state['group'], state['headings'] = title, None, {}
             elif title:
@@ -582,7 +616,7 @@ def _schedule_page(page, page_number, schedule):
 
 
 _WEEK = re.compile(r'(?<![\d.])(\d{1,2})\s*-\s*(\d{1,2})(?![\d.])')
-_MONTH = re.compile(r'(янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)\w*\.?\s*(\d{2})$', re.I)
+_MONTH = re.compile(r'(янв|фев|мар|апр|ма[йя]|июн|июл|авг|сен|окт|ноя|дек)[а-яё]*\.?\s*((?:20)?\d{2})$', re.I)
 _SHORT = {'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'май': 5, 'мая': 5, 'июн': 6, 'июл': 7, 'авг': 8, 'сен': 9,
           'окт': 10, 'ноя': 11, 'дек': 12}
 WEEKS_ASSUMPTION = ('В графике нет граф с датами, только полосы по неделям: начало работы — первый день первой '
@@ -593,14 +627,18 @@ CHART_DATES_ASSUMPTION = (
     'Отдельных граф начала и окончания нет. Границы полос прочитаны по первой и последней '
     'подписанной дате закрашенных столбцов. Точность — до отметок диаграммы; '
     'это оценка по графику, а не отдельно указанные даты начала и окончания работ.')
+CHART_INTERVALS_ASSUMPTION = (
+    'Отдельных граф начала и окончания нет. Начало работы — первый день первого закрашенного интервала, '
+    'окончание — последний день последнего. Месяцы, годы и границы интервалов взяты из шапки диаграммы. '
+    'Это оценка по полосам графика, а не отдельно указанные даты начала и окончания работ.')
 
 
 def _dated_bar_page(page, page_number, schedule):
-    """A chart with number/name/unit/volume and dated columns, including rotated labels.
+    """A chart with number/name/unit/volume and dated or month/interval columns.
 
     Rebuild the column bounds from the labelled header: a stray rule through
     the name and the signature's right border are not extra data columns.
-    Dates are source labels (point bounds), never invented ten-day periods.
+    Dates are source labels: either point bounds or explicitly printed ranges.
     """
     grid = _Grid(page)
     for header, row in enumerate(grid.cells):
@@ -610,7 +648,8 @@ def _dated_bar_page(page, page_number, schedule):
                 or not filled[2][1].lower().startswith('ед')
                 or not filled[3][1].lower().replace('ё', 'е').startswith(('объем', 'кол'))):
             continue
-        if not any(_CHART_DATE.search(cell) for _, cell in filled[4:]):
+        dated = any(_CHART_DATE.search(cell) for _, cell in filled[4:])
+        if not dated and not any(_WEEK.search(cell) for _, cell in filled[4:]):
             continue
         # Keep every physical calendar column, including one without a label.
         # Only the four metadata columns may merge stray rules through their text.
@@ -632,31 +671,36 @@ def _dated_bar_page(page, page_number, schedule):
                     if grid.columns[i] < right-1]
         bounds = [grid.columns[i] for i, _ in filled[:4]] + [grid.columns[first_calendar]] + [
             grid.columns[i+1] for i in calendar]
-        marks = [_CHART_DATE.findall(_space(row[i])) for i in calendar]
-        dates, problem = {}, None
-        previous = None
-        for column, found in enumerate(marks, 4):
-            if len(found) != 1:
-                problem = 'В шапке графика не прочитана дата календарного столбца.'
-                break
-            try:
-                text = found[0]
-                day = dt.datetime.strptime(text, '%d.%m.%Y' if len(text.rsplit('.', 1)[1]) == 4
-                                            else '%d.%m.%y').date()
-            except ValueError:
-                problem = 'В шапке графика есть недопустимая календарная дата.'
-                break
-            if previous is not None and day <= previous:
-                problem = 'Подписанные даты графика не возрастают слева направо.'
-                break
-            dates[column] = (day, day)
-            previous = day
+        assumption = CHART_DATES_ASSUMPTION if dated else CHART_INTERVALS_ASSUMPTION
+        if dated:
+            marks = [_CHART_DATE.findall(_space(row[i])) for i in calendar]
+            dates, problem = {}, None
+            previous = None
+            for column, found in enumerate(marks, 4):
+                if len(found) != 1:
+                    problem = 'В шапке графика не прочитана дата календарного столбца.'
+                    break
+                try:
+                    text = found[0]
+                    day = dt.datetime.strptime(text, '%d.%m.%Y' if len(text.rsplit('.', 1)[1]) == 4
+                                                else '%d.%m.%y').date()
+                except ValueError:
+                    problem = 'В шапке графика есть недопустимая календарная дата.'
+                    break
+                if previous is not None and day <= previous:
+                    problem = 'Подписанные даты графика не возрастают слева направо.'
+                    break
+                dates[column] = (day, day)
+                previous = day
+        else:
+            dates, problem = _weeks(_Grid(page, bounds), header, 4, page)
         if problem:
             schedule['warnings'].append(f'Стр. {page_number}: {problem} Сроки полос не прочитаны.')
-        schedule['warnings'].append(CHART_DATES_ASSUMPTION)
+        schedule['warnings'].append(assumption)
         layout = {'bounds': bounds, 'first': 4, 'dates': None if problem else dates,
                   'page': page_number, 'body_row': header+1,
-                  'assumption': CHART_DATES_ASSUMPTION, 'date_precision': 'chart_marks'}
+                  'assumption': assumption, 'date_precision': 'chart_marks' if dated else 'chart_intervals',
+                  'metadata': True}
         return _weekly_page(page, page_number, schedule, layout)
     return None
 
@@ -687,14 +731,31 @@ def _weeks(grid, header, first, page):
     columns = grid.columns
     weeks = []
     for column in range(first, len(columns)-1):
-        found = _WEEK.search(grid.cells[header][column])
+        found = _WEEK.findall(grid.cells[header][column])
         if not found:
             return None, f'У столбца графика {column-first+1} нет недели в шапке.'
-        weeks.append((column, int(found[1]), int(found[2])))
+        if len(found) != 1:
+            return None, f'У столбца графика {column-first+1} несколько интервалов в шапке.'
+        weeks.append((column, int(found[0][0]), int(found[0][1])))
     top, bottom = grid.band(header)
-    months = sorted(((w[0]+w[2])/2, _MONTH.match(w[4])) for w in _words(page)
-                    if top-30 <= (w[1]+w[3])/2 <= bottom and columns[first] <= (w[0]+w[2])/2 <= columns[-1]
-                    and _MONTH.match(w[4]))
+    months = []
+    words = _words(page)
+    for index, word in enumerate(words):
+        x, y = (word[0]+word[2])/2, (word[1]+word[3])/2
+        month = _MONTH.fullmatch(word[4])
+        if not (top-30 <= y <= bottom and columns[first] <= x <= columns[-1]):
+            continue
+        if month:
+            year = int(month[2])
+            months.append((x, _SHORT[month[1].lower()], year+2000 if year < 100 else year, month[0]))
+        elif word[4].lower() in MONTHS:
+            # A separately printed year belongs to this label's own text line.
+            # An undated month must not borrow the next month's year.
+            year = next((w for w in words[index+1:index+2]
+                         if w[5:7] == word[5:7] and re.fullmatch(r'20\d\d', w[4])), None)
+            if year:
+                months.append((x, MONTHS[word[4].lower()], int(year[4]), word[4]+' '+year[4]))
+    months.sort()
     segments = []
     for week in weeks:
         if not segments or week[1] <= segments[-1][-1][2]:
@@ -703,15 +764,19 @@ def _weeks(grid, header, first, page):
     if len(segments) != len(months):
         return None, f'Месяцы графика не совпали с неделями: месяцев {len(months)}, отрезков недель {len(segments)}.'
     dates = {}
-    for segment, (x, month) in zip(segments, months):
+    previous = None
+    for segment, (x, number, year, label) in zip(segments, months):
         if not columns[segment[0][0]] - 2 <= x <= columns[segment[-1][0]+1] + 2:
-            return None, f'Месяц «{month[0]}» в шапке графика стоит не над своими неделями.'
-        number, year = _SHORT[month[1].lower()], 2000+int(month[2])
+            return None, f'Месяц «{label}» в шапке графика стоит не над своими неделями.'
         for column, start, finish in segment:
             try:
                 dates[column] = (dt.date(year, number, start), dt.date(year, number, finish))
             except ValueError:
                 return None, f'В шапке графика нет недели {start}-{finish} в месяце {number:02d}.{year}.'
+            begin, end = dates[column]
+            if end < begin or previous is not None and begin <= previous:
+                return None, 'Подписанные интервалы графика не возрастают слева направо.'
+            previous = end
     return dates, None
 
 
@@ -773,6 +838,11 @@ def _weekly_page(page, page_number, schedule, layout=None):
                 'page': page_number}
         if layout.get('date_precision'):
             line['date_precision'] = layout['date_precision']
+        if layout.get('metadata'):
+            line.update(unit=_space(row[2]) or None, quantity=_amount(row[3]))
+            if _space(row[3]) and line['quantity'] is None:
+                line['quantity_text'] = _space(row[3])
+                warnings.append(f'Стр. {page_number}: у строки {code} количество «{line["quantity_text"]}» не прочитано.')
         lines.append(line)
         by_code.setdefault(code, line)
     return layout
@@ -965,6 +1035,13 @@ def _act_layout(cells):
         order = next((n for n, cell in enumerate(low) if cell.startswith('по поряд')), None)
         place = next((n for n, cell in enumerate(low) if cell.startswith('позиции по смете')), None)
         unit = next((n for n, cell in enumerate(low) if cell.startswith(('единица', 'ед.'))), None)
+        if unit is None and index:
+            # A merged header cell can cross the horizontal rule of the order
+            # columns: «Единица» lands above it, «измерения» below. Join only
+            # those exact labels in the same column of the adjacent row.
+            unit = next((n for n, cell in enumerate(low)
+                         if cell == 'измерения' and n < len(cells[index-1])
+                         and _space(cells[index-1][n]).lower() == 'единица'), None)
         counts = [n for n, cell in enumerate(low) if cell.startswith(('количество', 'кол-во', 'кол.'))]
         if None in (order, place, unit) or not counts or not order < place < unit < counts[0]:
             continue
@@ -1253,7 +1330,7 @@ def _read(document, data: bytes = b'') -> dict:
                 mentioned.add('estimate')
                 estimate = None
                 continue
-            estimate = dict(_estimate_meta(text), pages=[number], positions=[], totals=[], warnings=[],
+            estimate = dict(_estimate_meta(text), pages=[number], positions=[], structure=[], totals=[], warnings=[],
                             section=None, group=None, headings={}, untitled=None)
             out['estimates'].append(estimate)
             layout = bounds

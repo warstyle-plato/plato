@@ -384,12 +384,20 @@ PAGE += r"""</head>
       </div>
       <details class="card" id="moVriReliefPanel" style="display:none" open>
         <summary class="section-title">Уменьшение платы за ВРИ — Московская область</summary>
-        <p>Сумма компенсации берётся из соглашения с областью. Расчёт вычитает её из платы до уменьшения. Если исходная плата больше 1 ₽, после уменьшения остаётся не меньше 1 ₽. Право на уменьшение и стоимость обязательств он не определяет. <a id="moVriReliefSource" href="/normatives" target="_blank" rel="noopener">1310-ПП — официальный текст</a>.</p>
+        <p>Рассчитайте потенциальное уменьшение по обязательствам проекта: соцобъекты, переселение, возмещение пострадавшим или инвестиционные объекты. Применение оценки в модели не подтверждает право на Ксу*: для него требуется соглашение с областью. <a id="moVriReliefSource" href="/normatives" target="_blank" rel="noopener">1310-ПП — официальный текст</a>.</p>
         <p id="moVriCurrentFee" class="note"></p>
         <div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
           <div class="field"><label for="moVriGross">Плата до уменьшения <span class="unit">млн ₽. Это исходная плата, а не текущая сумма после льгот.</span></label><input type="number" id="moVriGross" min="0" step="any" value="" placeholder="укажите известную исходную плату" oninput="moVriReliefEdited(true)"><span id="moVriGrossSource" class="hint"></span></div>
           <div class="field"><label for="moCompensation">Сумма компенсации по соглашению с областью <span class="unit">млн ₽. Пустое поле — сумма не указана, уменьшение не применяется.</span></label><input type="number" id="moCompensation" min="0" step="any" value="" placeholder="соглашения нет" oninput="moVriReliefEdited(false)"></div>
         </div>
+        <div class="field"><label for="moVriBenefitMode">Как определить сумму</label><select id="moVriBenefitMode" onchange="moVriBenefitModeChanged()"><option value="calculated">Рассчитать по основаниям 1310-ПП</option><option value="manual">Указать готовую сумму соглашения</option></select></div>
+        <div id="moVriBenefitsEditor">
+          <p class="hint">Для школы или ДОО выберите тип одного здания по НЦС. Несколько зданий — отдельный расчёт ставки. Инвестобъекты — 933-ПП; переселение — цена КЦТ выбранного муниципалитета.</p>
+          <div id="moVriBenefitRows"></div>
+          <label class="hint"><input type="checkbox" id="moVriDistinctOffset" onchange="moVriReliefEdited(false)"> Отдельный денежный зачёт переданных площадей относится к другим обязательствам и не входит в оценку переселения.</label>
+          <div class="toolbar"><select id="moVriBenefitKind" aria-label="Основание льготы"><option value="kindergarten">Детский сад</option><option value="school">Школа</option><option value="resettlement">Переселение из аварийного жилья</option><option value="victims">Возмещение пострадавшим дольщикам</option><option value="investment">Инвестиционное соглашение</option></select><button type="button" class="btn" onclick="addMoVriBenefitRow()">Добавить обязательство</button></div>
+        </div>
+        <div id="moVriBenefitBreakdown" class="scroll" aria-live="polite"></div>
         <div class="toolbar"><button type="button" class="btn" id="moVriPreviewButton" onclick="previewMoVriRelief()">Рассчитать уменьшение</button><button type="button" class="btn dark" id="moVriApplyButton" onclick="applyMoVriRelief()" disabled>Применить плату к проекту</button></div>
         <div id="moVriReliefStatus" class="note" role="status"></div>
         <div id="moVriReliefResult" class="scroll" style="display:none"><table class="metric-table"><tbody id="moVriReliefTotals"></tbody></table></div>
@@ -845,10 +853,8 @@ PAGE += r"""</head>
       </div>
       </div>
 
-      <!-- Отчёт проекта без жилья — свои разделы (`report.object_report`
-           движка): решение → объект → стратегия → доходы → затраты →
-           финансирование → экономика собственника. Чувствительность и
-           календарь — общие разделы ниже, с заголовками из `report.layout`. -->
+      <!-- Нежилой отчёт: тот же порядок разделов и общие компоненты жилья;
+           продуктовые подробности поставляет object_report движка. -->
       <div id="objectReport" data-layout="object" hidden></div>
 
       <div class="report-section" id="rsSensitivity">

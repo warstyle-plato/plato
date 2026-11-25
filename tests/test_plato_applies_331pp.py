@@ -95,15 +95,26 @@ def test_the_instructions_send_krt_questions_to_the_provisions():
     assert "krt" in tool["parameters"]["properties"]["topic"]["enum"]
 
 
-def test_a_removed_fact_disappears_from_plato(tmp_path, monkeypatch):
+@pytest.mark.parametrize("shipped", [False, True], ids=["source", "shipped-over-mounted"])
+def test_a_removed_fact_disappears_from_plato(tmp_path, monkeypatch, shipped):
     """Контрпример: факт убран из реестра — Платон его больше не знает."""
-    rows = json.loads((ROOT / "data" / "normatives" / "registry.json").read_text(encoding="utf-8"))
+    original = (ROOT / "data" / "normatives" / "registry.json").read_text(encoding="utf-8")
+    rows = json.loads(original)
     for row in rows:
         if row["id"] == ACT:
             row["key_provisions"] = [p for p in row["key_provisions"] if p["id"] != "deposit"]
-    forged = tmp_path / "registry.json"
+    # Читатель выбирает источник через registry_path(_ROOT). Подмена старой
+    # константы REGISTRY_RELATIVE уже не меняет источник. В образе проверяем
+    # и старый mounted data: удалённый пункт не должен воскреснуть из него.
+    mounted = tmp_path / knowledge.REGISTRY_RELATIVE
+    if shipped:
+        mounted.parent.mkdir(parents=True)
+        mounted.write_text(original, encoding="utf-8")
+    forged = (tmp_path / "reference_data" / "normatives_registry.json"
+              if shipped else mounted)
+    forged.parent.mkdir(parents=True, exist_ok=True)
     forged.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
-    monkeypatch.setattr(knowledge, "REGISTRY_RELATIVE", forged)
+    monkeypatch.setattr(knowledge, "_ROOT", tmp_path)
     rule = _krt_rule()
     assert EXPECTED["deposit"][0] not in rule
     with pytest.raises(AssertionError):

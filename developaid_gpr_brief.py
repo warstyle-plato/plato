@@ -1,13 +1,14 @@
-"""Short manager view of the GPR block for the test page «ГПР — новый вид».
+"""Short manager view of the GPR tab: ``schedule.brief`` of the Monitor's own view.
 
 The brief arranges the result of ``developaid_monitor_pace.schedule_view``; it
 does not calculate readiness, stage membership or a finish estimate of its own.
 Stage membership is the readiness matrix (its cell ``work_ids``), corpus
 readiness is ``readiness.corpora``, the plan date is the dashboard tile and the
 fact of each work is its ``display_progress`` — the same readers as the
-Monitor. The expected finish stays a placeholder until the single project
-estimate lands (owner, 17.11.2026, test page «А»): a seventh estimate here
-would be one more date to disagree with.
+Monitor. The expected finish and corpus finish dates are the single work-date
+assessment (``developaid_gpr_work_forecast.current``), the same one the
+Monitor and the management summary show: a date of its own here would be one
+more date to disagree with.
 
 The only rule declared here is «behind plan on the cut date»: the planned share
 of the work by the cut exceeds its dated fact by ``LAG_PP`` points or more. It
@@ -23,8 +24,8 @@ from typing import Any
 
 LAG_PP = 10
 ATTENTION_LIMIT = 5
-EXPECTED_PENDING = ("Ожидаемая дата окончания появится здесь, когда будет подключена "
-                    "единая оценка срока. Пока её можно посмотреть в текущем Мониторе.")
+EXPECTED_UNKNOWN = "Оценка окончания работ не определена."
+FAILED = "Короткая сводка блока ГПР не собрана; подробный график ниже показан полностью"
 LAG_RULE = (f"Работа отстаёт, если к дате среза по плану должно быть выполнено на {LAG_PP} "
             "процентных пунктов больше, чем показывает последнее датированное выполнение. "
             "Работа без показания выполнения не считается ни отстающей, ни выполненной.")
@@ -101,6 +102,32 @@ def _cell_works(cell: dict, identity: dict, rows: dict[str, list[dict]], obj: st
     return items
 
 
+def _expected(view: dict) -> tuple[dict[str, Any], dict[str, str]]:
+    """The Monitor's single work-date assessment and its corpus dates, read as is."""
+    from developaid_gpr_work_forecast import current
+    schedule = view.get("schedule") or {}
+    summary, value = current(schedule, view.get("cut") or schedule.get("cut"))
+    if not summary:
+        return {"state": "unknown", "date": None, "label": "Ожидаемое окончание", "text": EXPECTED_UNKNOWN,
+                "conditional": False, "plan_text": "", "delta_text": "", "scope_text": "",
+                "as_of_text": ""}, {}
+    forecast = ((value or {}).get("project") or {}).get("forecast") or {}
+    corpora = {} if (value or {}).get("state") == "unavailable" else {
+        c.get("name"): (c.get("forecast") or {}).get("finish") for c in (value or {}).get("corpora") or []}
+    finish, label = summary.get("finish"), summary.get("forecast_label") or "Ожидаемое окончание"
+    text = summary.get("forecast_text") or EXPECTED_UNKNOWN
+    if finish and isinstance(finish, str) and len(finish) == 10:
+        # The tile shows label and date itself; keep only the rest of the sentence.
+        lead = f"{label}: {finish[8:10]}.{finish[5:7]}.{finish[:4]}."
+        text = text[len(lead):].strip() if text.startswith(lead) else text
+    return {"state": "known" if finish else "unknown", "date": finish, "label": label, "text": text,
+            "conditional": bool(forecast.get("conditional")),
+            "plan_text": summary.get("plan_text") or "",
+            "delta_text": summary.get("delta_text") if summary.get("delta_days") is not None else "",
+            "scope_text": summary.get("scope_text") or "",
+            "as_of_text": summary.get("as_of_text") or ""}, {k: v for k, v in corpora.items() if v}
+
+
 def _count(works: list[dict]) -> dict[str, int]:
     out = {"total": len(works), "done": 0, "behind": 0, "no_reading": 0}
     for item in works:
@@ -129,7 +156,7 @@ def build(view: dict) -> dict[str, Any]:
         if row.get("id") is not None:
             rows.setdefault(str(row["id"]), []).append(row)
     # Reuse the Monitor's source/namespace/membership validation on an isolated
-    # copy. Its computed dates are not part of this pending-date preview.
+    # copy. Its computed dates are not read: dates come from ``_expected``.
     resolved = copy.deepcopy(readiness)
     if resolved.get("matrix"):
         from developaid_schedule_plan_scenario import decorate_readiness
@@ -162,11 +189,13 @@ def build(view: dict) -> dict[str, Any]:
         entry = attention.setdefault(item["name"], {"name": item["name"], "works": []})
         entry["works"].append(item)
     ranked = sorted(attention.values(), key=lambda e: (-max(x["gap_pp"] for x in e["works"]), e["name"]))
+    expected, corpus_finish = _expected(view)
     corpora = []
     for corpus in readiness.get("corpora") or []:
         name = corpus.get("name") or "Общие работы"
         corpora.append({"name": name, "progress": _share(corpus.get("progress")),
                         "plan_finish": (corpus.get("forecast") or {}).get("plan_finish"),
+                        "expected_finish": corpus_finish.get(name),
                         **_count(works_by_object.get(name, []))})
     project = readiness.get("project") or {}
     tile = ((view.get("dashboard") or {}).get("schedule") or {}).get("qualified_rnv") or {}
@@ -182,7 +211,7 @@ def build(view: dict) -> dict[str, Any]:
         "empty_reason": schedule.get("reason") or "",
         "plan_finish": {"date": tile.get("plan_date") or schedule.get("baseline_end"),
                         "label": tile.get("plan_label") or "План окончания работ"},
-        "expected_finish": {"state": "pending", "text": EXPECTED_PENDING},
+        "expected_finish": expected,
         "progress": {"value": _share(project.get("progress")), "estimated": bool(readiness.get("estimated")),
                      "reason": project.get("reason") or ""},
         "fact_dates": dates,

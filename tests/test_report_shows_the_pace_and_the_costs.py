@@ -24,8 +24,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -34,6 +32,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
+import page_blocks  # noqa: E402
 
 core = wrapper.core
 PAGE = core.PAGE
@@ -43,19 +42,6 @@ PAGE = core.PAGE
 def result():
     return core.calculate(core.CalcRequest(
         inputs=core.DEFAULT_INPUTS, tep=core.TEP_DEFAULT, rates=[]))
-
-
-def page_function(name: str) -> str:
-    start = PAGE.index(f"function {name}(")
-    depth = 0
-    for position in range(PAGE.index("{", start), len(PAGE)):
-        if PAGE[position] == "{":
-            depth += 1
-        elif PAGE[position] == "}":
-            depth -= 1
-            if depth == 0:
-                return PAGE[start:position + 1]
-    raise AssertionError(f"не найдена функция {name}")
 
 
 # --- расходы стоят рядом с выручкой ---------------------------------------------
@@ -108,22 +94,18 @@ def test_the_engine_supplies_the_monthly_units(result):
     assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", row["month"]) for row in rows)
 
 
-def render_chart(sales: dict) -> dict:
-    """Гоняет настоящий `renderApartmentPaceChart` из PAGE через node."""
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node недоступен")
-    script = "\n".join([
-        re.search(r"const num=.*?;\n", PAGE, re.S).group(0),
-        "const box={innerHTML:'',style:{}};",
-        "const document={getElementById:(id)=>id==='apartmentPaceChart'?box:null};",
-        page_function("renderApartmentPaceChart"),
-        f"renderApartmentPaceChart({json.dumps(sales)});",
-        "console.log(JSON.stringify({html:box.innerHTML,display:box.style.display}));",
-    ])
-    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout)
+def render_chart(sales: dict, width: int = 1000) -> dict:
+    """Run the actual PAGE renderer with its dependencies and DOM width."""
+    prelude = """
+const box={innerHTML:'',style:{},clientWidth:WIDTH};
+const document={getElementById:(id)=>id==='apartmentPaceChart'?box:null};
+class ResizeObserver{observe(){} unobserve(){}}
+""".replace('WIDTH', str(width))
+    tail = f"renderApartmentPaceChart({json.dumps(sales)});" + """
+console.log(JSON.stringify({html:box.innerHTML,display:box.style.display}));
+"""
+    out, _ = page_blocks.run(prelude, tail)
+    return json.loads(out)
 
 
 def test_the_chart_draws_a_bar_per_month(result):
@@ -157,11 +139,13 @@ def test_the_month_labels_read_as_dates(result):
     assert labels[0] == first[5:7] + "." + first[:4]
 
 
-def test_the_chart_fills_its_width():
-    """С фиксированной высотой контейнера широкий график вписывался с полями в
-    треть ширины: пропорции берутся от графика в PDF, высота — от ширины."""
+@pytest.mark.parametrize("width", [390, 1440])
+def test_the_chart_fills_its_width(result, width):
+    """The shared responsive renderer uses the measured container width."""
+    drawn = render_chart(result["report"]["apartment_sales"], width)
     assert 'id="apartmentPaceChart" class="chart" style="height:auto"' in PAGE
-    assert 'style="height:auto;display:block"' in page_function("renderApartmentPaceChart")
+    assert 'style="height:auto;display:block"' in drawn['html']
+    assert f'viewBox="0 0 {width} 210"' in drawn['html']
 
 
 def test_the_chart_survives_the_printout():

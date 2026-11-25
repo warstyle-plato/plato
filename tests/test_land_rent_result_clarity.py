@@ -1,4 +1,4 @@
-"""Аренда видна в затратах; известная сумма не скрывает предварительность."""
+"""Аренда видна в затратах; оговорки не подменяют экономический вердикт."""
 import copy
 from pathlib import Path
 
@@ -18,38 +18,39 @@ def rental_inputs(**overrides):
             "land_rent_rates": [{"year": 1, "rate_pct": 1.5}],
             "land_rent_tail_rule": "repeat_last", "land_rent_vat_treatment": "public_exempt",
             "land_rent_termination_date": "2029-01-01", "land_rent_cadastral_target_mln": 120,
+            "land_rent_cadastral_change_date": "2027-12-01",
             **overrides}
 
 
 @pytest.mark.parametrize("metric,value,title,tone", [
-    ("llcr", 1.3, "экономика проходит", "edge"),
-    ("llcr", 1.1, "экономика на границе", "edge"),
-    ("llcr", .9, "экономика не проходит", "fail"),
-    ("dscr", 1.3, "экономика проходит", "edge"),
-    ("dscr", .9, "экономика не проходит", "fail"),
-    (None, None, "экономика проходит по прибыли", "edge"),
+    ("llcr", 1.3, "Экономика проходит", "pass"),
+    ("llcr", 1.1, "Экономика на границе", "edge"),
+    ("llcr", .9, "Экономика не проходит", "fail"),
+    ("dscr", 1.3, "Экономика проходит", "pass"),
+    ("dscr", .9, "Экономика не проходит", "fail"),
+    (None, None, "Экономика проходит по прибыли", "edge"),
 ])
-def test_known_rent_names_the_economic_result_but_keeps_it_provisional(metric, value, title, tone):
+def test_rent_assumptions_do_not_replace_the_economic_result(metric, value, title, tone):
     result = {"summary": {"preliminary": True, "llcr": value, "net_profit": 1, "land_rent_sum": {"known": True, "reason": ""}},
               "land_rent": {"complete": True, "construction_total": 3e6},
               "report": {"layout": {"debt_metric": {"key": metric, "value": value}}}}
     assert core.entry_price_verdict({"consolidated": result}) == {
-        "title": "Предварительно: " + title, "tone": tone}
+        "title": title, "tone": tone}
 
 
 @pytest.mark.parametrize("rent", [None, {}, {"complete": False, "construction_total": 3e6},
                                  {"complete": True, "construction_total": None}])
-def test_missing_rent_does_not_pass_as_a_free_site(rent):
+def test_missing_rent_keeps_its_state_without_replacing_the_economic_verdict(rent):
     bundle = {"consolidated": {"summary": {"preliminary": True, "llcr": 9}, "land_rent": rent}}
     assert core.entry_price_verdict(bundle) == {
-        "title": "Предварительный расчёт", "tone": "edge"}
+        "title": "Экономика проходит", "tone": "pass"}
 
 
 def test_known_zero_is_not_missing_and_confirmed_economics_keeps_normal_verdict():
     result = {"summary": {"preliminary": True, "llcr": 1.3, "land_rent_sum": {"known": True, "reason": ""}},
               "land_rent": {"complete": True, "construction_total": 0}}
     assert core.entry_price_verdict({"consolidated": result}) == {
-        "title": "Предварительно: экономика проходит", "tone": "edge"}
+        "title": "Экономика проходит", "tone": "pass"}
     result["summary"]["preliminary"] = False
     assert core.entry_price_verdict({"consolidated": result}) == {
         "title": "Экономика проходит", "tone": "pass"}
@@ -61,14 +62,14 @@ def test_raw_construction_total_cannot_override_the_canonical_unknown_sum():
                            "land_rent_sum": {"known": False, "reason": "Аренда после ввода требует отдельного расчёта."}},
               "land_rent": {"complete": True, "construction_total": 3e6}}
     assert core.entry_price_verdict({"consolidated": result}) == {
-        "title": "Предварительный расчёт", "tone": "edge"}
+        "title": "Экономика проходит", "tone": "pass"}
 
 
 def test_the_canonical_known_zero_does_not_require_a_duplicate_raw_rent_payload():
     result = {"summary": {"preliminary": True, "llcr": 1.3,
                            "land_rent_sum": {"known": True, "reason": ""}}}
     assert core.entry_price_verdict({"consolidated": result}) == {
-        "title": "Предварительно: экономика проходит", "tone": "edge"}
+        "title": "Экономика проходит", "tone": "pass"}
 
 
 def test_default_mo_indices_are_an_estimate_until_replaced_with_contract_inputs():
@@ -103,7 +104,7 @@ def test_actual_model_delivers_the_same_verdict_before_and_after_price_search(ph
         assert r["summary"]["preliminary"]
         block = core.entry_price_block({"consolidated": r}, args["inputs"], None)
         assert r["report"]["entry_price_verdict"] == block["verdict"]
-        assert block["verdict"]["title"].startswith("Предварительно: экономика")
+        assert block["verdict"] == core._entry_price_metric_verdict({"consolidated": r})
         assert all(r["summary"]["preliminary_reason"] not in tile.get("note", "") for tile in block["tiles"])
         assert r["summary"]["preliminary"] is True
 
@@ -137,7 +138,7 @@ def test_real_results_show_cost_unknown_zero_and_owned_land(width, monkeypatch):
             assert page.evaluate("lastResult.summary.preliminary") is True
             expect(page.locator("#iaVerdictTitle")).to_have_text(
                 page.evaluate("lastResult.report.entry_price_verdict.title"))
-            assert page.locator("#iaVerdict").evaluate("e=>!e.classList.contains('pass')")
+            assert page.locator("#iaVerdict").evaluate("e=>e.classList.contains('pass')") == (page.evaluate("lastResult.report.entry_price_verdict.tone") == "pass")
             assert page.evaluate("document.documentElement.scrollWidth<=innerWidth+2")
             output = Path("/tmp/plato-land-rent-result-clarity")
             output.mkdir(mode=0o700, exist_ok=True)

@@ -186,6 +186,12 @@ def _review_raw(project, contract_id, cut):
     row = contracts.find_raw_row(register, contract_id)
     if row is None:
         raise SourceReviewProblem('Договор не найден в данных выбранного проекта на эту дату.')
+    if row.get('source_kind') == 'contract_document':
+        return {'contract_id': contract_id, 'cut': cut, 'state': 'read',
+                'source_family': 'confirmed_contract_pdf', 'sources': row.get('document_provenance') or [],
+                'source_count': len(row.get('document_provenance') or []),
+                'archive_count': 0, 'verified_archive_count': 0,
+                'unavailable_originals': [], 'identity_exclusions': [], 'note': row['performance_basis']}
     identity = contracts._identity(row)
     if identity is None:
         raise SourceReviewProblem('Реквизиты карточки не подтверждены; исходники не выбраны по совпадению названия.')
@@ -196,6 +202,7 @@ def _review_raw(project, contract_id, cut):
     if len(snapshots) > MAX_ARCHIVES:
         raise SourceReviewProblem('Слишком много сохранённых версий для одного чтения; проверка остановлена.')
     result, unavailable, exclusions, total_bytes = [], [], [], 0
+    verified_ledgers = []
     used_items = used_periods = used_cells = used_result_bytes = 0
     for snapshot in snapshots:
         snapshot_id = snapshot['snapshot_id']
@@ -227,6 +234,9 @@ def _review_raw(project, contract_id, cut):
         payloads = _raw_payloads(raw, {r['file_sha256'] for r, _ in matched}) if matched else {}
         books = {}
         for record, kind in matched:
+            if kind == 'cumulative':
+                verified_ledgers.append(dict(record, archive_snapshot_id=snapshot_id,
+                                             source_date=snapshot_id[:10]))
             used_items += len(record.get('items') or [])
             used_periods += sum(len(item.get('periods') or []) for item in record.get('items') or [])
             if used_items > MAX_ITEMS or used_periods > MAX_PERIODS:
@@ -264,6 +274,10 @@ def _review_raw(project, contract_id, cut):
               'unavailable_originals': unavailable, 'identity_exclusions': exclusions, 'source_count': len(result),
               'note': 'Исходные значения и подписи сохранённых КС. Проверка не назначает даты '
                       'периодов, не создаёт факты и не меняет связи договора.'}
+    if row.get('document_provenance'):
+        output['document_provenance'] = row['document_provenance']
+    from developaid_contract_statement_proof import read as statement_proof
+    output['composition_proof'] = statement_proof(project, contract_id, cut, verified_ledgers)
     if len(json.dumps(output, ensure_ascii=False, default=str).encode()) > MAX_RESULT_BYTES:
         raise SourceReviewProblem('Результат проверки превышает предел; исходные строки не возвращены частично.')
     return output
@@ -653,7 +667,7 @@ def project_audit(project, cut):
                 def inventory():
                     guard()
                     values=ledgers.list_snapshots(project) if root.exists() else []
-                    known={s.get('snapshot_id') for s in values}
+                    known={s.get('snapshot_id') for s in values} | ledgers.removed_snapshot_ids(project)
                     # A retained native-named original without its manifest is
                     # evidence to inspect, never an omitted/empty contract.
                     for path in root.glob('*.zip') if root.exists() else []:
@@ -842,7 +856,7 @@ def _selected_source_read(project, cut, book_sha256, corpus_token, projection):
                 def inventory():
                     guard()
                     values = ledgers.list_snapshots(project) if root.exists() else []
-                    known = {s.get('snapshot_id') for s in values}
+                    known = {s.get('snapshot_id') for s in values} | ledgers.removed_snapshot_ids(project)
                     for path in root.glob('*.zip') if root.exists() else []:
                         if re.fullmatch(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{64}', path.stem) and path.stem not in known:
                             values.append(dict(snapshot_id=path.stem, taken_at=path.stem[:10], manifest_present=False))

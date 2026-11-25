@@ -39,6 +39,13 @@ def test_the_defaults_of_the_engine_are_the_ones_the_roster_builds() -> None:
     assert _built(core.STANDALONE_OBJECTS) == core.DEFAULT_INPUTS
 
 
+def test_project_rent_policy_defaults_exist_without_the_object_roster() -> None:
+    """Условия всего участка принадлежат проекту, а не отдельному объекту."""
+    project = _built(())
+    assert project["land_rent_registration_months"] == 3
+    assert project["land_rent_exposure_exit_dates"] == {}
+
+
 def test_the_literal_carries_no_object_field_at_all() -> None:
     """Поле объекта, оставшееся в литерале, — тот самый второй список.
 

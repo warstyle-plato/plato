@@ -229,8 +229,8 @@ def test_the_pdf_names_the_kind_only_when_it_differs() -> None:
     assert "Осталось от жилья" not in clean
 
     dirty = text_of(core.PROJECT_KIND_NONRESIDENTIAL, False)
-    assert "Осталось от жилья" in dirty
-    assert "Квартиры" in dirty
+    assert "Осталось от жилья" not in dirty
+    assert "Квартиры" not in dirty
 
 
 PROBE = """()=>{

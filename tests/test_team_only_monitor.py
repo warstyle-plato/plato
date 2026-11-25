@@ -10,7 +10,9 @@
   для всех: сессия команды и админа по chat_id, ключ кабинета рынка, демо-ссылка
   с этими разделами, обычный вошедший, никто — и без токена бота тоже;
 - не задан `DEVELOPAID_ADMIN_KEY` — закрыто для всех, и это видно в /health;
-- с ключом администратора (полем тела или заголовком) пропуск проходит.
+- с ключом администратора (полем тела или заголовком) пропуск проходит;
+  контроль ответов продаж дополнительно требует действующее разрешение
+  владельца точной группе/проекту и связь с отчётом продаж.
 
 Запуск: python3 -m pytest tests/test_team_only_monitor.py -q
 """
@@ -32,6 +34,8 @@ core = _wrapper.core
 client = TestClient(core.app, raise_server_exceptions=False)
 OWNER, CLIENT = 777, 5050
 KEY = "kluch"
+_SALES_GROUP = -100987654
+_SALES_PROJECT = "Синтетические продажи"
 # Страницы-оболочки без данных (числа приходят с маршрутов ниже) и выгрузки
 # расчёта участка — не сводка руководству, у них своё право (`require_calc_access`).
 SHELLS = {"/monitor", "/report"}
@@ -54,7 +58,16 @@ def _gated_routes() -> list[tuple[str, str]]:
 
 ROUTES = _gated_routes()
 _FILL = {str: "проверка", int: 1, float: 1.0, bool: False, list: [], dict: {}}
+_PDF_INTAKE_PAYLOAD = {
+    "contract_number": "SYNTHETIC-PDF",
+    "customer": {"name": "ООО «Учебный заказчик»", "designation": "Заказчик", "page": 1,
+                 "quote": "ООО «Учебный заказчик», именуемое в дальнейшем «Заказчик»"},
+    "contractor": {"name": "ООО «Учебный подрядчик»", "designation": "Подрядчик", "page": 1,
+                   "quote": "ООО «Учебный подрядчик», именуемое в дальнейшем «Подрядчик»"},
+}
 _ENDPOINT_PAYLOADS = {
+    ("POST", "/monitor/cumulative/remove"): {"expected_revision": "a" * 64, "restore": False},
+    ("POST", "/monitor/sales-followups"): {"chat_id": _SALES_GROUP},
     ("POST", "/monitor/finance-allocation/apply"): {"assignments": [{"row_id": "a" * 64, "bank_code": "2.6"}]},
     ("POST", "/monitor/finance-management/apply"): {"item_ids": ["a" * 64], "management_article": "2.6"},
     ("POST", "/monitor/contracts/source-review"): {"contract_id": "a" * 64},
@@ -72,6 +85,9 @@ _ENDPOINT_PAYLOADS = {
         "cut": "2036-08-19", "ticket": "1" * 32, "contract_id": "a" * 64,
         "revision": "b" * 64, "selected_tokens": []},
     ("POST", "/monitor/contracts/document-upload"): {"contract_id": "a" * 64},
+    ("POST", "/monitor/contracts/pdf-intake/preview"): _PDF_INTAKE_PAYLOAD,
+    ("POST", "/monitor/contracts/pdf-intake/commit"): {
+        **_PDF_INTAKE_PAYLOAD, "filename": "synthetic.pdf", "expected_revision": 0, "preview_token": "b" * 64},
     ("POST", "/monitor/contracts/document-links"): {
         "contract_id": "a" * 64, "sha256": "b" * 64, "estimate": 0, "choices": [{"index": 0}]},
     ("POST", "/monitor/contracts/document-remove"): {"contract_id": "a" * 64, "sha256": "b" * 64},
@@ -91,6 +107,17 @@ _ENDPOINT_PAYLOADS = {
         "effective_from": "2026-10-22", "gpr_base64": "eA==",
         "expected_previous_sha256": "a" * 64, "expected_source_sha256": "b" * 64},
 }
+_CORRECTION_PREVIEW = {"raw_ids": ["a" * 64, "b" * 64], "canonical_source_token": "c" * 64,
+                       "execution_token": "d" * 64, "price_token": None, "documents_raw_id": "a" * 64}
+_ENDPOINT_PAYLOADS.update({
+    ("POST", "/monitor/contracts/identity/correction-inventory"): {"raw_ids": ["a" * 64, "b" * 64]},
+    ("POST", "/monitor/contracts/identity/correction-preview"): _CORRECTION_PREVIEW,
+    ("POST", "/monitor/contracts/identity/correct-sources"): {
+        **_CORRECTION_PREVIEW, "expected_revision": 0, "expected_decision_head": "0" * 64,
+        "inventory_sha256": "e" * 64, "preview_sha256": "f" * 64,
+        "source_tokens": ["1" * 64, "2" * 64], "note": "Synthetic reviewed sources."},
+})
+
 
 
 def _route(method: str, path: str):
@@ -170,6 +197,23 @@ def _refused(answer) -> bool:
             and core.ADMIN_KEY_ONLY_DENIED in str(answer.json().get("detail")))
 
 
+def _prepare_sales_followup_scope():
+    """Настоящие разрешение и связь в изолированном состоянии теста.
+
+    Ключ администратора не заменяет разрешение группе. Положительный smoke
+    обязан создать оба основания, а не обходить новый маршрут заглушкой.
+    """
+    import developaid_management_report as management
+    from market_search import sales_store
+
+    where = sales_store.default_dir()
+    sales_store.save(where, _SALES_PROJECT, {"contracting": {"rows": []}}, "SYNTHETIC.xlsx")
+    management.link_sales("проверка", _SALES_PROJECT, "synthetic ACL fixture", where)
+    granted = client.post("/monitor/site-chats/authorize", json={
+        "key": KEY, "chat_id": _SALES_GROUP, "project": "проверка"})
+    assert granted.status_code == 200, granted.text
+
+
 def test_the_routes_are_found_from_the_app():
     paths = {path for _m, path in ROUTES}
     for must in ("/monitor/view", "/monitor/report", "/monitor/report.pdf",
@@ -221,16 +265,21 @@ def test_without_the_admin_key_setting_it_is_closed_for_everyone(method, path, m
 
 @pytest.mark.parametrize("method,path", ROUTES)
 def test_the_admin_key_passes(method, path, monkeypatch):
+    if path == "/monitor/sales-followups":
+        _prepare_sales_followup_scope()
     identity_operation = path.startswith("/monitor/contracts/identity/") and not path.endswith("/result")
     if identity_operation:
         import developaid_management_report_jobs as jobs
         start = jobs.Store.start
-        def authorized_job(store, owner, profile, params, builder, ticket=""):
+        def authorized_job(store, owner, profile, params, builder, ticket="", **policy):
             # Admission, strict models and the native job store stay real.
             # This auth smoke does not confirm/revoke any source identity.
             if profile == "monitor-cumulative-v1:contract-identity":
+                import developaid_monitor_ledgers as ledgers
+                assert policy.get('context') == ledgers.snapshot_job_context(params['project'])
+                assert params['source_context'] == policy['context']
                 builder = lambda: {"ok": True}
-            return start(store, owner, profile, params, builder, ticket)
+            return start(store, owner, profile, params, builder, ticket, **policy)
         monkeypatch.setattr(jobs.Store, "start", authorized_job)
     # Заголовком ключ едет на GET-маршрутах (страница так не кладёт его в адрес).
     answers = [call(method, path, key=KEY)]
@@ -249,6 +298,48 @@ def test_the_admin_key_passes(method, path, monkeypatch):
                 if answer.status_code == 202:
                     time.sleep(.005)
             assert answer.status_code == 200, "synthetic identity worker did not finish before fixture teardown"
+            assert answer.json().get('ok') is True
+
+
+def test_sales_followups_need_both_admin_key_and_current_exact_owner_scope():
+    path = "/monitor/sales-followups"
+    # Even the correct owner key cannot manufacture a missing group grant.
+    missing = call("POST", path, key=KEY)
+    assert missing.status_code == 403 and "не авторизована владельцем" in missing.text
+    assert missing.headers["cache-control"] == "private, no-store"
+
+    _prepare_sales_followup_scope()
+    accepted = call("POST", path, key=KEY)
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["scope"]["chat_id"] == _SALES_GROUP
+    assert accepted.json()["scope"]["sales_project"] == _SALES_PROJECT
+    assert accepted.headers["cache-control"] == "private, no-store"
+    # A real grant does not open the owner route to a transport signature,
+    # Telegram admin identity, market key or absent/wrong owner key.
+    for answer in (
+        call("POST", path),
+        call("POST", path, key="wrong-key"),
+        call("POST", path, session=core._telegram_session(OWNER, [])),
+        call("POST", path, headers={"X-Market-Key": "team-test-key"}),
+        client.post(path, json={"chat_id": _SALES_GROUP, "project": "проверка",
+                                "sign": core._web_login_sign("sales-followups", 0)}),
+    ):
+        assert _refused(answer), answer.text
+
+    for mismatch in ({"chat_id": _SALES_GROUP - 1}, {"project": "Другой проект"}):
+        answer = client.post(path, json={"key": KEY, "chat_id": _SALES_GROUP,
+                                        "project": "проверка", **mismatch})
+        assert answer.status_code == 403, answer.text
+    changed_link = client.post(path, json={"key": KEY, "chat_id": _SALES_GROUP,
+                                          "project": "проверка", "sales_project": "Другие продажи"})
+    assert changed_link.status_code == 409, changed_link.text
+
+    revoked = client.post("/monitor/site-chats/revoke", json={
+        "key": KEY, "chat_id": _SALES_GROUP, "project": "проверка"})
+    assert revoked.status_code == 200, revoked.text
+    after = call("POST", path, key=KEY)
+    assert after.status_code == 403 and "не авторизована владельцем" in after.text
+    assert after.headers["cache-control"] == "private, no-store"
 
 
 def test_health_names_the_closed_gate(monkeypatch):

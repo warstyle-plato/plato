@@ -17,6 +17,7 @@ import normatives_registry as _page_normatives_registry
 # Подстановка разовая, на импорте: страница отдаётся на каждый запрос, а версия
 # за время работы процесса не меняется.
 PAGE = PAGE.replace(VERSION_PLACEHOLDER, VERSION)
+PAGE = PAGE.replace("__DEVELOPAID_MO_BENEFITS_CATALOG__", json.dumps(mo_vri_benefits.catalog(), ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_MO_VRI_COMPENSATION_SOURCE__", json.dumps(
     _page_normatives_registry.official_link("mo-1310-vri-ksu"), ensure_ascii=False))
 PAGE = PAGE.replace('</head>', '<script>window.PlatoDocumentProtocol=Object.freeze('

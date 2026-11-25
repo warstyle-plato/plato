@@ -613,12 +613,7 @@ function renderResult(){
  renderVri(r.vri);
 
  const expenseRows=(r.report.expense_structure||[]);
- expenseStructureChart.innerHTML=expenseRows.map(x=>`<div class="expense-row">
-   <div class="expense-label">${x.label}</div>
-   <div class="expense-track"><div class="expense-fill" style="width:${Math.max(0,Math.min(100,Number(x.share||0)*100))}%"></div></div>
-   <div class="expense-pct">${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</div>
-   <div class="expense-value">${money(x.value)}</div>
- </div>`).join('');
+ expenseStructureChart.innerHTML=expenseBarsHtml(expenseRows);
  // Отдельно стоящий объект меряется СВОЕЙ площадью, а наземный паркинг —
  // своими местами: подстроки «в т.ч.» стоят под своей статьёй и несут числа,
  // посчитанные движком на их базы. Колонки самой статьи остаются проектными —
@@ -1084,36 +1079,109 @@ function renderGantt(targetId,calendar){
 // Месячный темп продаж квартир в штуках. Форма повторяет график из PDF —
 // столбцы, четыре линии сетки, подписи месяцев по краям и в середине: экран и
 // печать обязаны показывать одно и то же, иначе печать выглядит другим отчётом.
+function expenseBarsHtml(rows){
+ return rows.map(x=>`<div class="expense-row">
+   <div class="expense-label">${x.label}</div>
+   <div class="expense-track"><div class="expense-fill" style="width:${Math.max(0,Math.min(100,Number(x.share||0)*100))}%"></div></div>
+   <div class="expense-pct">${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</div>
+   <div class="expense-value">${money(x.value)}</div>
+ </div>`).join('');
+}
+function salesPeriodSvg(rows,fields,unit,multiplier=1,width=1000){
+ if(!rows.length)return '';
+ const values=rows.flatMap(r=>fields.map(f=>r[f[0]]==null?null:Number(r[f[0]])*multiplier)).filter(v=>v!==null&&Number.isFinite(v));
+ if(!values.length)return '<div class="hint">Нет данных для графика</div>';
+ const W=Math.max(280,width),H=210,pR=16,pT=20,pB=28;
+ const lo=Math.min(0,...values),hi=Math.max(0,...values),span=hi-lo||1;
+ const top=hi+span*.08;
+ const fmt=v=>Number(v).toLocaleString('ru-RU',{maximumFractionDigits:2});
+ const pL=Math.max(58,...[0,1,2,3].map(t=>(fmt(lo+(top-lo)*t/3).length*7+12)));
+ const plotW=W-pL-pR,plotH=H-pT-pB;
+ const slot=plotW/rows.length,bw=Math.max(1,slot*.72);
+ const y=v=>pT+plotH-(v-lo)/(top-lo)*plotH;
+ let svg=`<svg viewBox="0 0 ${W} ${H}" style="height:auto;display:block" role="img" aria-label="${escapeHtml(unit)}">`;
+ for(let tick=0;tick<=3;tick++){
+  const value=lo+(top-lo)*tick/3;
+  svg+=`<line x1="${pL}" y1="${y(value)}" x2="${W-pR}" y2="${y(value)}" stroke="#e5e5e5"/>`
+   +`<text x="${pL-6}" y="${y(value)+4}" font-size="11" fill="#777" text-anchor="end">${fmt(value)}</text>`;
+ }
+ fields.forEach((f,k)=>{
+  const color=k?'#888':'#202020';let points=[];
+  const flush=()=>{if(points.length)svg+=`<polyline points="${points.join(' ')}" fill="none" stroke="${color}" stroke-width="2"/>`;points=[]};
+  rows.forEach((r,i)=>{
+   if(r[f[0]]==null){flush();return}
+   const v=Number(r[f[0]])*multiplier,x=pL+(i+.5)*slot;
+   const title=`<title>${escapeHtml(r.month||'')}: ${escapeHtml(f[1])} ${fmt(v)} ${escapeHtml(unit)}</title>`;
+   if(fields.length===1){if(v!==0)svg+=`<rect x="${x-bw/2}" y="${y(Math.max(0,v))}" width="${bw}" height="${Math.abs(y(v)-y(0))}" fill="${color}">${title}</rect>`}
+   else{points.push(`${x},${y(v)}`);svg+=`<circle cx="${x}" cy="${y(v)}" r="2" fill="${color}">${title}</circle>`}
+  });flush();
+ });
+ const monthRu=iso=>{const [yy,mm]=String(iso||'').slice(0,7).split('-');return mm+'.'+yy};
+ [...new Set([0,Math.floor(rows.length/2),rows.length-1])].forEach(i=>{
+  const first=rows.length>1&&i===0,last=rows.length>1&&i===rows.length-1;
+  svg+=`<text x="${first?pL:last?W-pR:pL+(i+.5)*slot}" y="${H-8}" font-size="11" fill="#777" text-anchor="${first?'start':last?'end':'middle'}">${monthRu(rows[i].month)}</text>`;
+ });
+ return svg+`<text x="${W-pR}" y="${pT-5}" font-size="11" fill="#777" text-anchor="end">${escapeHtml(unit)}</text></svg>`;
+}
+const salesChartModels=new WeakMap();
+const salesChartWidths=new WeakMap();
+const salesChartTargets=new Set();
+const salesChartPending=new Set();
+let salesChartFrame=0;
+const salesChartObserver=new ResizeObserver(entries=>{
+ entries.forEach(e=>{
+  if(salesChartModels.has(e.target)&&e.target.clientWidth>0
+    &&salesChartWidths.get(e.target)!==e.target.clientWidth)salesChartPending.add(e.target);
+ });
+ if(salesChartPending.size&&!salesChartFrame){
+  const frame={id:0};salesChartFrame=frame;
+  frame.id=requestAnimationFrame(()=>{
+   if(salesChartFrame!==frame)return;
+   salesChartFrame=0;
+   const targets=[...salesChartPending];salesChartPending.clear();
+   targets.forEach(drawSalesPeriodChart);
+  });
+ }
+});
+function drawSalesPeriodChart(target){
+ const model=salesChartModels.get(target);if(!model)return;
+ const width=target.clientWidth;
+ if(width>0&&salesChartWidths.get(target)!==width){
+  target.innerHTML=salesPeriodSvg(model.rows,model.fields,model.unit,model.multiplier,width);
+  salesChartWidths.set(target,width);
+ }
+}
+function renderSalesPeriodChart(target,model){
+ // Новый итог перерисовывается и при прежней ширине. В callback наблюдателя
+ // SVG не меняем: его height:auto меняет высоту самого наблюдаемого блока.
+ salesChartModels.set(target,model);salesChartWidths.delete(target);
+ salesChartTargets.add(target);
+ salesChartObserver.observe(target);drawSalesPeriodChart(target);
+}
+function releaseSalesPeriodChart(target){
+ salesChartObserver.unobserve(target);salesChartModels.delete(target);
+ salesChartWidths.delete(target);salesChartPending.delete(target);
+ salesChartTargets.delete(target);
+}
+function releaseSalesPeriodCharts(box){
+ box.querySelectorAll('[data-report-chart]').forEach(releaseSalesPeriodChart);
+}
+function resetSalesPeriodCharts(){
+ // Отложенный кадр и его модели принадлежат прежнему проекту. Даже если
+ // старый callback уже передан, его token не должен погасить новую очередь.
+ if(salesChartFrame)cancelAnimationFrame(salesChartFrame.id);
+ salesChartFrame=0;salesChartPending.clear();salesChartObserver.disconnect();
+ [...salesChartTargets].forEach(target=>{
+  releaseSalesPeriodChart(target);target.replaceChildren();target.removeAttribute('data-report-chart');
+ });
+}
 function renderApartmentPaceChart(sales){
  const target=document.getElementById('apartmentPaceChart');if(!target)return;
  const rows=(sales&&sales.rows)||[];
- const values=rows.map(x=>Math.max(0,Number(x.units||0)));
- const peak=Math.max(...values,0);
- // Пустой график с рамкой хуже отсутствующего: он обещает данные, которых нет.
- if(!rows.length||peak<=0){target.innerHTML='';target.style.display='none';return}
- target.style.display='';
- // Пропорции те же, что у графика в PDF (500×104): при фиксированной высоте
- // контейнера широкий график вписывался с полями в треть ширины.
- const W=1000,H=210,pL=50,pR=16,pT=20,pB=28;
- const top=peak*1.08,plotW=W-pL-pR,plotH=H-pT-pB;
- const slot=plotW/rows.length,bw=Math.max(1,slot*0.72);
- const y=v=>pT+plotH-plotH*v/top;
- let grid='';
- for(let tick=0;tick<=3;tick++){
-  const value=top*tick/3;
-  grid+=`<line x1="${pL}" y1="${y(value)}" x2="${W-pR}" y2="${y(value)}" stroke="#e5e5e5"/>`
-      +`<text x="${pL-6}" y="${y(value)+4}" font-size="11" fill="#777" text-anchor="end">${num(value)}</text>`;
- }
- const bars=values.map((v,i)=>v<=0?'':
-   `<rect x="${pL+i*slot+(slot-bw)/2}" y="${y(v)}" width="${bw}" height="${plotH*v/top}" fill="#202020"/>`).join('');
- const monthRu=iso=>{const [yy,mm]=String(iso||'').slice(0,7).split('-');return mm+'.'+yy};
- const marks=[...new Set([0,Math.floor(rows.length/2),rows.length-1])].map(i=>
-   `<text x="${pL+(i+0.5)*slot}" y="${H-8}" font-size="11" fill="#777" text-anchor="middle">${monthRu(rows[i].month)}</text>`).join('');
- target.innerHTML=`<svg viewBox="0 0 ${W} ${H}" style="height:auto;display:block">
-  ${grid}${bars}
-  <text x="${W-pR}" y="${pT-5}" font-size="11" fill="#777" text-anchor="end">квартир/мес.</text>
-  ${marks}
- </svg>`;
+ const shown=rows.some(r=>Number(r.units)>0);
+ target.style.display=shown?'':'none';
+ if(shown)renderSalesPeriodChart(target,{rows,fields:[['units','Продажи']],unit:'квартир/мес.',multiplier:1});
+ else{target.innerHTML='';releaseSalesPeriodChart(target)}
 }
 
 // Эскроу против обязательства по ПФ. Прежде здесь сравнивалось тело долга со

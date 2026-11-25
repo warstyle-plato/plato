@@ -33,7 +33,9 @@ def build(performed, *, start=None, status='confirmed'):
                  'estimates': [{'scope': 'full', 'positions': [POSITION], 'links': {'positions': [link]}}],
                  'schedule': {'lines': [{'code': '1', 'name': 'Стена', 'start': '2026-01-01',
                                           'finish': '2026-04-01', 'parent': None}]}}]
-    return fact.build(editions, 'b'*64, None, '2026-03-15', performed)
+    # The same separately printed work/material quantities are in the KS-6a.
+    statement = {'acts': fact.from_acts(performed), 'unread': [], 'works': 1, 'items': []}
+    return fact.build(editions, 'b'*64, statement, '2026-03-15', performed)
 
 
 def test_separate_quantities_survive_accumulation_and_use_separate_prices():
@@ -57,6 +59,7 @@ def test_material_only_receipt_does_not_install_or_complete_work():
     assert got['total'] == 1000 and line['work_fact'] == 0
     assert line['volumes'] == [] and line['last'] is None and not line['complete']
     assert line['material_volumes'] == [{'unit': 'м2', 'quantity': 10}]
+    assert line['material_last'] == '2026-03-01'
 
 
 def test_explicit_zero_work_with_positive_material_quantity_is_not_dropped():
@@ -64,6 +67,18 @@ def test_explicit_zero_work_with_positive_material_quantity_is_not_dropped():
     line, = got['lines']
     assert got['total'] == 1000 and line['work_fact'] == 0
     assert line['volumes'] == [] and line['material_volumes'] == [{'unit': 'м2', 'quantity': 10}]
+
+
+def test_material_delivery_date_does_not_move_the_last_installed_work_period():
+    documents=[]
+    for number,end,position in [('1','2026-03-01',act_position(20,0)),
+                                 ('2','2026-03-10',act_position(0,10))]:
+        documents.append({'sha256':number*64,'title':'Учебный акт','filename':'Акт.pdf',
+            'act':{'number':number,'date':end,'start':'2026-02-01','finish':end,'positions':[position]}})
+    got=build(acts.accumulated(documents,'2026-03-15'))
+    line,=got['lines']
+    assert line['last']=='2026-03-01' and line['material_last']=='2026-03-10'
+    assert (line['work_fact'],line['material_fact'])==(200,1000)
 
 
 def test_unknown_material_quantity_is_never_assumed_to_equal_work_quantity():
