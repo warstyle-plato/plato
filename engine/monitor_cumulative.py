@@ -679,6 +679,8 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
         encoded = stage_profile.call('jsonable_encoder', jsonable_encoder, result)
         if operation.startswith("document") and "comparison" in encoded:
             import developaid_contract_comparison_export as comparison_export
+            import developaid_contract_rds as rds
+            encoded['rds_comparison'] = rds.build(encoded)
             encoded["comparison_export"] = comparison_export.bind_snapshot(
                 payload["project"], payload["cut"], encoded.get("contract_id") or payload["contract_id"], encoded,
                 {key: (row or {}).get(key) or "" for key in ("contract", "contractor", "contract_date")})

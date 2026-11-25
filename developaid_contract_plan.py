@@ -100,8 +100,11 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
     volumes, auto, auto_positions = {}, {}, 0
     components, material_volumes, source_operations = {}, {}, {}
     accepted, accepted_without = None, 0
-    for estimate in estimates:
+    position_links = []
+    for estimate_index, estimate in enumerate(estimates):
         positions = (estimate.get("links") or {}).get("positions") or []
+        if estimate.get('scope') != 'accepted':
+            position_links.extend({'estimate': estimate_index, **position} for position in positions)
         source_parts, raw_parts = {}, {}
         for raw in estimate.get('positions') or []:
             source_parts.setdefault(links.position_key(raw), []).append(raw.get('amount') or {})
@@ -163,7 +166,8 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
         if operations:
             line['operations'] = operations
             line['volume'] = None
-    return {"lines": lines, "total": sum(line["amount"] for line in lines), "outside": outside,
+    return {"lines": lines, 'position_links': position_links,
+            "total": sum(line["amount"] for line in lines), "outside": outside,
             "auto": auto_positions,
             "without_amount": without, "accepted": accepted, "accepted_without_amount": accepted_without}
 
@@ -189,6 +193,7 @@ def build(editions: list[dict], cut: str) -> dict:
         plan = edition(item["estimates"], item.get("schedule"), start)
         later = next((e["date"] for e in dated if item.get("date") and e["date"] > item["date"]), None)
         entry = {"sha256": item["sha256"], "title": item["title"], "date": item.get("date"),
+                 'estimate_sha256': item.get('estimate_sha256'),
                  "estimate": item.get("estimate_title") or item["title"],
                  "until": (_day(later) - dt.timedelta(days=1)).isoformat() if later else None,
                  "schedule": item.get("schedule_title") or "", "start": item.get("start"),

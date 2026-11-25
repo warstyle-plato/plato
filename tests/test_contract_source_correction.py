@@ -114,7 +114,8 @@ def test_refresh_preserves_reference_pool_after_raw_enrichment(pair):
         assert refreshed['rows'][0]['completed'] == 400
 
 
-def test_operational_card_uses_selected_execution_and_existing_document_owner(pair, monkeypatch):
+@pytest.mark.parametrize('with_rds', [False, True])
+def test_operational_card_uses_selected_execution_and_existing_document_owner(pair, monkeypatch, with_rds):
     import main
     import developaid_contract_files as files
     checked, values = selection(pair)
@@ -125,14 +126,41 @@ def test_operational_card_uses_selected_execution_and_existing_document_owner(pa
     calls = []
     def listing(project, owner, cut, acts):
         calls.append((owner, acts))
-        return {'contract_id': owner, 'documents': [], 'comparison': {'cut': cut, 'lines': []}}
+        if not with_rds:
+            return {'contract_id': owner, 'documents': [], 'comparison': {'cut': cut, 'lines': []}}
+        import developaid_contract_fact as fact
+        import developaid_contract_plan as plan
+        import developaid_contract_schedule_links as links
+        # These are the two printed source indices/units/prices in pair's KS
+        # fixture, represented by an explicitly stored RDS owned by this raw card.
+        positions = [dict(number=number, name=name, unit=unit, quantity=quantity,
+            unit_price={'material':0.0,'work':price,'total':price},
+            amount={'material':0.0,'work':quantity*price,'total':quantity*price})
+            for number,name,unit,quantity,price in [('1.1','Устройство стены','м3',10,100),
+                                                  ('1.2','Вторая работа','шт',2,10)]]
+        estimate = {'positions':positions, 'structure':[], 'links':links.propose({'positions':positions}, None)}
+        source = {'sha256':'d'*64, 'estimate_sha256':'d'*64, 'title':'Учебная РДС выбранной карточки',
+                  'date':'2026-01-01', 'estimates':[estimate], 'schedule':None, 'start':None}
+        planned = plan.build([source], cut)
+        actual = fact.build([source], planned['in_force'], acts, cut)
+        return files._with_control({'contract_id':owner, 'plan':planned, 'fact':actual,
+            'documents':[{'sha256':'d'*64,'title':source['title'],'estimates':[estimate]}]}, acts, cut)
     monkeypatch.setattr(files, 'listing', listing)
     result = main.core._monitor_cumulative_execute('documents', dict(project=PROJECT, cut=CUT,
         contract_id=row['id'], view='operational', correction_id=selected['decision_id'],
         correction_guard=selected['read_guard']))
     assert result['ok'] and result['contract_id'] == row['id']
     assert calls[0][0] == pair['new'] and calls[0][1]['works'] > 0
-    assert result['comparison_export']['source_correction']['decision_id'] == selected['decision_id']
+    assert result['source_correction']['decision_id'] == selected['decision_id']
+    if with_rds:
+        assert result['comparison_export']['source_correction']['decision_id'] == selected['decision_id']
+        assert [item['number'] for item in result['rds_comparison']['rows']] == ['1.1','1.2']
+        assert result['rds_comparison']['rows'][0]['fact_quantity'] == 4
+        assert result['rds_comparison']['rows'][0]['fact'] == 400
+        assert result['rds_comparison']['rows'][0]['planned'] is None
+    else:
+        assert result['comparison_export']['available'] is False
+        assert result['rds_comparison']['rows'] == []
     before = len(calls)
     stale = main.core._monitor_cumulative_execute('documents', dict(project=PROJECT, cut=CUT,
         contract_id=row['id'], view='operational', correction_id=selected['decision_id'], correction_guard='f'*64))
