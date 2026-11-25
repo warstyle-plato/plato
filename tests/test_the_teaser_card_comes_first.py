@@ -595,6 +595,16 @@ def test_the_current_manual_parcels_survive_real_tep_in_edit_mode(monkeypatch, w
         return page.evaluate("() => ({query:inputs._cadastral_query||'',origin:inputs._cadastral_origin||null,"
                              "field:document.getElementById('cadastralNumbers').value,cad:projectCadastral()})")
 
+    def fill_query(page, value):
+        # На корне с IA участок находится в «Проекте», а inputs — уже
+        # «Экономика». Открываем настоящий видимый раздел перед вводом,
+        # как пользователь; force-fill скрыл бы ошибку маршрута стенда.
+        if page.locator('.ia-nav').count():
+            page.locator('.ia-nav').get_by_role('button', name='Проект', exact=True).click()
+        else:
+            page.locator('[data-tab="inputs"]').click()
+        page.locator('#cadastralNumbers').fill(value)
+
     def apply(page, incoming):
         page.evaluate("async incoming=>{glavapuImport=incoming;await applyGlavapu()}", incoming)
         stand.wait_for_result(page)
@@ -631,8 +641,8 @@ def test_the_current_manual_parcels_survive_real_tep_in_edit_mode(monkeypatch, w
             assert identity(page)["origin"]["source"] == "document"
             initial = page.evaluate("() => JSON.parse(JSON.stringify({inputs,tep,phasing}))")
             page.evaluate("snapshot=>{resetAll();applyProjectSnapshot(snapshot)}", initial)
-            page.evaluate("document.getElementById('telegramDoneBanner').remove();openTab('inputs')")
-            page.locator("#cadastralNumbers").fill(", ".join(current))
+            page.evaluate("document.getElementById('telegramDoneBanner').remove()")
+            fill_query(page, ", ".join(current))
             page.evaluate("applyTelegramCalcOverrides();persistLocalSilently()")
             assert identity(page)["query"] == ", ".join(current)
             # The query change forces reinitialization; a hash change alone does not.
@@ -670,18 +680,18 @@ def test_the_current_manual_parcels_survive_real_tep_in_edit_mode(monkeypatch, w
             different["source"]["cadastral_numbers"] = numbers
             apply(page, different)
             assert_empty(page)
-            page.locator("#cadastralNumbers").fill(", ".join(current))
+            fill_query(page, ", ".join(current))
             apply(page, incoming)
             # Clearing the field, unrelated files, and project reset cannot revive a parcel.
-            page.locator("#cadastralNumbers").fill("")
+            fill_query(page, "")
             apply(page, incoming)
             assert_empty(page)
-            page.locator("#cadastralNumbers").fill(", ".join(current))
+            fill_query(page, ", ".join(current))
             unrelated = copy.deepcopy(imported)
             unrelated["source"].pop("cadastral_numbers")
             apply(page, unrelated)
             assert_empty(page)
-            page.locator("#cadastralNumbers").fill(", ".join(current))
+            fill_query(page, ", ".join(current))
             page.evaluate("resetAll()")
             apply(page, incoming)
             assert_empty(page)
