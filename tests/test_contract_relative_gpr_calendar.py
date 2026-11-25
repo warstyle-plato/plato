@@ -293,9 +293,12 @@ def test_resource_ranges_and_sparse_literal_dates_are_not_interpolated():
 
 
 def test_two_sheet_export_preserves_current_source_and_disjoint_bars(card):
+    import developaid_contract_workforce as workforce
     listed = change(files.listing(PROJECT, ROW['id'], CUT))
     listed['rds_comparison'] = {'available': False, 'detail': 'РДС не загружена.'}
     listed['gpr']['overlays'] = {}
+    register = {'rows': [ROW], '_workforce_source_guard': workforce.cohort_sources(PROJECT, CUT)}
+    listed['gpr']['workforce'] = workforce.from_cached(PROJECT, ROW, register, CUT, listed['gpr'])
     result = {'ok': True, **listed}
     meta = export.bind_snapshot(PROJECT, CUT, ROW['id'], result, ROW)
     result['gpr_export'] = meta
@@ -466,7 +469,7 @@ def finished(client, response):
     while value.get('pending') and time.monotonic() < until:
         time.sleep(.02)
         response = client.post('/monitor/contracts/result', json={'key': KEY, 'session': 'synthetic-owner', 'ticket': value['ticket']})
-        assert response.status_code == 200, response.text
+        assert response.status_code in (200, 202), response.text
         value = response.json()
     assert not value.get('pending')
     return value

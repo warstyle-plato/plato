@@ -1,4 +1,4 @@
-"""Two-sheet, source-current GPR and accepted RDS performance workbook."""
+"""Source-current GPR, accepted RDS performance and applicable workforce workbook."""
 from __future__ import annotations
 
 import datetime as dt
@@ -14,9 +14,10 @@ from openpyxl.utils import get_column_letter
 
 import developaid_contract_gpr as gpr
 import developaid_contract_comparison_export as rds_export
+import developaid_contract_workforce as workforce
 from developaid_contract_rds import LAYOUT
 
-SCHEMA = 'contract-gpr-performance-xlsx-v2'
+SCHEMA = 'contract-gpr-performance-xlsx-v3'
 COLORS = {'plan': '9DC3E6', 'fact': '70AD47', 'lag': 'E06666', 'unknown': 'D9D9D9'}
 LEGEND = ('Синий — исходный план; зелёный — подтверждённая физическая доля на дату среза; '
           'красный — невыполненная часть плана к срезу и срок после окончания незавершённой работы; '
@@ -56,7 +57,13 @@ def select_snapshot(cached, project, cut, contract_id, revision):
     if expected != meta or meta.get('revision') != revision:
         raise rds_export.ExportProblem('Версия ГПР изменилась. Откройте карточку заново перед выгрузкой.')
     rds_export.require_current_sources(meta)
+    require_current_workforce(cached, project)
     return meta
+
+
+def require_current_workforce(cached, project):
+    if not workforce.require_current((cached.get('gpr') or {}).get('workforce') or {}, project):
+        raise rds_export.ExportProblem('Данные численности изменились. Откройте карточку заново перед выгрузкой.')
 
 
 def segments(line):
@@ -351,7 +358,8 @@ def workbook(meta, cached):
         row += 1
     row += 2
     details = [LEGEND, schedule.get('assumption') or 'Календарные даты из исходного ГПР.',
-        (state.get('staffing') or {}).get('note') or 'Сопоставление численности требует одинакового состава работ.',
+        (state.get('workforce') or {}).get('reason') or (state.get('workforce') or {}).get('note')
+            or (state.get('staffing') or {}).get('note') or 'Сопоставление численности требует одинакового состава работ.',
         'Видимые отметки ЭДО и подтверждение оператора не являются криптографической проверкой подписи.']
     for condition in state.get('conditions') or []:
         details.append(condition['quote']+' '+condition['note']+
@@ -362,6 +370,7 @@ def workbook(meta, cached):
         sheet.merge_cells(start_row=row+1, start_column=1, end_row=row+1, end_column=6)
         sheet.row_dimensions[row+1].height = 44
         row += 1
+    workforce.write_sheet(book, state.get('workforce') or {})
     for page in book:
         page.freeze_panes = None
         page.sheet_view.topLeftCell = 'A1'

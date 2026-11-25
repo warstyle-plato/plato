@@ -738,6 +738,8 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
     import developaid_monitor_contract_links as links
     import developaid_contract_files as contract_files
     import developaid_contract_identity as contract_identity
+    import developaid_contract_workforce as workforce
+    document_change_saved = False
     try:
         if operation.startswith('identity-'):
             values = dict(payload)
@@ -819,12 +821,14 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
             import developaid_contract_fact as contract_fact
             problem = ""
             try:
+                workforce_sources = workforce.cohort_sources(payload['project'], payload['cut'])
                 register = contracts.build(payload["project"], payload["cut"], include_history=False)
+                register['_workforce_source_guard'] = workforce_sources
                 rows = contracts.raw_rows(register)
             except contracts.ContractProblem as exc:
                 if operation == "document-upload":
                     raise
-                register, rows, problem = {}, [], str(exc)
+                register, rows, problem = {'_workforce_source_guard': workforce_sources}, [], str(exc)
             row, owner_row, documents_owner, correction_state = _monitor_contract_document_context(register, payload, operation)
             logical_id = payload.get('logical_contract_id') or payload['contract_id']
             acts = contract_fact.unavailable(problem) if problem else contract_fact.acts(row)
@@ -866,6 +870,29 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                                   payload['handover_date'], payload['advance_date'], payload['counterparty_signed'], acts)
             else:
                 raise RuntimeError("unknown monitor operation")
+            if operation != 'documents':
+                document_change_saved = True
+                current_sources = workforce.cohort_sources(payload['project'], payload['cut'])
+                if current_sources != register.get('_workforce_source_guard'):
+                    # A successful native write can change the peer domain.
+                    # Rebuild inside this async worker, with a NEW prebuild pin;
+                    # never sign the old register with post-write sources.
+                    fresh = contracts.build(payload['project'], payload['cut'], include_history=False)
+                    fresh['_workforce_source_guard'] = current_sources
+                    if correction_state:
+                        import developaid_contract_correction as correction
+                        active = next((value for value in fresh.get('rows') or [] if value['id'] == logical_id), None)
+                        selected = (active or {}).get('source_correction') or {}
+                        if (selected.get('decision_id') != correction_state.get('decision_id')
+                                or selected.get('roles') != correction_state.get('roles')):
+                            raise workforce.SourceChanged('Выбор источников изменился. Откройте карточку заново.')
+                        row = correction.materialize(fresh, active)
+                        correction_state = selected
+                    else:
+                        row = contracts.find_raw_row(fresh, payload['contract_id'])
+                    register = fresh
+                    acts = contract_fact.acts(row)
+                    result = {**result, **contract_files.listing(payload['project'], documents_owner, payload['cut'], acts)}
             if correction_state:
                 result.update(contract_id=logical_id, documents_raw_id=documents_owner, source_correction=correction_state)
                 if result.get('gpr'):
@@ -884,6 +911,8 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                 encoded['gpr']['overlays'] = gpr.physical_overlays(encoded, encoded['rds_comparison'])
                 encoded['gpr']['staffing'] = gpr.workforce_sources(payload['project'], row or {}, register,
                     payload['cut'], encoded['gpr'].get('schedule'))
+                encoded['gpr']['workforce'] = workforce.from_cached(payload['project'], row or {}, register,
+                    payload['cut'], encoded['gpr'])
                 encoded['gpr']['presentation'] = gpr_export.presentation(encoded['gpr']['schedule'] or {},
                     encoded['gpr']['overlays'], payload['cut'],
                     gpr.position_projections(encoded, encoded['rds_comparison'], encoded['gpr']['schedule'] or {}),
@@ -895,6 +924,9 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                 payload["project"], payload["cut"], encoded.get("contract_id") or payload["contract_id"], encoded,
                 {key: (row or {}).get(key) or "" for key in ("contract", "contractor", "contract_date")})
         return {"ok": True, **encoded}
+    except workforce.SourceChanged as exc:
+        return {'ok': False, 'status': 409, 'detail': ('Изменения сохранены. ' if document_change_saved else '')+str(exc),
+                **({'document_change_saved': True} if document_change_saved else {})}
     except ledgers.LedgerProblem as exc:
         return {"ok": False, "detail": str(exc), "files": exc.files}
     except (contracts.ContractProblem, links.LinkProblem, contract_files.ContractFilesProblem,
@@ -1388,6 +1420,7 @@ def monitor_contract_gpr_xlsx(req: MonitorContractGprExport) -> Response:
         # Check after generation as well: an anchor/source change in another
         # worker cannot return an Excel of an obsolete card.
         comparison_export.require_current_sources(meta)
+        gpr_export.require_current_workforce(cached, req.project.strip())
         return Response(raw, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         headers={**private, 'Content-Disposition':
                             gpr_export.disposition(meta)})
