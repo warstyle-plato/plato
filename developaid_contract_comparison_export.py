@@ -14,8 +14,13 @@ import math
 from openpyxl import Workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.comments import Comment
+from openpyxl.utils import get_column_letter
 
-SCHEMA = "contract-comparison-export-v1"
+from developaid_contract_rds import LAYOUT, FIELDS
+from developaid_contract_fact import _money
+
+SCHEMA = "contract-rds-plan-fact-export-v1"
 MAX_ROWS = 10_000
 MAX_XLSX_BYTES = 8 * 1024 * 1024
 FILTERS = {"all": "Все работы и поставки", "behind": "Отстают от плана", "ahead": "Опережают план",
@@ -39,12 +44,14 @@ def _sha(value) -> str:
 
 def bind_snapshot(project: str, cut: str, contract_id: str, result: dict, label: dict) -> dict:
     """Called by the existing documents worker, after JSON encoding its result."""
-    comparison = result.get("comparison")
-    if not isinstance(comparison, dict) or not isinstance(comparison.get("lines"), list):
+    comparison = result.get("rds_comparison")
+    if isinstance(comparison, dict) and not comparison.get('available'):
+        return {'available': False, 'detail': comparison.get('detail') or 'Для выгрузки нужна действующая РДС.'}
+    if not isinstance(comparison, dict) or not isinstance(comparison.get("rows"), list):
         return {"available": False, "detail": "Таблица план-факта ещё не подготовлена. Откройте карточку заново."}
     if comparison.get("cut") != cut or result.get("contract_id") != contract_id:
         return {"available": False, "detail": "Таблица не соответствует договору или срезу. Откройте карточку заново."}
-    rows = comparison["lines"]
+    rows = comparison["rows"]
     if len(rows) > MAX_ROWS:
         return {"available": False, "detail": "Таблица слишком большая для выгрузки в один файл."}
     documents = [{"sha256": d.get("sha256"), "title": d.get("title")}
@@ -53,8 +60,10 @@ def bind_snapshot(project: str, cut: str, contract_id: str, result: dict, label:
                "label": label, "source_documents": documents}
     if result.get("source_correction"):
         context["source_correction"] = result["source_correction"]
-    revision = _sha({**context, "comparison": comparison})
-    return {"schema": SCHEMA, "available": True, **context, "revision": revision,
+    revision = _sha({**context, 'rds': comparison,
+                     'canonical': {key: result.get(key) for key in ('documents', 'plan', 'fact', 'comparison')}})
+    return {"schema": SCHEMA, "layout": LAYOUT, "rows_count": len(rows), "scope": "all_active_rds",
+            "available": True, **context, "revision": revision,
             "row_tokens": [_sha([revision, index, _sha(row)]) for index, row in enumerate(rows)]}
 
 
@@ -75,8 +84,9 @@ def select_snapshot(cached: dict, project: str, cut: str, contract_id: str,
     chosen = set(selected_tokens)
     if len(chosen) != len(selected_tokens) or not chosen <= set(tokens):
         raise ExportProblem("Выбранные строки не относятся к этой версии таблицы.")
-    rows = cached["comparison"]["lines"]
-    return meta, cached["comparison"], [row for token, row in zip(tokens, rows) if token in chosen]
+    if selected_tokens != tokens:
+        raise ExportProblem("Выгрузка содержит всю действующую РДС. Откройте карточку заново перед выгрузкой.")
+    return meta, cached["rds_comparison"], cached["rds_comparison"]["rows"]
 
 
 def require_current_sources(meta):
@@ -122,175 +132,136 @@ def _percent(value) -> str:
 
 
 def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "", filter: str = "all") -> bytes:
-    """Seven visible columns, native numbers/dates and adjacent visible qualifications."""
-    if filter not in FILTERS or len(rows) > MAX_ROWS:
-        raise ExportProblem("Не удалось определить строки для выгрузки.")
+    """One original RDS position per row; qualifications remain in cell comments."""
+    if filter != 'all' or query.strip() or len(rows) > MAX_ROWS or rows != comparison.get('rows') or \
+            meta.get('layout') != LAYOUT or comparison.get('layout') != LAYOUT:
+        raise ExportProblem('Excel содержит всю действующую РДС; фильтры таблицы ГПР к нему не применяются.')
     book = Workbook()
     sheet = book.active
-    sheet.title = "Накопленный план-факт"
-    book.properties.creator = "DevelopAid"
-    row_number = 0
+    sheet.title = 'РДС — план и факт'
+    book.properties.creator = 'DevelopAid'
+    labels = ('№', 'Работа из РДС', 'Ед. изм.', 'Начало ГПР', 'Конец ГПР', 'План, объём',
+              'Факт, объём', 'Отклонение, объём', 'План, ₽', 'Факт, ₽', 'Отклонение, ₽', 'Отклонение, дни')
+    label = meta.get('label') or {}
 
-    def append(values):
-        nonlocal row_number
-        values = [_text(value) if isinstance(value, str) else value for value in values]
-        sheet.append(values)
-        row_number += 1
-        cells = [sheet.cell(row_number, column) for column in range(1, 8)]
-        for cell in cells:
-            if isinstance(cell.value, str):
-                cell.value = _text(cell.value)
-                cell.data_type = "s"  # Source strings, including = + - @, are never formulas.
-            cell.alignment = Alignment(vertical="top", wrap_text=True)
-            if isinstance(cell.value, dt.date):
-                cell.number_format = "dd.mm.yyyy"
-        return cells
+    def put(row, column, value, comment=''):
+        cell = sheet.cell(row, column, _text(value) if isinstance(value, str) else value)
+        if isinstance(cell.value, str):
+            cell.data_type = 's'
+        cell.alignment = Alignment(vertical='top', wrap_text=True)
+        cell.font = Font(name='Calibri', size=10)
+        if comment:
+            cell.comment = Comment(_text(comment), 'DevelopAid')
+        return cell
 
-    def note(text):
-        append([_text(text)])
-        sheet.merge_cells(start_row=row_number, start_column=1, end_row=row_number, end_column=7)
-
-    label = meta.get("label") or {}
-    note("Накопленные план и факт по работам и поставкам договора")
-    note("Проект: " + meta["project"])
-    note("Договор: " + (label.get("contract") or "номер не подтверждён") +
-         (" · " + label["contractor"] if label.get("contractor") else ""))
-    append(["Дата среза", _date(meta["cut"])])
-    note(f"Выгружено строк: {len(rows)} из {len(comparison['lines'])}. Фильтр: {FILTERS[filter]}." +
-         (" Поиск: " + query if query else ""))
-    edition = comparison.get("edition") or {}
-    source = {"ks2": "КС-2 по периодам выполнения", "ks6a": "накопительная КС-6а"}.get(
-        comparison.get("source"), "источник факта пока не определён")
-    note("Источник факта: " + source + (". Редакция: " + edition["title"] if edition.get("title") else ""))
-    if edition.get("date"):
-        append(["Дата редакции", _date(edition["date"])])
-    if edition.get('start'):
-        append(['Начало учёта оставшихся работ', _date(edition['start'])])
-        if (edition.get('start_source') or {}).get('title'):
-            note('Источник начала учёта: ' + _text(edition['start_source']['title']))
-    for key, caption in [("estimate", "Расчёт договорной стоимости"), ("schedule", "ГПР")]:
-        if edition.get(key):
-            note(caption + ": " + _text(edition[key]))
-    coverage = comparison.get("coverage") or {}
-    if coverage.get("schedule_sha256"):
-        note("Версия исходного ГПР: " + _text(coverage["schedule_sha256"]))
-    if (comparison.get("coverage") or {}).get("partial"):
-        note("Сопоставление не охватывает весь договор.")
-    if comparison.get("preliminary"):
-        note("Предварительно: у части актов использована дата составления.")
-    confirmation = comparison.get('confirmation') or {}
-    if confirmation.get('message'):
-        note(confirmation['message'])
+    for row, text in enumerate((
+        'РДС: план и факт',
+        'Проект: '+meta['project']+' · Договор: '+(label.get('contract') or 'номер не подтверждён')+
+            (' · '+label['contractor'] if label.get('contractor') else ''),
+        'Дата среза: '+_date(meta['cut']).strftime('%d.%m.%Y')+' · Факт: '+
+            {'ks2': 'КС-2', 'ks6a': 'КС-6а'}.get(comparison.get('source'), 'источник не определён')),
+        1):
+        put(row, 1, text)
+        sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=12)
+    sheet['A1'].font = Font(name='Calibri', size=15, bold=True)
+    sheet.row_dimensions[2].height = 30
+    sheet['A3'].comment = Comment(_text('\n'.join(filter_none([
+        comparison.get('source_note'), comparison.get('confirmation', {}).get('message'),
+        'Пустая ячейка означает неизвестное значение; подтверждённый ноль записан числом 0.',
+        'Файл содержит все позиции действующей РДС и не зависит от фильтров таблицы ГПР.',
+        *comparison.get('data_gaps', [])]))), 'DevelopAid')
+    for first, last, title in ((1, 3, 'Работы РДС'), (4, 5, 'Сроки из ГПР'),
+                               (6, 8, 'Объём работ в единице строки'), (9, 11, 'Стоимость работ и поставки'),
+                               (12, 12, 'Отклонение')):
+        put(5, first, title)
+        if first != last:
+            sheet.merge_cells(start_row=5, start_column=first, end_row=5, end_column=last)
+    for column, text in enumerate(labels, 1):
+        put(6, column, text)
+    for row in (5, 6):
+        for cell in sheet[row]:
+            cell.fill = PatternFill('solid', fgColor='1F4E78')
+            cell.font = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    sheet.row_dimensions[5].height = 26
+    sheet.row_dimensions[6].height = 42
+    sheet['B6'].comment = Comment(_text('Действующая РДС: '+comparison.get('estimate_title', '')+
+                                      '. Позиции и их порядок сохранены из этой редакции.'), 'DevelopAid')
+    date_comment = comparison.get('date_assumption') or 'Даты взяты из отдельной принятой строки ГПР.'
+    if comparison.get('legal_deadline'):
+        date_comment += ' Срок договора: '+_date(comparison['legal_deadline']).strftime('%d.%m.%Y')+'. Это отдельный юридический срок.'
+    for column in (4, 5):
+        sheet.cell(6, column).comment = Comment(_text(date_comment), 'DevelopAid')
+    plan_comment = comparison.get('plan_assumption') or ''
+    if comparison.get('remaining_start'):
+        plan_comment += ' Учёт оставшихся работ с '+_date(comparison['remaining_start']).strftime('%d.%m.%Y')+'.'
+        if comparison.get('remaining_source'):
+            plan_comment += ' Источник: '+comparison['remaining_source']+'.'
+    sheet['F6'].comment = Comment(_text(plan_comment), 'DevelopAid')
+    sheet['G6'].comment = Comment('Физический объём выполненной работы в единице РДС. Количество поставленного материала сюда не прибавляется и из стоимости не выводится.', 'DevelopAid')
+    sheet['I6'].comment = Comment(_text(plan_comment), 'DevelopAid')
     evidence = comparison.get('act_evidence') or {}
-    if evidence.get('count'):
-        note('Итоги загруженных КС-2. Полнота комплекта актов не подтверждена. '
-             'Для сравнения с ГПР используются сопоставленные объёмы по ценам расчёта договора.')
-        append(['Количество актов', evidence['count']])
-        append(['Итого по документам', _number(evidence.get('total'))])[1].number_format = '#,##0.00" ₽"'
-        if evidence.get('total') is None:
-            append(['Сумма прочитанных итогов', _number(evidence.get('known_total'))])[1].number_format = '#,##0.00" ₽"'
-            note('Общий итог актов не определён: часть сумм не прочитана.')
-        if evidence.get('unread_count'):
-            note(f"Актов без прочитанных позиций: {evidence['unread_count']}. Их итоги показаны по документам.")
-        for act in evidence.get('acts') or []:
-            append(['КС-2 № ' + str(act.get('number') or 'без номера'),
-                    _date(act.get('date')), _number(act.get('total'))])[2].number_format = '#,##0.00" ₽"'
-            append(['Отчётный период акта', _date(act.get('start')),
-                    _date(act.get('finish') or act.get('day'))])
-            note('Прочитано позиций: ' + str(act.get('positions') or 0))
-            if act.get('filename'):
-                note('Файл акта: ' + _text(act['filename']))
-            for warning in act.get('warnings') or []:
-                note(warning)
-    for gap in comparison.get('data_gaps') or []:
-        note(gap)
-    for value in [comparison.get("reason"), comparison.get("source_note"), comparison.get("plan_assumption"),
-                  (comparison.get("schedule_source") or {}).get("assumption"), comparison.get("assumption"),
-                  comparison.get("weights")]:
-        if value:
-            note(value)
-    total = comparison.get('total') or {}
-    if total.get('readiness') is not None:
-        note('Общая готовность работ и поставки в расчёте: ' + _percent(total['readiness']))
-    for key, label in [('work','Работы'),('material','Поставка материалов')]:
-        component = (comparison.get('components') or {}).get(key)
-        if component:
-            note(label + ': ' + ('готовность ' + _percent(component['readiness'])
-                 if component.get('readiness') is not None else 'готовность неизвестна' if component.get('amount') != 0
-                 else 'в расчёте нет этого компонента') + '. Учтённый вклад: ' +
-                 (str(_number(component['counted'])) + ' ₽' if component.get('counted') is not None else 'неизвестен'))
-    note("Всего по договору — полный объём позиции по действующей редакции договора в единицах строки.")
-    note("Пустая числовая ячейка означает неизвестное значение, а не ноль. "
-         "Прогноз относится к сопоставленным работам и поставкам и не меняет срок ввода проекта.")
-    if meta.get('source_correction'):
-        correction = meta['source_correction']
-        note('Источники договора уточнены владельцем. Версия выбора: ' + correction['decision_id'])
-        note('Источник выполнения: ' + correction['roles']['execution_raw_id'] +
-             '. Карточка документов: ' + correction['roles']['documents_raw_id'])
-        if correction.get('warning'):
-            note(correction['warning'])
-    note("Версия таблицы: " + meta["revision"])
-    append(["Работа или поставка / единица", "Всего по договору", "План на дату", "Факт", "Отклонение", "Срок строки", "Прогноз окончания"])
-    header = row_number
-    for cell in sheet[header]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="1F4E78")
-    if not rows:
-        note("По выбранному фильтру строк нет." if comparison["lines"] else
-             comparison.get("reason") or "Работы и поставки для сравнения не определены. Выполнение неизвестно.")
-    sections = any(row.get('section') for row in rows)
-    previous_section = None
-    for row in rows:
-        section = row.get('section') or ''
-        if sections and section != previous_section:
-            note(section or 'Раздел в ГПР не указан')
-            sheet.cell(row_number, 1).font = Font(bold=True, color='1F4E78')
-            sheet.cell(row_number, 1).fill = PatternFill('solid', fgColor='E8EFF7')
-        previous_section = section
-        name = "\n".join(_text(v) for v in [row.get("name"), row.get("context"),
-                         " · ".join(_text(v) for v in [row.get("display_code") or row.get("code"), row.get("unit")] if v)] if v)
-        scope = row.get('physical_scope')
-        if scope:
-            origin = 'по КС-6а' if scope.get('source_kind') == 'ks6a' else 'по расчёту договора'
-            name += ('\nПолный объём конструкции: ' + str(_number(scope['quantity'])) +
-                     ' ' + _text(scope.get('unit')) + ' · ' + origin
-                     if scope.get('quantity') is not None else '\nПолный объём конструкции в этой редакции не указан.')
-            name += '\nВыполнение — по отдельным операциям.'
-        cells = append([name, _number(row.get("contract_total")), _number(row.get("planned")), _number(row.get("fact")), _number(row.get("deviation")),
-                        _date(row.get("due")), _date(row.get("finished") or row.get("forecast_finish"))])
-        for cell in cells[1:5]:
-            cell.number_format = '#,##0.00" ₽"' if row.get("basis") == "money" else "#,##0.###"
-        movement = (f"Отставание: {row['lag_days']} дн." if row.get("lag_days", 0) else
-                    f"Опережение: {row['ahead_days']} дн." if row.get("ahead_days", 0) else
-                    {"done": "Поставка завершена." if row.get("component") == "material" else "Работа завершена.", "on_plan": "По плану."}.get(row.get("state"), ""))
-        remarks = ["\n".join(_text(v) for v in [row.get("money_fallback"), row.get("reason"),
-                   "Готовность: " + _percent(row["readiness"]) if row.get("readiness") is not None else ""] if v),
-                   "Полный объём неизвестен." if row.get("contract_total") is None else "",
-                   "План неизвестен." if row.get("planned") is None else "",
-                   ("Факт неизвестен. " if row.get("fact") is None else "") +
-                   ("Выполнение плана: " + _percent(row["plan_done"]) if row.get("plan_done") is not None else ""),
-                   ("Отклонение неизвестно. " if row.get("deviation") is None else "") + movement +
-                   (" От плана: " + _percent(row["percent"]) if row.get("percent") is not None else ""),
-                   "Срок неизвестен." if not row.get("due") else
-                   f"Просрочка: {row['overdue_days']} дн." if row.get("overdue_days", 0) else "",
-                   ("По периоду КС, завершено." +
-                    (f" Позже срока на {row['late_days']} дн." if (row.get("late_days") or 0) > 0 else ""))
-                   if row.get("finished") else "" if row.get("forecast_finish") else "Прогноз не рассчитан."]
-        if any(remarks):
-            for cell in append(remarks):
-                cell.font = Font(size=10, color="526579")
-    for column, width in zip("ABCDEFG", [48, 22, 22, 24, 26, 23, 30]):
-        sheet.column_dimensions[column].width = width
-    sheet.freeze_panes = f"B{header + 1}"
-    sheet.print_title_rows = f"{header}:{header}"
+    fact_comment = 'Полная стоимость работ и поставки по принятому расчёту РДС. Это не оплаты. '+(comparison.get('fact_assumption') or '')
+    if evidence.get('total') is not None:
+        fact_comment += ' Итоги загруженных актов по самим документам: '+_money(_number(evidence['total']))+'. Это отдельная сверка, а не факт каждой позиции по РДС.'
+    sheet['J6'].comment = Comment(_text(fact_comment), 'DevelopAid')
+    sheet['L6'].comment = Comment('Опережение минус отставание по принятому расчёту ГПР: плюс — впереди, минус — позади. Это не дни юридической просрочки. Без отдельного показателя позиции ячейка пустая.', 'DevelopAid')
+    headings = {}
+    for heading in comparison.get('headings') or []:
+        headings.setdefault(heading['before_position'], []).append(heading)
+    excel_row = 6
+    for ordinal, source in enumerate(rows):
+        for heading in headings.get(ordinal, []):
+            excel_row += 1
+            put(excel_row, 1, heading.get('number') or '')
+            heading_comment = ''
+            if heading.get('quantity') is not None and heading.get('unit'):
+                heading_comment = 'Объём по заголовку РДС: '+format(_number(heading['quantity']), 'g').replace('.', ',')+' '+heading['unit']+'. Объёмы отдельных операций в него не складываются.'
+            put(excel_row, 2, heading.get('name') or '', heading_comment)
+            for cell in sheet[excel_row]:
+                cell.fill = PatternFill('solid', fgColor='E8EFF7')
+                cell.font = Font(name='Calibri', size=10, bold=True)
+            sheet.row_dimensions[excel_row].height = 28
+        excel_row += 1
+        for column, field in enumerate(FIELDS, 1):
+            value = source.get(field)
+            if column in (4, 5):
+                value = _date(value)
+            elif column >= 6:
+                value = _number(value)
+            comment = (source.get('comments') or {}).get(field) or ''
+            if column in (4, 5) and value is not None:
+                comment = (comment+' '+date_comment).strip()
+            cell = put(excel_row, column, value, comment)
+            if column in (4, 5):
+                cell.number_format = 'dd.mm.yyyy'
+            elif column in (9, 10, 11):
+                cell.number_format = '#,##0.00;[Red]-#,##0.00;0.00'
+            elif column in (6, 7, 8):
+                cell.number_format = '#,##0.###;[Red]-#,##0.###;0'
+            elif column == 12:
+                cell.number_format = '+0;[Red]-0;0'
+        sheet.row_dimensions[excel_row].height = min(78, max(30, 14*(len(str(source.get('name') or ''))//48+1)))
+    widths = (9, 61, 12, 14, 14, 15, 15, 16, 19, 19, 19, 15)
+    for column, width in enumerate(widths, 1):
+        sheet.column_dimensions[get_column_letter(column)].width = width
+    sheet.freeze_panes = 'D7'
+    sheet.auto_filter.ref = f'A6:L{excel_row}'
+    sheet.print_title_rows = '5:6'
+    sheet.print_options.horizontalCentered = True
+    sheet.page_setup.orientation = 'landscape'
+    sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
+    sheet.page_setup.fitToWidth, sheet.page_setup.fitToHeight = 1, 0
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
-    sheet.page_setup.orientation = "landscape"
-    sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
-    sheet.page_setup.fitToWidth = 1
-    sheet.sheet_view.showGridLines = False
-    target = io.BytesIO()
-    book.save(target)
-    raw = target.getvalue()
+    sheet.print_area = f'A1:L{excel_row}'
+    sheet.oddFooter.center.text = 'Страница &P из &N'
+    output = io.BytesIO()
+    book.save(output)
+    raw = output.getvalue()
     if len(raw) > MAX_XLSX_BYTES:
-        raise ExportProblem("Файл слишком большой. Сократите число показанных работ.")
+        raise ExportProblem('Файл слишком большой для выгрузки.')
     return raw
+
+
+def filter_none(values):
+    return [value for value in values if value]

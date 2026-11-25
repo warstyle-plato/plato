@@ -12,7 +12,7 @@ from tests.test_contract_comparison_export import native_card, PROJECT, CUT
 
 
 @pytest.mark.parametrize("case", ["download", "filter_changed", "denied"])
-def test_node_actual_page_exports_only_native_selected_tokens_and_drops_stale_download(case):
+def test_node_actual_page_exports_all_rds_tokens_independently_of_gpr_filter(case):
     cached = native_card()
     cached["comparison"]["lines"][0]["name"] = "Ёж и кладка"
     cached["comparison_export"] = export.bind_snapshot(PROJECT, CUT, "c" * 64, cached, {})
@@ -42,11 +42,12 @@ await pending;console.log(JSON.stringify({calls,downloads,checks,disabled:widget
     assert len(result["calls"]) == 1
     request = result["calls"][0]
     assert request["path"] == "/monitor/contracts/comparison.xlsx" and request["method"] == "POST"
-    assert request["body"]["selected_tokens"] == [binding["row_tokens"][0]]
+    assert request["body"]["selected_tokens"] == binding['row_tokens']
+    assert request['body']['filter'] == 'all' and request['body']['query'] == ''
     assert not ({"rows", "planned", "fact", "deviation"} & request["body"].keys())
     assert "synthetic" not in request["path"]
-    if case == "download":
-        assert result["downloads"] == ["blob-created", "contract-plan-fact-2026-03-05.xlsx"]
+    if case in ("download", "filter_changed"):
+        assert result["downloads"] == ["blob-created", "contract-rds-plan-fact-2026-03-05.xlsx"]
     else:
         assert result["downloads"] == []
     if case == "denied":
@@ -104,7 +105,7 @@ def test_node_export_refuses_redirect_before_replaying_credentials(status):
     prelude = "const redirectStatus=" + str(status) + ";\n" + r"""
 let authEpoch=1,calls=[],forwarded=[],downloads=[];
 const contractComparisonState={lines:[]};
-const contractComparisonExport={available:true,ticket:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',id:'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',revision:'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',cut:'2026-03-05',row_tokens:[]};
+const contractComparisonExport={available:true,layout:'rds-plan-fact-v1',rows_count:0,ticket:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',id:'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',revision:'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',cut:'2026-03-05',row_tokens:[]};
 const widgets={contractComparisonExport:{isConnected:true,disabled:false},contractComparisonFilter:{value:'all'},contractComparisonSearch:{value:''}};
 function $(id){return widgets[id]}function hasAuth(){return true}function requireLogin(){throw Error('Unexpected login')}
 function cumulativeContext(){return{project:'Synthetic',cut:'2026-03-05',key:'synthetic-redirect-admin',session:'synthetic-redirect-owner'}};
@@ -129,7 +130,7 @@ require('http').request=deny;require('https').request=deny;require('net').connec
     assert result["forwarded"] == [] and result["downloads"] == [] and result["disabled"] is False
 
 
-def test_browser_download_contains_only_the_current_shown_plan_fact_rows(tmp_path):
+def test_browser_download_contains_full_rds_when_gpr_screen_is_filtered(tmp_path):
     from playwright.sync_api import expect
     from tests.test_monitor_cumulative_controls import browser_page, CONTRACT, KEY
     cached, calls = native_card(), []
@@ -137,6 +138,7 @@ def test_browser_download_contains_only_the_current_shown_plan_fact_rows(tmp_pat
         _browser_export(page, cached, CONTRACT, KEY, calls)
         page.locator("#contractComparisonSearch").fill("нулевым")
         expect(page.locator("#contractComparisonRows tr[data-comparison-code]")).to_have_count(1)
+        expect(page.locator('#contractComparisonExport')).to_have_text('Выгрузить всю РДС в Excel')
         with page.expect_download() as got:
             page.locator("#contractComparisonExport").click()
         path = tmp_path / "shown.xlsx"
@@ -144,22 +146,17 @@ def test_browser_download_contains_only_the_current_shown_plan_fact_rows(tmp_pat
         sheet = load_workbook(path).active
         texts = [str(c.value) for row in sheet for c in row if c.value is not None]
         assert any("Работа с нулевым фактом" in text for text in texts)
-        assert not any("Кладка стен" in text for text in texts)
-        assert len(calls) == 1 and len(calls[0]["selected_tokens"]) == 1
+        assert any("Кладка стен" in text for text in texts)
+        assert len(calls) == 1 and len(calls[0]["selected_tokens"]) == 2
+        assert calls[0]['filter'] == 'all' and calls[0]['query'] == ''
         assert not errors
 
 
-def test_browser_download_without_a_plan_names_the_reason_instead_of_zero(tmp_path):
+def test_browser_without_rds_never_offers_an_act_derived_pseudo_estimate(tmp_path):
     from playwright.sync_api import expect
     from tests.test_monitor_cumulative_controls import browser_page, CONTRACT, KEY
     cached, calls = native_card(empty=True), []
     with browser_page(390) as (page, _, errors):
         _browser_export(page, cached, CONTRACT, KEY, calls)
-        expect(page.locator("#contractComparisonExport")).to_be_enabled()
-        with page.expect_download() as got:
-            page.locator("#contractComparisonExport").click()
-        path = tmp_path / "unknown.xlsx"
-        got.value.save_as(path)
-        sheet = load_workbook(path).active
-        assert any("нет действующей редакции плана" in str(c.value) for row in sheet for c in row)
-        assert calls[0]["selected_tokens"] == [] and not errors
+        expect(page.locator("#contractComparisonExport")).to_be_disabled()
+        assert calls == [] and not errors

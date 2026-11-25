@@ -12,6 +12,7 @@ import developaid_contract_documents as documents
 import developaid_contract_fact as fact
 import developaid_contract_plan as plan
 import developaid_contract_schedule_links as links
+import developaid_contract_rds as rds
 
 CUT = '2026-03-05'
 
@@ -26,13 +27,15 @@ def source_case(*, group_volume=True):
             'group': copy.deepcopy(group), 'section': 'Корпус 1', 'page': 2,
             'unit_price': {'material': 0.0, 'work': n * 10.0, 'total': n * 10.0},
             'amount': {'material': 0.0, 'work': n * 1000.0, 'total': n * 1000.0}})
-    proposed = [{'key': links.position_key(p), 'status': 'confirmed', 'amount': p['amount']['total'],
+    proposed = [{'index': index, 'number': p['number'], 'name': p['name'],
+                 'key': links.position_key(p), 'status': 'confirmed', 'amount': p['amount']['total'],
                  'unit': p['unit'], 'quantity': p['quantity'], 'work_amount': p['amount']['work'],
-                 'material_amount': 0.0, 'lines': [{'code': '4.1', 'share': 1.0}]} for p in positions]
+                 'material_amount': 0.0, 'lines': [{'code': '4.1', 'share': 1.0}]} for index,p in enumerate(positions)]
     schedule = {'lines': [{'code': '4.1', 'name': group['name'], 'section': 'Корпус 1',
                           'start': '2026-03-01', 'finish': '2026-03-10', 'parent': None}]}
     edition = {'sha256': 'a' * 64, 'title': 'Учебное соглашение', 'date': '2026-02-01',
-               'estimates': [{'positions': positions, 'links': {'positions': proposed}, 'annex': 'Расчёт'}],
+               'estimates': [{'positions': positions, 'links': {'positions': proposed}, 'annex': 'Расчёт',
+                              'structure': [dict(group,before_position=0)]}],
                'estimate_sha256': 'b' * 64, 'schedule': schedule, 'schedule_sha256': 'schedule', 'start': None}
     acts = [{'number': p['number'], 'name': p['name'], 'unit': p['unit'], 'quantity': 25.0 if i == 0 else 0.0,
              'quantity_material': 0.0, 'act_amount': 250.0 if i == 0 else 0.0,
@@ -51,7 +54,8 @@ def projected(*, group_volume=True, physical_groups=None):
     performed = fact.build([edition], planned['in_force'], found, CUT)
     measured = control.build(planned, performed, None, '', CUT)
     listed = {'control': measured, 'plan': planned, 'fact': performed,
-              'documents': [{'sha256': 'schedule', 'title': 'ГПР', 'schedule': edition['schedule']}]}
+              'documents': [{'sha256': 'schedule', 'title': 'ГПР', 'schedule': edition['schedule']},
+                            {'sha256': 'b'*64, 'title': 'Учебная РДС', 'estimates': edition['estimates']}]}
     return comparison.build(listed, CUT), listed
 
 
@@ -102,13 +106,16 @@ def test_missing_parent_volume_is_not_inferred_from_equal_children_or_another_bu
 
 
 def test_parent_quantity_and_original_operation_indices_reach_excel():
-    view, _ = projected()
-    meta = {'project': 'Учебный', 'cut': CUT, 'label': {}, 'revision': 'x'}
-    raw = export.workbook(meta, view, view['lines'])
+    view, listed = projected()
+    cached={'ok':True,'contract_id':'c'*64,**listed,'comparison':view}
+    cached['rds_comparison']=rds.build(cached)
+    meta=export.bind_snapshot('Учебный',CUT,'c'*64,cached,{})
+    raw = export.workbook(meta, cached['rds_comparison'], cached['rds_comparison']['rows'])
     sheet = load_workbook(io.BytesIO(raw)).active
     text = '\n'.join(str(c.value) for row in sheet for c in row if c.value is not None)
-    assert 'Полный объём конструкции: 100.0 м2' in text
-    assert '4.1.1 · м2' in text and '4.1.4 · м2' in text
+    assert sheet['B7'].comment and '100 м2' in sheet['B7'].comment.text
+    assert [sheet.cell(row,1).value for row in range(8,12)]==['4.1.1','4.1.2','4.1.3','4.1.4']
+    assert [sheet.cell(row,7).value for row in range(8,12)]==[25,0,0,0]
     assert '::operation:' not in text
     assert not any(c.value == 200.0 for row in sheet for c in row)
 
@@ -194,8 +201,8 @@ def test_native_card_and_excel_keep_the_original_stage_indices(width, tmp_path):
     from tests.test_contract_comparison_export_ui import _browser_export
     from tests.test_monitor_cumulative_controls import browser_page, CONTRACT, KEY
     view, listed = projected()
-    cached = native_card()
-    cached.update(comparison=view, control=listed['control'], fact=listed['fact'])
+    cached={'ok':True,'contract_id':'c'*64,**listed,'comparison':view}
+    cached['rds_comparison']=rds.build(cached)
     with browser_page(width) as (page, _, errors):
         _browser_export(page, cached, CONTRACT, KEY, [])
         rows = page.locator('#contractComparisonRows .contract-operation')
@@ -213,5 +220,6 @@ def test_native_card_and_excel_keep_the_original_stage_indices(width, tmp_path):
         got.value.save_as(path)
         sheet = load_workbook(path).active
         text = '\n'.join(str(c.value) for row in sheet for c in row if c.value is not None)
-        assert '4.1.3 · м2' in text and '4.1.1 · м2' not in text
+        assert [sheet.cell(row,1).value for row in range(8,12)]==['4.1.1','4.1.2','4.1.3','4.1.4']
+        assert '::operation:' not in text
         assert not errors

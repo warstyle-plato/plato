@@ -36,7 +36,7 @@ import re
 from math import fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 13
+READER_VERSION = 14
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -381,6 +381,10 @@ def _estimate_rows(cells, page_number, state, warnings):
         if all(v is None for v in price+money) and (not unit and quantity is None or _CODE.match(number)):
             # A numbered heading may give the volume of its works and leave the cost to them.
             title = _space(' '.join(row[1:7]) if not unit else row[1])
+            if title:
+                state.setdefault('structure', []).append({'before_position': len(state['positions']),
+                    'number': number if _CODE.match(number) else '', 'name': title,
+                    'page': page_number, 'unit': unit or None, 'quantity': quantity})
             if title.lower().startswith('раздел'):
                 state['section'], state['group'], state['headings'] = title, None, {}
             elif title:
@@ -1326,7 +1330,7 @@ def _read(document, data: bytes = b'') -> dict:
                 mentioned.add('estimate')
                 estimate = None
                 continue
-            estimate = dict(_estimate_meta(text), pages=[number], positions=[], totals=[], warnings=[],
+            estimate = dict(_estimate_meta(text), pages=[number], positions=[], structure=[], totals=[], warnings=[],
                             section=None, group=None, headings={}, untitled=None)
             out['estimates'].append(estimate)
             layout = bounds
