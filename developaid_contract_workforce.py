@@ -12,6 +12,8 @@ import hashlib
 import json
 import math
 import re
+import stat
+from contextlib import nullcontext
 
 SCHEMA = 'contract-workforce-v1'
 CATEGORIES = ('workers', 'itr')
@@ -21,6 +23,14 @@ NOTE = ('Сравниваются одна дата и один состав п�
         'Общая бригада и общие ИТР не распределяются между договорами. '
         'Отсутствие записи не означает ноль; численность разных дней не суммируется.')
 _HEX = re.compile(r'^[a-f0-9]{64}$')
+COHORT_SCHEMA = 'contract-workforce-source-guard-v1'
+REGISTER_GUARD = '_workforce_source_guard'
+MAX_COHORT_FILES = 2048
+MAX_COHORT_BYTES = 32 * 1024 * 1024
+
+
+class SourceChanged(ValueError):
+    status = 409
 
 
 def digest(value):
@@ -43,6 +53,120 @@ def _count(value):
 
 def _text(value):
     return ' '.join(str(value or '').lower().replace('ё', 'е').split())
+
+
+def _cohort_inventory(root, cut):
+    """Bounded native metadata only: no PDF/ZIP reads, parses or register build."""
+    import developaid_contract_identity_store as store
+    from developaid_contract_files import ContractFilesProblem
+    entries, total = [], 0
+
+    def children(folder):
+        found = []
+        for path in folder.iterdir():
+            found.append(path)
+            if len(found) > MAX_COHORT_FILES:
+                raise ContractFilesProblem('Слишком много файлов для проверки источников численности.')
+        return sorted(found)
+
+    def add(path, *, content=True):
+        nonlocal total
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ContractFilesProblem('Происхождение источников численности не подтверждено. Обновите карточку.')
+        if content:
+            raw = store.read_bytes(path, 4 * 1024 * 1024)
+            if raw is None:
+                raise ContractFilesProblem('Источники численности изменились во время чтения. Обновите карточку.')
+            total += len(raw)
+            pin = hashlib.sha256(raw).hexdigest()
+        else:
+            # Native archive identities are immutable SHA-named sources.
+            # Their roster/stamps detect uploads/removal/cache refresh without
+            # rereading multi-megabyte manifests or financial archive bodies.
+            pin = [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+        entries.append([path.relative_to(root).as_posix(), pin])
+        if len(entries) > MAX_COHORT_FILES or total > MAX_COHORT_BYTES:
+            raise ContractFilesProblem('Состав источников численности превышает предел проверки. Обновите карточку.')
+
+    for name in ('contract_identity_decisions.jsonl', 'cumulative_terms.json',
+                 'cumulative_header_dates.json', 'contract_links.json', 'contract_pdf_sources.json'):
+        add(root / name)
+    for folder in (root / 'cumulative', root / 'contract_documents', root / 'estimate'):
+        if folder.is_symlink():
+            raise ContractFilesProblem('Каталог источников численности не подтверждён.')
+    cumulative = root / 'cumulative'
+    if cumulative.exists():
+        add(cumulative / '.snapshot-activity.json')
+        for path in children(cumulative):
+            if re.fullmatch(r'\d{4}-\d{2}-\d{2}-[a-f0-9]{64}\.(?:json|zip)', path.name) and path.name[:10] <= cut:
+                add(path, content=False)
+    estimate = root / 'estimate'
+    if estimate.exists():
+        for path in children(estimate):
+            if path.suffix == '.xlsx' and path.stem <= cut:
+                add(path, content=False)
+    documents = root / 'contract_documents'
+    families = []
+    if documents.exists():
+        folders = [path for path in children(documents) if _HEX.fullmatch(path.name)]
+        if len(folders) > 256:
+            raise ContractFilesProblem('Слишком много карточек для проверки источников численности.')
+        for folder in folders:
+            if folder.is_symlink() or not folder.is_dir():
+                raise ContractFilesProblem('Каталог договора не подтверждён.')
+            families.append(folder.name)
+            entries.append([folder.relative_to(root).as_posix(), 'native_card'])
+            for path in children(folder):
+                # GPR calendar events do not feed register identity/scope.
+                # Its selected graph/anchor has the separate target GPR guard;
+                # keeping events here would reject every own anchor save.
+                if path.name == 'links.json' or re.fullmatch(r'[a-f0-9]{64}\.json', path.name):
+                    add(path)
+                elif re.fullmatch(r'[a-f0-9]{64}\.pdf', path.name):
+                    add(path, content=False)
+    return {'families': families, 'sha256': digest(entries)}
+
+
+def cohort_sources(project_name, cut):
+    """Pin native peer inputs in existing global lock order, never expand a held family.
+
+    Operational mutations may already hold only their selected native family.
+    They reuse those locks and use an atomic two-pass seal for all other peers;
+    taking an earlier peer lock while holding a later one would deadlock.
+    A normal download takes the existing complete family in native order.
+    """
+    import developaid_contract_identity as identity
+    import developaid_contract_identity_store as store
+    import developaid_contract_files as files
+    cut = _day(cut)
+    if not cut:
+        raise files.ContractFilesProblem('Дата численности не подтверждена.')
+    with store.namespace(project_name):
+        root = store.project_root(project_name)
+        if not root.is_dir():
+            raise files.ContractFilesProblem('Проект для проверки численности не найден.')
+        held = store._HELD_NATIVE_LOCKS.get()
+        card_held = bool(getattr(files._held, 'folders', set()))
+        first = _cohort_inventory(root, cut)
+        paths = [identity._safe_path(project_name, *parts) for parts in (
+            ('cumulative', '.lock'), ('cumulative_header_dates.lock',),
+            ('cumulative_terms.lock',), ('.contract_links.lock',))]
+        paths += [identity._safe_path(project_name, 'contract_documents', value, '.lock')
+                  for value in first['families']]
+        outer = nullcontext() if held or card_held else store.locked(project_name)
+        locks = nullcontext() if held or card_held else identity._binding_path_locks(paths)
+        with outer, locks:
+            before = _cohort_inventory(root, cut)
+            after = _cohort_inventory(root, cut)
+            if first != before or before != after:
+                raise files.ContractFilesProblem('Состав договоров или их источники изменились. Откройте карточку заново.')
+            info = root.stat()
+            return {'schema': COHORT_SCHEMA, 'project_scope': store.project_scope(project_name), 'cut': cut,
+                    'namespace': [info.st_dev, info.st_ino], 'sources_sha256': after['sha256']}
 
 
 def reports_revision(reports, cut):
@@ -359,16 +483,30 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
 def from_cached(project_name, row, register, cut, gpr_state, *, existing_bindings=()):
     """Read existing reports only; never write an allocation or reload a chat."""
     import developaid_monitor_daily as daily
-    return project(gpr_state.get('schedule') or {}, daily._load_reports(project_name), row,
-                   register, cut, source=gpr_state.get('source') or {}, existing_bindings=existing_bindings)
+    expected = register.get(REGISTER_GUARD)
+    if not isinstance(expected, dict) or expected != cohort_sources(project_name, cut):
+        raise SourceChanged('Состав договоров изменился. Откройте карточку заново перед сравнением численности.')
+    result = project(gpr_state.get('schedule') or {}, daily._load_reports(project_name), row,
+                     register, cut, source=gpr_state.get('source') or {}, existing_bindings=existing_bindings)
+    if expected != cohort_sources(project_name, cut):
+        raise SourceChanged('Источники численности изменились во время чтения. Откройте карточку заново.')
+    result['cohort_source_guard'] = expected
+    result['revision'] = digest({key:value for key,value in result.items() if key != 'revision'})
+    return result
 
 
 def require_current(projection, project_name, *, existing_bindings=()):
     """Download guard; changes require the normal card refresh, no new writes."""
     import developaid_monitor_daily as daily
-    return (projection.get('schema') == SCHEMA
-            and projection.get('report_sources_revision') == reports_revision(daily._load_reports(project_name), projection.get('cut') or '')
-            and projection.get('bindings_revision') == digest(existing_bindings))
+    import developaid_contract_identity_store as store
+    from developaid_contract_files import ContractFilesProblem
+    try:
+        return (projection.get('schema') == SCHEMA
+                and projection.get('cohort_source_guard') == cohort_sources(project_name, projection.get('cut'))
+                and projection.get('report_sources_revision') == reports_revision(daily._load_reports(project_name), projection.get('cut') or '')
+                and projection.get('bindings_revision') == digest(existing_bindings))
+    except (ContractFilesProblem, store.IdentityProblem, OSError):
+        return False
 
 
 def write_sheet(workbook, projection):

@@ -3,6 +3,7 @@ import copy
 import datetime as dt
 import io
 import json
+import os
 
 import pytest
 from openpyxl import Workbook, load_workbook
@@ -220,11 +221,13 @@ def test_work_context_uses_every_word_not_only_one_matching_word():
     assert all(r['workers_fact'] is None for r in got['rows'])
 
 
-def test_download_guard_pins_raw_presence_sources_and_existing_bindings(monkeypatch):
+def test_download_guard_pins_raw_presence_sources_and_existing_bindings(monkeypatch,tmp_path):
     import developaid_monitor_daily as daily
+    native_home(monkeypatch,tmp_path)
     values=inputs();reports=values[3]
     monkeypatch.setattr(daily,'_load_reports',lambda _:reports)
     got=view(values)
+    got['cohort_source_guard']=workforce.cohort_sources('test','2026-01-25')
     assert workforce.require_current(got,'test')
     assert not workforce.require_current(got,'test',existing_bindings=[{'scope':'changed'}])
     reports[0]['text']=reports[0]['text'].replace('ИТР 1, ','')
@@ -267,3 +270,165 @@ def test_compact_counts_keep_every_digit():
     values=inputs();values[3][0]['text']='ООО «Исполнитель», договор A-123 ИТР12, рабочие123'
     got=view(values)['rows'][0]
     assert got['workers_fact']==123 and got['itr_fact']==12
+
+
+def native_home(monkeypatch,tmp_path):
+    import developaid_monitor as monitor
+    base=tmp_path/'monitor';base.mkdir()
+    monkeypatch.setattr(monitor,'_SNAPSHOT_DIR',base)
+    root=monitor._project_dir('test');root.mkdir(exist_ok=True)
+    folder=root/'contract_documents'/('a'*64);folder.mkdir(parents=True)
+    (folder/('b'*64+'.json')).write_text('{"reader":15,"scope":"кровля"}')
+    (folder/('b'*64+'.pdf')).write_bytes(b'%PDF-native-immutable-source')
+    cumulative=root/'cumulative';cumulative.mkdir()
+    stem='2026-01-01-'+'c'*64
+    (cumulative/(stem+'.json')).write_text('{"taken_at":"2026-01-01"}')
+    (cumulative/(stem+'.zip')).write_bytes(b'ZIP-native-source-not-read')
+    return root,folder
+
+
+def native_projection(monkeypatch,tmp_path):
+    import developaid_monitor_daily as daily
+    root,folder=native_home(monkeypatch,tmp_path)
+    row,source,schedule,reports,register=inputs()
+    monkeypatch.setattr(daily,'_load_reports',lambda _:reports)
+    register[workforce.REGISTER_GUARD]=workforce.cohort_sources('test','2026-01-25')
+    view=workforce.from_cached('test',row,register,'2026-01-25',{'schedule':schedule,'source':source})
+    return root,folder,view,(row,register,{'schedule':schedule,'source':source})
+
+
+def test_native_source_guard_never_builds_register_or_reads_pdf_zip(monkeypatch,tmp_path):
+    import developaid_monitor_contracts as contracts
+    import developaid_contract_identity_store as store
+    native_home(monkeypatch,tmp_path)
+    monkeypatch.setattr(contracts,'build',lambda *a,**k:pytest.fail('financial register rebuilt'))
+    original=store.read_bytes
+    read=[]
+    def bounded(path,*args,**kw):
+        assert path.suffix not in {'.pdf','.zip'}
+        read.append(path.name)
+        return original(path,*args,**kw)
+    monkeypatch.setattr(store,'read_bytes',bounded)
+    first=workforce.cohort_sources('test','2026-01-25')
+    assert first==workforce.cohort_sources('test','2026-01-25')
+    assert 'b'*64+'.json' in read
+
+
+def test_new_peer_contract_invalidates_old_preview_without_daily_or_target_change(monkeypatch,tmp_path):
+    root,folder,got,args=native_projection(monkeypatch,tmp_path)
+    assert workforce.require_current(got,'test')
+    peer=root/'contract_documents'/('d'*64);peer.mkdir()
+    (peer/('e'*64+'.json')).write_text('{"contract":"A-456","scope":"Кровля"}')
+    assert not workforce.require_current(got,'test')
+    row,register,gpr=args
+    with pytest.raises(workforce.SourceChanged) as error:
+        workforce.from_cached('test',row,register,'2026-01-25',gpr)
+    assert error.value.status==409
+
+
+def test_peer_scope_content_hash_changes_even_if_size_and_mtime_are_preserved(monkeypatch,tmp_path):
+    root,folder,got,args=native_projection(monkeypatch,tmp_path)
+    peer=root/'contract_documents'/('d'*64);peer.mkdir()
+    path=peer/('e'*64+'.json');path.write_text('{"scope":"alpha"}')
+    pin=workforce.cohort_sources('test','2026-01-25');got['cohort_source_guard']=pin
+    old=path.stat();path.write_text('{"scope":"bravo"}')
+    os.utime(path,ns=(old.st_atime_ns,old.st_mtime_ns))
+    assert path.stat().st_size==old.st_size and path.stat().st_mtime_ns==old.st_mtime_ns
+    assert not workforce.require_current(got,'test')
+
+
+@pytest.mark.parametrize('relative',[
+    'contract_identity_decisions.jsonl','cumulative_terms.json','cumulative_header_dates.json',
+    'contract_links.json','contract_pdf_sources.json',
+    'contract_documents/'+'a'*64+'/links.json',
+    'cumulative/.snapshot-activity.json',
+    'cumulative/2026-01-02-'+'f'*64+'.json'])
+def test_identity_terms_choices_and_active_source_roster_are_pinned(monkeypatch,tmp_path,relative):
+    root,_,got,_=native_projection(monkeypatch,tmp_path)
+    (root/relative).write_text('{}')
+    assert not workforce.require_current(got,'test')
+
+
+def test_mid_build_peer_edit_cannot_get_a_new_signature_for_old_register(monkeypatch,tmp_path):
+    import developaid_monitor_daily as daily
+    root,_=native_home(monkeypatch,tmp_path)
+    row,source,schedule,reports,register=inputs()
+    monkeypatch.setattr(daily,'_load_reports',lambda _:reports)
+    register[workforce.REGISTER_GUARD]=workforce.cohort_sources('test','2026-01-25')
+    (root/'cumulative_terms.json').write_text('{"changed_peer":true}')  # Between register build and projection.
+    with pytest.raises(workforce.SourceChanged):
+        workforce.from_cached('test',row,register,'2026-01-25',{'schedule':schedule,'source':source})
+
+
+def test_one_derived_cache_upgrade_requires_one_fresh_producer_not_an_endless_refresh(monkeypatch,tmp_path):
+    import developaid_monitor_daily as daily
+    _,folder=native_home(monkeypatch,tmp_path)
+    path=folder/('b'*64+'.json');path.write_text('{"reader":14,"scope":"кровля"}')
+    row,source,schedule,reports,register=inputs()
+    monkeypatch.setattr(daily,'_load_reports',lambda _:reports)
+    register[workforce.REGISTER_GUARD]=workforce.cohort_sources('test','2026-01-25')
+    path.write_text('{"reader":15,"scope":"кровля","resources":[]}')
+    with pytest.raises(workforce.SourceChanged):
+        workforce.from_cached('test',row,register,'2026-01-25',{'schedule':schedule,'source':source})
+    register[workforce.REGISTER_GUARD]=workforce.cohort_sources('test','2026-01-25')
+    got=workforce.from_cached('test',row,register,'2026-01-25',{'schedule':schedule,'source':source})
+    assert got['rows'][0]['workers_delta']==-2
+    assert workforce.require_current(got,'test') and workforce.require_current(got,'test')
+
+
+def test_partial_existing_native_family_is_reused_without_nested_or_expanded_locks(monkeypatch,tmp_path):
+    import developaid_contract_identity as identity
+    import developaid_contract_identity_store as store
+    root,folder=native_home(monkeypatch,tmp_path)
+    with store.namespace('test'),identity._binding_path_locks([folder/'.lock']):
+        monkeypatch.setattr(identity,'_binding_path_locks',lambda *a,**kw:pytest.fail('expanded held locks'))
+        monkeypatch.setattr(store,'locked',lambda *a,**kw:pytest.fail('nested nonreentrant identity lock'))
+        assert workforce.cohort_sources('test','2026-01-25')['sources_sha256']
+
+
+def test_symlink_and_bounded_metadata_fail_closed(monkeypatch,tmp_path):
+    _,folder,got,_=native_projection(monkeypatch,tmp_path)
+    path=folder/('b'*64+'.json');path.unlink();path.symlink_to(tmp_path/'foreign.json')
+    assert not workforce.require_current(got,'test')
+    path.unlink();path.write_text('{}')
+    monkeypatch.setattr(workforce,'MAX_COHORT_BYTES',1)
+    assert not workforce.require_current(got,'test')
+
+
+def test_two_pass_peer_inventory_rejects_drift_while_only_a_partial_family_is_held(monkeypatch,tmp_path):
+    import developaid_contract_identity as identity
+    import developaid_contract_identity_store as store
+    import developaid_contract_files as files
+    root,folder=native_home(monkeypatch,tmp_path)
+    actual=workforce._cohort_inventory;calls=[]
+    def changing(*args,**kwargs):
+        result=actual(*args,**kwargs);calls.append(1)
+        if len(calls)==1:
+            (root/'cumulative_terms.json').write_text('{"other_contract":"changed"}')
+        return result
+    monkeypatch.setattr(workforce,'_cohort_inventory',changing)
+    with store.namespace('test'),identity._binding_path_locks([folder/'.lock']):
+        with pytest.raises(files.ContractFilesProblem,match='изменились'):
+            workforce.cohort_sources('test','2026-01-25')
+
+
+def test_projection_cannot_create_its_own_before_build_peer_pin(monkeypatch,tmp_path):
+    import developaid_monitor_daily as daily
+    native_home(monkeypatch,tmp_path)
+    row,source,schedule,reports,register=inputs()
+    monkeypatch.setattr(daily,'_load_reports',lambda _:reports)
+    with pytest.raises(workforce.SourceChanged):
+        workforce.from_cached('test',row,register,'2026-01-25',{'source':source,'schedule':schedule})
+
+
+def test_own_calendar_event_uses_separate_target_gpr_guard_not_peer_cohort_scope(monkeypatch,tmp_path):
+    _,folder,got,_=native_projection(monkeypatch,tmp_path)
+    (folder/'gpr-events.json').write_text('[{"action":"handover"}]')
+    assert workforce.require_current(got,'test')
+
+
+def test_rss_inventory_can_change_register_subject_and_is_also_pinned(monkeypatch,tmp_path):
+    root,_,got,_=native_projection(monkeypatch,tmp_path)
+    estimate=root/'estimate';estimate.mkdir()
+    (estimate/'2026-01-01.xlsx').write_bytes(b'native-workbook-not-read')
+    assert not workforce.require_current(got,'test')
