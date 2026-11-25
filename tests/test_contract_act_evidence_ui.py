@@ -1,6 +1,5 @@
 """Document totals stay visible beside an unavailable plan, without becoming GPR facts."""
 import copy
-import datetime as dt
 import io
 import json
 
@@ -8,6 +7,9 @@ from openpyxl import load_workbook
 import pytest
 
 import developaid_contract_comparison_export as export
+import developaid_contract_acts as acts
+from tests.test_contract_rds_projection import card, edition
+from tests.test_contract_ks2_positions_accumulate import _record
 from developaid_monitor_page import MONITOR_PAGE
 from tests import page_blocks
 from tests.test_contract_comparison_export import native_card, table, xlsx, PROJECT, CUT, CONTRACT
@@ -32,35 +34,57 @@ def card_with_evidence(*, empty=False):
     return cached
 
 
-@pytest.mark.parametrize('empty', [False, True])
-def test_excel_preserves_document_totals_and_the_original_plan_fact_cells(empty):
-    baseline = native_card(empty=empty)
-    original, original_header = table(xlsx(baseline))
-    cached = card_with_evidence(empty=empty)
+def export_card_with_acts(*, no_gpr=False, unread=True, unknown_total=False):
+    # Actual synthetic source positions pass through native accumulation/matching;
+    # quoted document330 deliberately differs from the admitted RDS fact300.
+    first = _record('1', '1', '2026-02-20', [('1', 'Монтаж', 'м2', 3, 330)], start='2026-02-01')
+    first['act']['total'] = 330
+    second = _record('2', '2', '2026-02-28', [], start='2026-02-21')
+    second['act']['total'] = None if unknown_total else 440
+    second['warnings'] = ['Позиции второго акта не прочитаны.']
+    records = [first, second] if unread else [first]
+    cached = card([edition(no_schedule=no_gpr)], None, acts.accumulated(records, CUT), cut=CUT)
+    cached.update(ok=True)
+    cached['documents'].extend(records)
+    cached['comparison_export'] = export.bind_snapshot(PROJECT, CUT, CONTRACT, cached, {'contract': 'Т-1'})
+    return cached
+
+
+@pytest.mark.parametrize('no_gpr', [False, True])
+def test_excel_qualifies_document_totals_in_comments_and_preserves_all_sixteen_rds_cells(no_gpr):
+    original, original_header = table(xlsx(export_card_with_acts(no_gpr=no_gpr, unread=False)))
+    cached = export_card_with_acts(no_gpr=no_gpr)
     before = copy.deepcopy(cached)
     sheet, header = table(xlsx(cached))
-    rows = list(sheet.values)
-    assert next(row for row in rows if row[0] == 'Итого по документам')[1] == 770
-    assert next(row for row in rows if row[0] == 'Количество актов')[1] == 2
-    first = next(row for row in rows if row[0] == 'КС-2 № 1')
-    assert first[1].date() == dt.date(2026, 2, 20) and first[2] == 330
-    text = '\n'.join(str(v) for row in rows for v in row if v is not None)
-    assert 'Полнота комплекта актов не подтверждена' in text
-    assert 'Актов без прочитанных позиций: 1' in text
-    assert 'КС-6а отсутствует' in text
+    assert len(sheet.parent.worksheets) == 1 and sheet.max_column == 16
+    assert cached['fact']['act_evidence']['total'] == 770
+    assert cached['fact']['act_evidence']['count'] == 2
+    assert cached['fact']['act_evidence']['unread_count'] == 1
+    assert '770,00 ₽' in sheet['L6'].comment.text
+    assert 'отдельная сверка' in sheet['L6'].comment.text
+    assert 'Полнота комплекта актов не подтверждена' in sheet['A3'].comment.text
+    assert 'КС-6а отсутствует' in sheet['A3'].comment.text
     assert list(sheet.values)[header:] == list(original.values)[original_header:]
+    assert sheet.cell(header+1, 8).value == 3
+    assert sheet.cell(header+1, 12).value == 300  # Neither quoted total770 nor loaded position330.
+    if no_gpr:
+        assert all(sheet.cell(header+1, column).value is None for column in (4,5,6,7,10,11,13,14,15,16))
+        assert all(sheet.cell(header+1, column).comment for column in (4,5,6,7,10,11,13,14,15,16))
+    assert not any(value in ('Итого по документам', 'Количество актов', 'Сумма прочитанных итогов')
+                   for row in sheet.values for value in row)
     assert cached == before
 
 
-def test_excel_leaves_an_unread_document_total_unknown():
-    cached = card_with_evidence(empty=True)
-    cached['comparison']['act_evidence'].update(total=None, known_total=330)
-    cached['comparison']['act_evidence']['acts'][1]['total'] = None
-    cached['comparison_export'] = export.bind_snapshot(PROJECT, CUT, CONTRACT, cached, {})
-    sheet = load_workbook(io.BytesIO(xlsx(cached))).active
-    rows = list(sheet.values)
-    assert next(row for row in rows if row[0] == 'Итого по документам')[1] is None
-    assert next(row for row in rows if row[0] == 'Сумма прочитанных итогов')[1] == 330
+def test_excel_does_not_promote_known_document_subtotal_to_full_value_fact():
+    cached = export_card_with_acts(no_gpr=True, unknown_total=True)
+    sheet, header = table(xlsx(cached))
+    assert cached['fact']['act_evidence']['total'] is None
+    assert cached['fact']['act_evidence']['known_total'] == 330
+    assert 'Итоги загруженных актов по самим документам:' not in sheet['L6'].comment.text
+    assert '330,00 ₽' not in sheet['L6'].comment.text
+    assert sheet.cell(header+1, 12).value == 300
+    assert sheet.cell(header+1, 11).value is None and sheet.cell(header+1, 13).value is None
+    assert 'Полнота комплекта актов не подтверждена' in sheet['A3'].comment.text
 
 
 @pytest.mark.parametrize('width', [390, 1440])

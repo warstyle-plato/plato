@@ -115,7 +115,7 @@ def test_parent_quantity_and_original_operation_indices_reach_excel():
     text = '\n'.join(str(c.value) for row in sheet for c in row if c.value is not None)
     assert sheet['B7'].comment and '100 м2' in sheet['B7'].comment.text
     assert [sheet.cell(row,1).value for row in range(8,12)]==['4.1.1','4.1.2','4.1.3','4.1.4']
-    assert [sheet.cell(row,7).value for row in range(8,12)]==[25,0,0,0]
+    assert [sheet.cell(row,8).value for row in range(8,12)]==[25,0,0,0]
     assert '::operation:' not in text
     assert not any(c.value == 200.0 for row in sheet for c in row)
 

@@ -49,14 +49,14 @@ def test_native_known_values_zero_units_and_dates_survive_roundtrip():
     cached = native_card()
     before = copy.deepcopy(cached)
     sheet, header = table(xlsx(cached))
-    assert len(sheet.parent.worksheets) == 1 and sheet.max_column == 12
+    assert len(sheet.parent.worksheets) == 1 and sheet.max_column == 16
     first, zero = cached['rds_comparison']['rows']
-    assert [sheet.cell(header+1, i).value for i in (6,7,8,9,10,11,12)] == [10,6,-4,500,300,-200,-2]
+    assert [sheet.cell(header+1, i).value for i in (6,7,8,9,10,11,12,13,14)] == [10,.5,6,.3,-4,500,300,-200,-2]
     assert sheet.cell(header+1,3).value == 'м3'
     assert sheet.cell(header+1,4).value.date() == dt.date(2026,3,1)
     assert sheet.cell(header+1,5).value.date() == dt.date(2026,3,10)
-    assert sheet.cell(header+2,7).value == 0 and sheet.cell(header+2,7).data_type == 'n'
-    assert sheet.freeze_panes == 'D7' and sheet.auto_filter.ref.startswith('A6:L')
+    assert sheet.cell(header+2,8).value == 0 and sheet.cell(header+2,8).data_type == 'n'
+    assert sheet.freeze_panes == 'D7' and sheet.auto_filter.ref.startswith('A6:P')
     assert sheet.page_setup.orientation == 'landscape' and str(sheet.page_setup.paperSize) == sheet.PAPERSIZE_A3
     assert all(cell.data_type not in ('f','e') for row in sheet for cell in row)
     assert cached == before
@@ -76,8 +76,8 @@ def test_remaining_start_source_and_missing_data_are_comments_not_extra_rows_or_
 def test_unknown_and_no_rds_are_not_zero_or_pseudo_estimate_rows():
     sheet, header = table(xlsx(native_card(unknown=True)))
     assert sheet.cell(header+1,6).value == 10
-    assert all(sheet.cell(header+1,i).value is None for i in (7,8,10,11,12))
-    assert 'не подтверждена' in sheet.cell(header+1,7).comment.text
+    assert all(sheet.cell(header+1,i).value is None for i in (8,9,10,12,13,14,15,16))
+    assert 'не подтверждена' in sheet.cell(header+1,8).comment.text
     empty = native_card(empty=True)
     assert empty['comparison_export']['available'] is False
     with pytest.raises(export.ExportProblem):
@@ -88,8 +88,10 @@ def test_completed_row_has_signed_canonical_days_and_no_forecast_columns():
     cached=native_card(finished=True)
     sheet,header=table(xlsx(cached))
     canonical=cached['control']['lines'][0]
-    assert sheet.cell(header+1,12).value == canonical['ahead_days']-canonical['lag_days']
-    assert sheet.cell(header+1,12).value != 4  # Finished four days after GPR is a different metric.
+    assert sheet.cell(header+1,14).value == canonical['ahead_days']-canonical['lag_days']
+    assert sheet.cell(header+1,15).value.date() == dt.date(2026,3,14)
+    assert sheet.cell(header+1,16).value == 4
+    assert sheet.cell(header+1,14).value != 4  # Finished four days after GPR is a different metric.
     assert not any('Прогноз' in str(cell.value) for cell in sheet[header])
 
 

@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 from collections import Counter
 
 import developaid_contract_plan as plan
 from developaid_contract_fact import _money
+from developaid_monitor_statement_union import _unit
 
-LAYOUT = 'rds-plan-fact-v1'
-FIELDS = ('number', 'name', 'unit', 'start', 'finish', 'plan_quantity', 'fact_quantity',
-          'quantity_deviation', 'planned', 'fact', 'deviation', 'day_deviation')
+LAYOUT = 'rds-plan-fact-v2'
+FIELDS = ('number', 'name', 'unit', 'start', 'finish', 'plan_quantity', 'plan_quantity_ratio',
+          'fact_quantity', 'fact_quantity_ratio', 'quantity_deviation', 'planned', 'fact', 'deviation',
+          'day_deviation', 'forecast_finish', 'forecast_delay_days')
 
 
 def build(listed: dict) -> dict:
@@ -51,7 +54,8 @@ def build(listed: dict) -> dict:
             comments = {}
             row = {field: None for field in FIELDS}
             row.update(number=position.get('number'), name=position.get('name'), unit=position.get('unit'),
-                       estimate=estimate_index, index=index, source_sha256=document['sha256'], comments=comments)
+                       estimate=estimate_index, index=index, source_sha256=document['sha256'], comments=comments,
+                       contract_quantity=position.get('quantity'))
             targets = binding.get('lines') or [] if binding and binding.get('status') in ('confirmed', 'proposed') else []
             if targets and all(target['code'] in scheduled and scheduled[target['code']].get('start') and
                                scheduled[target['code']].get('finish') for target in targets):
@@ -108,6 +112,18 @@ def build(listed: dict) -> dict:
                     row[output] = row[actual]-row[planned]
                 else:
                     comments[output] = 'Отклонение не рассчитано: план или факт не подтверждены.'
+            quantity = row['contract_quantity']
+            positive_base = type(quantity) in (int, float) and math.isfinite(quantity) and quantity > 0
+            for output, field in (('plan_quantity_ratio', 'plan_quantity'), ('fact_quantity_ratio', 'fact_quantity')):
+                value = row[field]
+                if positive_base and type(value) in (int, float) and math.isfinite(value):
+                    row[output] = value/quantity
+                    comments[output] = ('100% — полное количество этой позиции по РДС: '+
+                        format(quantity, '.15g').replace('.', ',')+' '+str(row['unit'] or '')+
+                        '. Доля рассчитана по физическому объёму работ, без количества поставки и без стоимости.')
+                else:
+                    comments[output] = (comments.get(field) or 'Физический объём не подтверждён.') if positive_base else \
+                        'Процент не рассчитан: полное количество позиции РДС не подтверждено или не положительно.'
             canonical = None
             if len(targets) == 1:
                 code = targets[0]['code']
@@ -124,6 +140,33 @@ def build(listed: dict) -> dict:
                 row['day_deviation'] = canonical['ahead_days']-canonical['lag_days']
             else:
                 comments['day_deviation'] = 'Для этой позиции РДС отклонение в днях отдельно не рассчитано; сроки договора и просрочка его не заменяют.'
+            # Reuse an individual physical forecast only for a unique full-scope link.
+            # No monetary fallback, proportional extrapolation or group forecast.
+            volume = (canonical or {}).get('volume') or {}
+            share = targets[0].get('share') if len(targets) == 1 else None
+            forecast_known = (canonical and canonical.get('state') not in (None, 'unknown') and positive_base and
+                type(row['fact_quantity']) in (int, float) and math.isfinite(row['fact_quantity']) and type(share) in (int, float) and share == 1 and
+                type(volume.get('quantity')) in (int, float) and math.isfinite(volume['quantity']) and
+                abs(volume['quantity']-quantity) <= 1e-6 and
+                _unit(volume.get('unit')) == _unit(row['unit']) and
+                type(volume.get('fact')) in (int, float) and math.isfinite(volume['fact']) and
+                abs(volume['fact']-row['fact_quantity']) <= 1e-6)
+            finish = (canonical.get('finished') if canonical.get('state') == 'done' else
+                      canonical.get('forecast_finish')) if forecast_known else None
+            if finish and row['finish']:
+                row['forecast_finish'] = finish
+                row['forecast_delay_days'] = (dt.date.fromisoformat(finish)-dt.date.fromisoformat(row['finish'])).days
+                row['forecast_kind'] = 'actual' if canonical.get('state') == 'done' else 'forecast'
+                reason = ('Фактическое завершение по концу последнего принятого периода КС.' if row['forecast_kind'] == 'actual' else
+                          'Условный прогноз действующего расчёта ГПР: текущее отставание сохраняется до конца; '
+                          'работа на плане или впереди заканчивается по графику. Это допущение, не обещанная дата.')
+                if schedule.get('assumption'):
+                    reason += ' '+schedule['assumption']
+                comments['forecast_finish'] = reason
+                comments['forecast_delay_days'] = reason+' Разница с окончанием этой строки ГПР: плюс — позже, минус — раньше. Юридический срок договора сюда не подставляется.'
+            else:
+                reason = 'Нет отдельного физического прогноза для этой позиции с единственной полной связью ГПР и подтверждённым объёмом выполнения.'
+                comments['forecast_finish'] = comments['forecast_delay_days'] = reason
             rows.append(row)
     return {'layout': LAYOUT, 'available': True, 'cut': cut, 'rows': rows, 'headings': headings,
             'estimate_title': document.get('title') or '', 'estimate_sha256': document['sha256'],

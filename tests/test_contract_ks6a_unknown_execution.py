@@ -154,9 +154,9 @@ def test_unknown_indexed_operation_preserves_known_operations_and_exports_blank_
     raw = export.workbook(meta,cached['rds_comparison'],cached['rds_comparison']['rows'])
     sheet = load_workbook(io.BytesIO(raw), data_only=True).active
     excel_row = next(row for row in sheet if row[0].value=='4.1.2')
-    assert excel_row[6].value is None and excel_row[5].value is not None
-    assert excel_row[9].value is None and excel_row[11].value is None
-    assert 'Период без даты' in excel_row[6].comment.text
+    assert excel_row[7].value is None and excel_row[5].value is not None
+    assert excel_row[11].value is None and excel_row[13].value is None
+    assert 'Период без даты' in excel_row[7].comment.text
 
 
 from tests.test_contract_fact_prices_ks_by_the_edition import card  # noqa: E402,F401

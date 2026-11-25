@@ -89,6 +89,7 @@ def test_split_delivery_does_not_inflate_physical_work_and_unknown_component_is_
         'act_amount': 320, 'amount_components': {'work':120,'material':200},
         'start':'2026-01-01','end':'2026-02-01','item':0,'source':{'row':5}}]}
     row = card([source], found)['rds_comparison']['rows'][0]
+    assert row['fact_quantity_ratio'] == .2
     assert row['fact_quantity'] == 2 and row['fact'] == 320  # Never 7, or 3.2 from rubles.
     found['acts'][0].update(quantity_material=None,act_amount=120,amount_components={})
     row = card([source], found)['rds_comparison']['rows'][0]
@@ -184,3 +185,53 @@ def test_reader13_cache_refresh_preserves_all_source_headings_without_upload(mon
     assert [item['number'] for item in headings]==['','1','']
     assert [p['number'] for p in current['estimates'][0]['positions']]==['1.1','1.2','1.3','2.1','2.1']
     assert (folder/(saved['sha256']+'.pdf')).read_bytes()==raw and not files._choices(folder)
+
+
+def test_physical_percent_uses_full_rds_quantity_preserves_zero_and_overrun():
+    cached = native_card()
+    first, zero = cached['rds_comparison']['rows']
+    assert first['plan_quantity_ratio'] == .5 and first['fact_quantity_ratio'] == .3
+    assert zero['fact_quantity_ratio'] == 0 and zero['contract_quantity'] == 10
+    assert 'полное количество' in zero['comments']['fact_quantity_ratio']
+    found = statement()
+    found['acts'] = [dict(found['acts'][0], quantity=120, act_amount=12000)]
+    row = card([edition()], found)['rds_comparison']['rows'][0]
+    assert row['fact_quantity_ratio'] == 1.2  # Physical overrun is not capped readiness.
+    for quantity in (None, 0, -1):
+        source = edition()
+        source['estimates'][0]['positions'][0]['quantity'] = quantity
+        row = card([source], statement())['rds_comparison']['rows'][0]
+        assert row['plan_quantity_ratio'] is None and row['fact_quantity_ratio'] is None
+        assert row['forecast_finish'] is None and row['forecast_delay_days'] is None
+        assert row['comments']['fact_quantity_ratio']
+
+
+def test_forecast_is_existing_individual_physical_model_not_current_lag_or_legal_overdue():
+    cached = native_card()
+    row = cached['rds_comparison']['rows'][0]
+    canonical = cached['control']['lines'][0]
+    assert row['forecast_finish'] == canonical['forecast_finish'] == '2026-03-12'
+    assert row['forecast_delay_days'] == 2 and row['day_deviation'] == -2
+    assert row['forecast_kind'] == 'forecast' and 'Условный прогноз' in row['comments']['forecast_finish']
+    done = native_card(finished=True)['rds_comparison']['rows'][0]
+    assert done['day_deviation'] == 0 and done['forecast_delay_days'] == 4
+    assert done['forecast_finish'] == '2026-03-14' and done['forecast_kind'] == 'actual'
+    # Existing model leaves an unfinished ahead-of-plan work on its GPR end.
+    source, found = edition(), statement()
+    found['acts'][0].update(quantity=60, act_amount=6000, end='2026-01-05')
+    ahead = card([source], found, cut='2026-01-10')['rds_comparison']['rows'][0]
+    assert ahead['day_deviation'] > 0 and ahead['forecast_delay_days'] == 0
+    assert ahead['forecast_kind'] == 'forecast'
+
+
+def test_forecast_never_uses_partial_link_money_only_or_unobserved_fact():
+    source = edition()
+    source['estimates'][0]['links']['positions'][0]['lines'][0]['share'] = .5
+    row = card([source], statement())['rds_comparison']['rows'][0]
+    assert row['forecast_finish'] is None and row['forecast_delay_days'] is None
+    cached = native_card()
+    cached['control']['lines'][0]['volume'] = None
+    cached['control']['lines'][0]['basis'] = 'money'
+    assert rds.build(cached)['rows'][0]['forecast_finish'] is None
+    unknown = native_card(unknown=True)['rds_comparison']['rows'][0]
+    assert unknown['fact_quantity_ratio'] is None and unknown['forecast_finish'] is None

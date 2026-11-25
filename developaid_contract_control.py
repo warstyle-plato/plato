@@ -40,7 +40,7 @@ import datetime as dt
 import developaid_contract_plan as plan
 from developaid_monitor_statement_union import _unit
 
-CALCULATION_REVISION = 'contract-rds-plan-fact-v1'
+CALCULATION_REVISION = 'contract-rds-plan-fact-v2'
 
 ASSUMPTION = ("Отставание в днях — на сколько дней назад от даты среза план нарастающим итогом был равен "
               "сегодняшнему факту. Просрочка считается отдельно: сколько дней прошло после срока работы по "

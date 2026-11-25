@@ -105,7 +105,7 @@ def test_node_export_refuses_redirect_before_replaying_credentials(status):
     prelude = "const redirectStatus=" + str(status) + ";\n" + r"""
 let authEpoch=1,calls=[],forwarded=[],downloads=[];
 const contractComparisonState={lines:[]};
-const contractComparisonExport={available:true,layout:'rds-plan-fact-v1',rows_count:0,ticket:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',id:'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',revision:'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',cut:'2026-03-05',row_tokens:[]};
+const contractComparisonExport={available:true,layout:'rds-plan-fact-v2',rows_count:0,ticket:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',id:'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',revision:'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',cut:'2026-03-05',row_tokens:[]};
 const widgets={contractComparisonExport:{isConnected:true,disabled:false},contractComparisonFilter:{value:'all'},contractComparisonSearch:{value:''}};
 function $(id){return widgets[id]}function hasAuth(){return true}function requireLogin(){throw Error('Unexpected login')}
 function cumulativeContext(){return{project:'Synthetic',cut:'2026-03-05',key:'synthetic-redirect-admin',session:'synthetic-redirect-owner'}};

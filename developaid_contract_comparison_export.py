@@ -20,7 +20,7 @@ from openpyxl.utils import get_column_letter
 from developaid_contract_rds import LAYOUT, FIELDS
 from developaid_contract_fact import _money
 
-SCHEMA = "contract-rds-plan-fact-export-v1"
+SCHEMA = "contract-rds-plan-fact-export-v2"
 MAX_ROWS = 10_000
 MAX_XLSX_BYTES = 8 * 1024 * 1024
 FILTERS = {"all": "Все работы и поставки", "behind": "Отстают от плана", "ahead": "Опережают план",
@@ -141,7 +141,9 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     sheet.title = 'РДС — план и факт'
     book.properties.creator = 'DevelopAid'
     labels = ('№', 'Работа из РДС', 'Ед. изм.', 'Начало ГПР', 'Конец ГПР', 'План, объём',
-              'Факт, объём', 'Отклонение, объём', 'План, ₽', 'Факт, ₽', 'Отклонение, ₽', 'Отклонение, дни')
+              'План, % объёма РДС', 'Факт, объём', 'Факт, % объёма РДС', 'Отклонение, объём',
+              'План, ₽', 'Факт, ₽', 'Отклонение, ₽', 'На дату среза, дни',
+              'Окончание: прогноз / факт', 'Отставание к сроку ГПР, дни')
     label = meta.get('label') or {}
 
     def put(row, column, value, comment=''):
@@ -162,7 +164,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
             {'ks2': 'КС-2', 'ks6a': 'КС-6а'}.get(comparison.get('source'), 'источник не определён')),
         1):
         put(row, 1, text)
-        sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=12)
+        sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=len(FIELDS))
     sheet['A1'].font = Font(name='Calibri', size=15, bold=True)
     sheet.row_dimensions[2].height = 30
     sheet['A3'].comment = Comment(_text('\n'.join(filter_none([
@@ -171,8 +173,8 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         'Файл содержит все позиции действующей РДС и не зависит от фильтров таблицы ГПР.',
         *comparison.get('data_gaps', [])]))), 'DevelopAid')
     for first, last, title in ((1, 3, 'Работы РДС'), (4, 5, 'Сроки из ГПР'),
-                               (6, 8, 'Объём работ в единице строки'), (9, 11, 'Стоимость работ и поставки'),
-                               (12, 12, 'Отклонение')):
+                               (6, 10, 'Физический объём работ'), (11, 13, 'Стоимость работ и поставки'),
+                               (14, 14, 'На дату среза'), (15, 16, 'Завершение и срок ГПР')):
         put(5, first, title)
         if first != last:
             sheet.merge_cells(start_row=5, start_column=first, end_row=5, end_column=last)
@@ -198,14 +200,23 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         if comparison.get('remaining_source'):
             plan_comment += ' Источник: '+comparison['remaining_source']+'.'
     sheet['F6'].comment = Comment(_text(plan_comment), 'DevelopAid')
-    sheet['G6'].comment = Comment('Физический объём выполненной работы в единице РДС. Количество поставленного материала сюда не прибавляется и из стоимости не выводится.', 'DevelopAid')
-    sheet['I6'].comment = Comment(_text(plan_comment), 'DevelopAid')
+    sheet['H6'].comment = Comment('Физический объём выполненной работы в единице РДС. Количество поставленного материала сюда не прибавляется и из стоимости не выводится.', 'DevelopAid')
+    sheet['K6'].comment = Comment(_text(plan_comment), 'DevelopAid')
     evidence = comparison.get('act_evidence') or {}
     fact_comment = 'Полная стоимость работ и поставки по принятому расчёту РДС. Это не оплаты. '+(comparison.get('fact_assumption') or '')
     if evidence.get('total') is not None:
         fact_comment += ' Итоги загруженных актов по самим документам: '+_money(_number(evidence['total']))+'. Это отдельная сверка, а не факт каждой позиции по РДС.'
-    sheet['J6'].comment = Comment(_text(fact_comment), 'DevelopAid')
-    sheet['L6'].comment = Comment('Опережение минус отставание по принятому расчёту ГПР: плюс — впереди, минус — позади. Это не дни юридической просрочки. Без отдельного показателя позиции ячейка пустая.', 'DevelopAid')
+    sheet['L6'].comment = Comment(_text(fact_comment), 'DevelopAid')
+    sheet['N6'].comment = Comment('Опережение минус отставание по принятому расчёту ГПР: плюс — впереди, минус — позади. Это не дни юридической просрочки. Без отдельного показателя позиции ячейка пустая.', 'DevelopAid')
+    for column in ('G6', 'I6'):
+        sheet[column].comment = Comment('100% — полное физическое количество этой позиции РДС. '
+            'План и факт делятся каждый на это количество, не на рубли и не друг на друга. '
+            'Перевыполнение может быть больше 100%; без положительного количества РДС процент неизвестен.', 'DevelopAid')
+    sheet['O6'].comment = Comment('Незавершённая работа: условный прогноз существующего расчёта ГПР с сохранением текущего отставания. '
+        'Завершённая: фактический конец последнего периода КС. Только отдельная физическая позиция с единственной полной связью ГПР; '
+        'без такого источника ячейка пустая. Это не обещанная дата. '+date_comment, 'DevelopAid')
+    sheet['P6'].comment = Comment('Дата в предыдущей графе минус окончание этой позиции по ГПР: плюс — задержка, минус — раньше срока. '
+        'Это отдельный показатель от опережения/отставания на дату среза и от юридической просрочки договора.', 'DevelopAid')
     headings = {}
     for heading in comparison.get('headings') or []:
         headings.setdefault(heading['before_position'], []).append(heading)
@@ -225,7 +236,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         excel_row += 1
         for column, field in enumerate(FIELDS, 1):
             value = source.get(field)
-            if column in (4, 5):
+            if field in ('start', 'finish', 'forecast_finish'):
                 value = _date(value)
             elif column >= 6:
                 value = _number(value)
@@ -233,27 +244,31 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
             if column in (4, 5) and value is not None:
                 comment = (comment+' '+date_comment).strip()
             cell = put(excel_row, column, value, comment)
-            if column in (4, 5):
+            if field in ('start', 'finish', 'forecast_finish'):
                 cell.number_format = 'dd.mm.yyyy'
-            elif column in (9, 10, 11):
+            elif field in ('planned', 'fact', 'deviation'):
                 cell.number_format = '#,##0.00;[Red]-#,##0.00;0.00'
-            elif column in (6, 7, 8):
+            elif field in ('plan_quantity', 'fact_quantity', 'quantity_deviation'):
                 cell.number_format = '#,##0.###;[Red]-#,##0.###;0'
-            elif column == 12:
+            elif field in ('plan_quantity_ratio', 'fact_quantity_ratio'):
+                cell.number_format = '0.0%;[Red]-0.0%;0.0%'
+            elif field == 'day_deviation':
                 cell.number_format = '+0;[Red]-0;0'
+            elif field == 'forecast_delay_days':
+                cell.number_format = '[Red]+0;-0;0'
         sheet.row_dimensions[excel_row].height = min(78, max(30, 14*(len(str(source.get('name') or ''))//48+1)))
-    widths = (9, 61, 12, 14, 14, 15, 15, 16, 19, 19, 19, 15)
+    widths = (9, 58, 11, 13, 13, 14, 13, 14, 13, 15, 17, 17, 17, 14, 18, 16)
     for column, width in enumerate(widths, 1):
         sheet.column_dimensions[get_column_letter(column)].width = width
     sheet.freeze_panes = 'D7'
-    sheet.auto_filter.ref = f'A6:L{excel_row}'
+    sheet.auto_filter.ref = f'A6:P{excel_row}'
     sheet.print_title_rows = '5:6'
     sheet.print_options.horizontalCentered = True
     sheet.page_setup.orientation = 'landscape'
     sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
     sheet.page_setup.fitToWidth, sheet.page_setup.fitToHeight = 1, 0
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
-    sheet.print_area = f'A1:L{excel_row}'
+    sheet.print_area = f'A1:P{excel_row}'
     sheet.oddFooter.center.text = 'Страница &P из &N'
     output = io.BytesIO()
     book.save(output)

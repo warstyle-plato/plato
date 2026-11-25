@@ -125,7 +125,7 @@ def test_unambiguous_printed_sections_and_unknown_works_reach_excel():
     table = cached['rds_comparison']
     raw = export.workbook(meta, table, table['rows'])
     sheet = load_workbook(io.BytesIO(raw)).active
-    assert sheet.max_column == 12
+    assert sheet.max_column == 16
     assert [sheet.cell(index,2).value for index in (7,8)] == ['Кладка стен','Работа с нулевым фактом']
     assert not any(cell.value in ('Корпус 1','Корпус 2','Паркинг') for row in sheet for cell in row)
 

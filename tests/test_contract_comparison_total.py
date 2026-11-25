@@ -42,7 +42,7 @@ def test_missing_and_zero_totals_stay_distinct_and_materials_are_not_added(value
     cached['comparison_export'] = export.bind_snapshot(PROJECT, CUT, cached['contract_id'], cached, {})
     sheet, header = table(xlsx(cached))
     assert sheet.cell(header, 2).value == 'Работа из РДС'
-    assert sheet.max_column == 12 and sheet.cell(header+1,9).value == 500
+    assert sheet.max_column == 16 and sheet.cell(header+1,11).value == 500
     assert not any(cell.value == 'Всего по договору' for cell in sheet[header])
 
 
@@ -75,5 +75,5 @@ def test_full_scope_column_is_visible_in_the_real_page_and_selected_excel(width,
         got.value.save_as(target)
         sheet, header = table(target.read_bytes())
         assert [sheet.cell(header+i,2).value for i in (1,2)] == ['Кладка стен','Работа с нулевым фактом']
-        assert sheet.cell(header+2,7).value == 0 and sheet.max_column == 12
+        assert sheet.cell(header+2,8).value == 0 and sheet.max_column == 16
         assert not errors
