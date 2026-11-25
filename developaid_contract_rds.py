@@ -37,9 +37,11 @@ def build(listed: dict) -> dict:
               if item.get('estimate_sha256') == document['sha256']}
     bindings = {(item['estimate'], item['index']): item for item in current['position_links']}
     schedule = (documents.get(current.get('schedule_sha256')) or {}).get('schedule') or {}
+    source_codes = Counter(line['code'] for line in schedule.get('lines') or [])
     scheduled = {line['code']: line for line in schedule.get('lines') or []}
     usage = Counter(line['code'] for item in current['position_links'] if item['status'] in ('confirmed', 'proposed')
                     for line in item.get('lines') or [] if line.get('share'))
+    control_codes = Counter(line['code'] for line in listed.get('control', {}).get('lines') or [])
     controls = {line['code']: line for line in listed.get('control', {}).get('lines') or []}
     rows, headings = [], []
     for estimate_index, estimate in enumerate(document['estimates']):
@@ -124,7 +126,7 @@ def build(listed: dict) -> dict:
                 else:
                     comments[output] = (comments.get(field) or 'Физический объём не подтверждён.') if positive_base else \
                         'Процент не рассчитан: полное количество позиции РДС не подтверждено или не положительно.'
-            canonical = None
+            canonical, individual = None, False
             if len(targets) == 1:
                 code = targets[0]['code']
                 control = controls.get(code) or {}
@@ -132,27 +134,27 @@ def build(listed: dict) -> dict:
                               if part.get('position_key') == (binding or {}).get('key') and
                               (part.get('source') or {}).get('sha256') == document['sha256']]
                 if len(operations) == 1:
-                    canonical = operations[0]
+                    canonical, individual = operations[0], True
                 elif usage[code] == 1:
                     canonical = control
-            if canonical and canonical.get('state') != 'unknown' and row['fact_quantity'] is not None and \
-                    canonical.get('lag_days') is not None and canonical.get('ahead_days') is not None:
-                row['day_deviation'] = canonical['ahead_days']-canonical['lag_days']
-            else:
-                comments['day_deviation'] = 'Для этой позиции РДС отклонение в днях отдельно не рассчитано; сроки договора и просрочка его не заменяют.'
-            # Reuse an individual physical forecast only for a unique full-scope link.
-            # No monetary fallback, proportional extrapolation or group forecast.
+                    individual = not control.get('operations')
+                individual = individual and source_codes[code] == control_codes[code] == 1
+            # Both individual day measures need attributable physical evidence.
             volume = (canonical or {}).get('volume') or {}
             share = targets[0].get('share') if len(targets) == 1 else None
-            forecast_known = (canonical and canonical.get('state') not in (None, 'unknown') and positive_base and
+            physical_known = (individual and canonical and canonical.get('state') not in (None, 'unknown') and positive_base and
                 type(row['fact_quantity']) in (int, float) and math.isfinite(row['fact_quantity']) and type(share) in (int, float) and share == 1 and
                 type(volume.get('quantity')) in (int, float) and math.isfinite(volume['quantity']) and
                 abs(volume['quantity']-quantity) <= 1e-6 and
                 _unit(volume.get('unit')) == _unit(row['unit']) and
                 type(volume.get('fact')) in (int, float) and math.isfinite(volume['fact']) and
                 abs(volume['fact']-row['fact_quantity']) <= 1e-6)
+            if physical_known and canonical.get('lag_days') is not None and canonical.get('ahead_days') is not None:
+                row['day_deviation'] = canonical['ahead_days']-canonical['lag_days']
+            else:
+                comments['day_deviation'] = 'Нет отдельного физического показателя для этой позиции с единственной полной связью ГПР и подтверждённым объёмом выполнения.'
             finish = (canonical.get('finished') if canonical.get('state') == 'done' else
-                      canonical.get('forecast_finish')) if forecast_known else None
+                      canonical.get('forecast_finish')) if physical_known else None
             if finish and row['finish']:
                 row['forecast_finish'] = finish
                 row['forecast_delay_days'] = (dt.date.fromisoformat(finish)-dt.date.fromisoformat(row['finish'])).days

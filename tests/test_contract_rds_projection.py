@@ -228,10 +228,31 @@ def test_forecast_never_uses_partial_link_money_only_or_unobserved_fact():
     source = edition()
     source['estimates'][0]['links']['positions'][0]['lines'][0]['share'] = .5
     row = card([source], statement())['rds_comparison']['rows'][0]
-    assert row['forecast_finish'] is None and row['forecast_delay_days'] is None
+    assert row['forecast_finish'] is None and row['forecast_delay_days'] is None and row['day_deviation'] is None
     cached = native_card()
     cached['control']['lines'][0]['volume'] = None
     cached['control']['lines'][0]['basis'] = 'money'
-    assert rds.build(cached)['rows'][0]['forecast_finish'] is None
+    projected = rds.build(cached)['rows'][0]
+    assert projected['forecast_finish'] is None and projected['day_deviation'] is None
     unknown = native_card(unknown=True)['rds_comparison']['rows'][0]
     assert unknown['fact_quantity_ratio'] is None and unknown['forecast_finish'] is None
+
+
+def test_ambiguous_operation_or_source_identity_never_falls_back_to_parent_days():
+    cached = native_card()
+    binding = cached['plan']['editions'][0]['position_links'][0]
+    control = cached['control']['lines'][0]
+    operation = dict(control, position_key=binding['key'], source={'sha256':'a'*64})
+    control['operations'] = {'lines':[operation,copy.deepcopy(operation)]}
+    row = rds.build(cached)['rows'][0]
+    assert row['day_deviation'] is None and row['forecast_finish'] is None
+    control['operations'] = {'lines':[dict(operation,source={'sha256':'wrong'})]}
+    row = rds.build(cached)['rows'][0]
+    assert row['day_deviation'] is None and row['forecast_delay_days'] is None
+    control['operations'] = {'lines':[operation]}
+    row = rds.build(cached)['rows'][0]
+    assert row['day_deviation'] == -2 and row['forecast_delay_days'] == 2
+    source = cached['documents'][1]['schedule']['lines']
+    source.append(copy.deepcopy(source[0]))
+    row = rds.build(cached)['rows'][0]
+    assert row['day_deviation'] is None and row['forecast_finish'] is None
