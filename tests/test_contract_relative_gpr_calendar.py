@@ -264,7 +264,7 @@ def test_no_money_ratio_or_split_mapping_is_painted_as_physical():
     assert {bar['state'] for bar in display['rows'][0]['bars']} == {'unknown'}
 
 
-def test_proven_physical_projection_keeps_source_gap_and_labels_overdue():
+def test_proven_physical_quantity_is_separate_from_source_calendar_and_its_gap():
     listed = {'plan': {'editions': [{'in_force': True, 'position_links': [
         {'estimate': 0, 'index': 0, 'lines': [{'code': '1', 'share': 1}]}]}]}}
     rds = {'source': 'ks6a', 'rows': [{'estimate': 0, 'index': 0, 'fact_quantity_ratio': .4,
@@ -275,10 +275,12 @@ def test_proven_physical_projection_keeps_source_gap_and_labels_overdue():
                      {'start': '2026-02-15', 'finish': '2026-02-21'}]}]}
     shown = export.presentation(schedule, overlays, '2026-02-25')
     bars = shown['rows'][0]['bars']
-    assert {'fact', 'lag', 'plan'} <= {bar['state'] for bar in bars}
+    assert {bar['state'] for bar in bars} == {'plan'}
     assert all(bar['end'] <= 7 or bar['start'] >= 14 for bar in bars), 'The source gap cannot become physical work.'
-    assert any(bar.get('overdue') and bar['start'] == 21 and bar['end'] == 25 for bar in bars)
-    assert overlays['1']['basis'] == 'physical_cut_projection' and 'не ежедневная история' in shown['legend']
+    assert not any(bar.get('overdue') for bar in bars)
+    assert shown['rows'][0]['progress']['fraction'] == .4
+    assert shown['rows'][0]['progress']['delta_pp'] == -40
+    assert 'не подтверждает даты' in shown['legend']
 
 
 def test_resource_ranges_and_sparse_literal_dates_are_not_interpolated():
@@ -342,9 +344,8 @@ def test_composite_gpr_keeps_known_operation_facts_and_source_gaps():
     assert [row['quantity']['fact_quantity'] for row in shown['positions']] == [40, 0]
     assert [row['gpr_code'] for row in shown['positions']] == ['G1', 'G1']
     assert all(row['section'] == 'Корпус 1' for row in shown['positions'])
-    assert any(bar['state'] == 'fact' for bar in shown['positions'][0]['bars'])
-    assert not any(bar['state'] == 'fact' for bar in shown['positions'][1]['bars'])
-    assert any(bar['state'] == 'lag' for bar in shown['positions'][1]['bars'])
+    assert [row['progress']['fraction'] for row in shown['positions']] == [.4, 0]
+    assert not any(bar['state'] in {'fact', 'lag'} for row in shown['positions'] for bar in row['bars'])
     assert all(bar['end'] <= 7 or bar['start'] >= 14 for row in shown['positions'] for bar in row['bars'])
 
 
@@ -425,11 +426,13 @@ def test_workbook_keeps_operation_facts_mobile_header_and_source_identity(card):
     source = next(row for row in book['ГПР'] if row[1].value == 'Составная конструкция')
     assert not any(c.fill.fgColor.rgb == '0070AD47' for c in source)
     operation = next(row for row in book['ГПР'] if str(row[1].value or '').startswith('Монтаж каркаса'))
-    assert operation[4].value == '40 / 100 м2 · 40.0%'
-    assert any(c.fill.fgColor.rgb == '0070AD47' for c in operation)
+    assert operation[4].value == .4 and operation[4].number_format == '0.0%'
+    assert '40 / 100 м2' in operation[1].value
+    assert any(rule.type == 'dataBar' for rules in book['ГПР'].conditional_formatting._cf_rules.values() for rule in rules)
+    assert not any(c.fill.fgColor.rgb in {'0070AD47', '00E06666'} for c in operation[6:])
     assert all(c.fill.fgColor.rgb == '00000000' for c in operation[13:20]), 'The original gap stays unpainted.'
     zero = next(row for row in book['ГПР'] if str(row[1].value or '').startswith('Остекление'))
-    assert zero[4].value == '0 / 100 м2 · 0.0%'
+    assert zero[4].value == 0 and zero[4].number_format == '0.0%'
     execution = [row for row in book['Выполнение'] if row[1].value in {'Монтаж каркаса', 'Остекление'}]
     assert [row[7].value for row in execution] == [40, 0]
     assert [row[8].value for row in execution] == [.4, 0]
@@ -561,10 +564,12 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
             'fact_quantity': 2.5, 'contract_quantity': 10, 'unit': 'м3', 'basis': 'physical_cut_projection'}}
         physical['presentation'] = export.presentation(physical['schedule'], physical['overlays'], CUT)
         page.evaluate('(state)=>renderContractGpr(state)', physical)
-        assert page.locator('.contract-gpr-track rect[fill="#70AD47"]').count() > 0
-        assert page.locator('.contract-gpr-track rect[fill="#E06666"]').count() > 0
+        assert page.locator('.contract-gpr-track rect[fill="#70AD47"]').count() == 0
+        assert page.locator('.contract-gpr-track rect[fill="#E06666"]').count() == 0
+        assert page.locator('.contract-gpr-progress-fill').count() == 1
+        assert page.locator('.contract-gpr-progress-gap').count() == 1
         assert page.locator('.contract-gpr-track rect[fill="#9DC3E6"]').count() == 2
-        expect(page.locator('#contractGprBody')).to_contain_text('не ежедневная история работ')
+        expect(page.locator('#contractGprBody')).to_contain_text('не подтверждает даты производства')
         page.screenshot(path=str(tmp_path/f'gpr-physical-projection-{width}.png'), full_page=True)
         child_listed, child_rds, child_schedule = operation_projection_case()
         physical['schedule'] = child_schedule
@@ -575,9 +580,11 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         expect(page.locator('.contract-gpr-position')).to_have_count(2)
         expect(page.locator('.contract-gpr-position[data-rds-position="0:0"]')).to_contain_text('Монтаж каркаса')
         expect(page.locator('.contract-gpr-position[data-rds-position="0:0"]')).to_contain_text('40')
-        assert page.locator('.contract-gpr-position[data-rds-position="0:0"] rect[fill="#70AD47"]').count() > 0
-        assert page.locator('.contract-gpr-position[data-rds-position="0:1"] rect[fill="#70AD47"]').count() == 0
-        assert page.locator('.contract-gpr-position[data-rds-position="0:1"] rect[fill="#E06666"]').count() > 0
+        assert page.locator('.contract-gpr-position[data-rds-position="0:0"] .contract-gpr-progress[data-physical-nonzero="true"]').count() == 1
+        assert page.locator('.contract-gpr-position[data-rds-position="0:1"] .contract-gpr-meter').get_attribute('aria-valuenow') == '0'
+        assert page.locator('.contract-gpr-position[data-rds-position="0:1"] .contract-gpr-progress-gap').count() == 1
+        assert page.locator('.contract-gpr-position .contract-gpr-track rect[fill="#70AD47"]').count() == 0
+        assert page.locator('.contract-gpr-position .contract-gpr-track rect[fill="#E06666"]').count() == 0
         assert page.locator('.contract-gpr-source-chart rect[fill="#70AD47"]').count() == 0
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=str(tmp_path/f'gpr-operation-facts-{width}.png'), full_page=True)

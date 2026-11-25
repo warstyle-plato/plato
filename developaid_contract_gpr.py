@@ -555,9 +555,9 @@ def physical_overlays(listed, rds):
                         'planned_fraction': min(max(planned, 0), 1) if isinstance(planned, (int, float)) else None,
                         'fact_quantity': row['fact_quantity'], 'contract_quantity': row['contract_quantity'],
                         'unit': row['unit'], 'lag_days': max(row['day_deviation'], 0),
-                        'source': rds.get('source'), 'basis': 'physical_cut_projection',
-                        'note': 'Доля физического выполнения на дату среза показана на исходной полосе. '
-                                'Это проекция накопительного объёма, а не ежедневная история производства.'}
+                        'source': rds.get('source'), 'basis': 'cumulative_quantity_at_cut',
+                        'note': 'Накопленный физический объём на дату среза. '
+                                'Он не подтверждает даты или непрерывность производства работ.'}
     return result
 
 
@@ -605,8 +605,8 @@ def position_projections(listed, rds, schedule):
             line['physical'] = {**line['quantity'], 'fact_fraction': min(ready, 1),
                 'planned_fraction': min(max(planned, 0), 1) if numeric(planned) else None,
                 'lag_days': max(row['day_deviation'], 0), 'source': rds.get('source'),
-                'basis': 'physical_cut_projection', 'note': 'Факт отдельной операции по РДС. '
-                    'Операции не складываются в общий физический процент конструкции.'}
+                'basis': 'cumulative_quantity_at_cut', 'note': 'Накопленный объём отдельной операции по РДС. '
+                    'Он не задаёт календарных интервалов. Операции не складываются в общий физический процент конструкции.'}
         line['note'] = ((row.get('comments') or {}).get('fact_quantity') or
                         'Известный объём отдельной операции; это не общий процент строки ГПР.')
         result.append(line)

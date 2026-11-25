@@ -903,7 +903,8 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                 encoded['gpr']['presentation'] = gpr_export.presentation(encoded['gpr']['schedule'] or {},
                     encoded['gpr']['overlays'], payload['cut'],
                     gpr.position_projections(encoded, encoded['rds_comparison'], encoded['gpr']['schedule'] or {}),
-                    statement=gpr_export.statement_projection(encoded['rds_comparison']))
+                    statement=gpr_export.statement_projection(encoded['rds_comparison']),
+                    source_dates=gpr_export.fact_source_dates(encoded['rds_comparison']))
                 encoded['gpr_export'] = gpr_export.bind_snapshot(payload['project'], payload['cut'],
                     encoded.get('contract_id') or payload['contract_id'], encoded,
                     {key: (row or {}).get(key) or '' for key in ('contract', 'contractor', 'contract_date')})
@@ -988,6 +989,10 @@ def _monitor_contract_gpr_current(value):
     import developaid_management_report_jobs as jobs
     if value.get('pending') or value.get('ok') is not True:
         return
+    if value.get('gpr'):
+        import developaid_contract_gpr_export as gpr_export
+        if (value['gpr'].get('presentation') or {}).get('schema') != gpr_export.PRESENTATION_SCHEMA:
+            raise jobs.JobProblem(409, jobs.SOURCE_CHANGED_DETAIL, code='source_changed')
     if value.get('comparison_export'):
         import developaid_contract_comparison_export as comparison_export
         old_schema = value['comparison_export'].get('schema')

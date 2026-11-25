@@ -9,7 +9,8 @@ from urllib.parse import quote
 
 from openpyxl import load_workbook
 from openpyxl.comments import Comment
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.formatting.rule import DataBarRule, FormulaRule
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 import developaid_contract_gpr as gpr
@@ -17,12 +18,14 @@ import developaid_contract_comparison_export as rds_export
 import developaid_contract_workforce as workforce
 from developaid_contract_rds import LAYOUT
 
-SCHEMA = 'contract-gpr-performance-xlsx-v3'
+SCHEMA = 'contract-gpr-performance-xlsx-v4'
+PRESENTATION_SCHEMA = 'contract-gpr-quantity-separate-calendar-v2'
 COLORS = {'plan': '9DC3E6', 'fact': '70AD47', 'lag': 'E06666', 'unknown': 'D9D9D9'}
-LEGEND = ('Синий — исходный план; зелёный — подтверждённая физическая доля на дату среза; '
-          'красный — невыполненная часть плана к срезу и срок после окончания незавершённой работы; '
-          'серый — нет единого сопоставимого физического показателя строки. Цвет факта — проекция накопительного '
-          'объёма на исходные полосы, а не ежедневная история работ. Деньги не заменяют физический объём.')
+LEGEND = ('Синие и серые полосы календаря — исходный план и его разрывы. '
+          'Зелёная шкала 0–100% показывает накопленный физический объём отдельно от календаря; '
+          'красный недобор и расчётные дни относятся к сравнению объёмов на дату среза. '
+          'Накопленный объём не подтверждает даты или непрерывность производства работ. '
+          'Чёрная линия — дата среза данных; оранжевая — сегодня. Деньги не заменяют физический объём.')
 
 
 def filename(project, contract, cut):
@@ -78,27 +81,31 @@ def segments(line):
     return []
 
 
-def timeline(schedule, cut, overlays=None):
+def timeline(schedule, cut, overlays=None, *, include_day=''):
     relative = schedule.get('calendar_basis') == 'relative'
     anchored = (schedule.get('anchor') or {}).get('handover_date') if relative else None
     if relative:
         maximum = max((column['finish_day'] for column in schedule.get('columns') or []), default=0)
         first = gpr.day(anchored)
-        if first and any(value['fact_fraction'] < 1 for value in (overlays or {}).values()) and gpr.day(cut):
-            maximum = max(maximum, (gpr.day(cut)-first).days+1)
+        origin = first
+        if origin:
+            dates = [origin, origin+dt.timedelta(days=max(maximum-1, 0))]
+            dates.extend(gpr.day(value) for value in (cut, include_day) if gpr.day(value))
+            first, last = min(dates), max(dates)
+            maximum = (last-first).days+1
+        relative_first = (first-origin).days if first and origin else 0
         step = max(1, math.ceil(maximum/366))
         return [{'start': (first+dt.timedelta(days=i)).isoformat() if first else None,
                  'finish': (first+dt.timedelta(days=min(i+step, maximum)-1)).isoformat() if first else None,
-                 'start_day': i+1, 'finish_day': min(i+step, maximum),
+                 'start_day': relative_first+i+1, 'finish_day': relative_first+min(i+step, maximum),
                  'label': (first+dt.timedelta(days=i)).strftime('%d.%m') if first else str(i+1)}
                 for i in range(0, maximum, step)]
     dates = [gpr.day(line.get(key)) for line in schedule.get('lines') or [] for key in ('start', 'finish')]
     dates = [date for date in dates if date]
     if not dates:
         return []
+    dates.extend(gpr.day(value) for value in (cut, include_day) if gpr.day(value))
     first, last = min(dates), max(dates)
-    if any(value['fact_fraction'] < 1 for value in (overlays or {}).values()) and gpr.day(cut):
-        last = max(last, gpr.day(cut))
     step = max(1, math.ceil(((last-first).days+1)/366))
     return [{'start': (first+dt.timedelta(days=i)).isoformat(),
              'finish': min(first+dt.timedelta(days=i+step-1), last).isoformat(),
@@ -118,21 +125,49 @@ def occupied(line, tick):
 
 
 def cell_states(line, ticks, overlay, cut=''):
+    """Calendar cells are source plan only; cumulative quantity has no dates."""
     indices = [i for i, tick in enumerate(ticks) if occupied(line, tick)]
-    result = {i: 'plan' if overlay else 'unknown' for i in indices}
-    if overlay and indices:
-        ready = overlay['fact_fraction']*len(indices)
-        due = (overlay.get('planned_fraction') or 0)*len(indices)
-        for position, index in enumerate(indices):
-            if position+.5 <= ready:
-                result[index] = 'fact'
-            elif position+.5 <= due:
-                result[index] = 'lag'
-        if overlay['fact_fraction'] < 1 and line.get('finish'):
-            for index, tick in enumerate(ticks):
-                if tick.get('start') and line['finish'] < tick['start'] <= cut:
-                    result[index] = 'lag'
-    return result
+    return {i: 'plan' if overlay else 'unknown' for i in indices}
+
+
+def physical_progress(line, overlay, cut, source_dates=()):
+    """A quantity scale at one data cut, never an observed production interval."""
+    value = line.get('quantity')
+    value = value if isinstance(value, dict) else overlay or {}
+    numeric = lambda v: type(v) in (int, float) and math.isfinite(v)
+    quantity, total = value.get('fact_quantity'), value.get('contract_quantity')
+    fraction = value.get('fraction', value.get('fact_fraction'))
+    if (numeric(quantity) and numeric(total) and total > 0 and quantity > total
+            and 'fraction' not in value and fraction == 1):
+        # The legacy single-position DTO clipped its meter at100%. Keep the
+        # actual quantity/ratio visible; only the separate meter is bounded.
+        fraction = quantity/total
+    if (not numeric(quantity) or quantity < 0 or not numeric(total) or total <= 0
+            or not numeric(fraction) or fraction < 0 or not value.get('unit')
+            or not math.isclose(fraction, quantity/total, abs_tol=1e-9)):
+        return None
+    planned = (overlay or {}).get('planned_fraction')
+    planned = planned if numeric(planned) and 0 <= planned <= 1 else None
+    lag = (overlay or {}).get('lag_days')
+    return {'fact_quantity': quantity, 'contract_quantity': total, 'unit': value['unit'],
+            'fraction': fraction, 'planned_fraction': planned,
+            'delta_pp': (fraction-planned)*100 if planned is not None else None,
+            'lag_days': lag if numeric(lag) else None, 'cut': cut,
+            'source_dates': list(source_dates),
+            'basis': 'cumulative_quantity_at_cut', 'production_history_available': False}
+
+
+def progress_text(progress):
+    if not progress:
+        return 'Физический объём не подтверждён.'
+    text = 'Физический объём на срез: '+format(progress['fraction']*100, '.1f')+'%'
+    if progress['planned_fraction'] is not None:
+        text += '; расчётный план на тот же срез: '+format(progress['planned_fraction']*100, '.1f')+'%'
+        text += '; отклонение: '+format(progress['delta_pp'], '+.1f')+' п.п.'
+        text += ' (равномерно по интервалам ГПР)'
+    if progress['lag_days'] is not None:
+        text += '; расчётное отставание: '+format(progress['lag_days'], '.15g')+' дн.'
+    return text+'. Даты производства работ не подтверждены.'
 
 
 def ordered_positions(positions):
@@ -176,11 +211,12 @@ def statement_text(statement):
     return lines
 
 
-def presentation(schedule, overlays, cut, positions=(), *, statement=None, _ticks=None):
+def presentation(schedule, overlays, cut, positions=(), *, statement=None, source_dates=(), _ticks=None, _include_day=''):
     """Geometry shared by the native popup and the export's source commentary."""
     positions = ordered_positions(positions)
+    source_dates = source_dates or (statement or {}).get('source_dates') or []
     position_overlays = {line['code']: line['physical'] for line in positions if line.get('physical')}
-    ticks = _ticks if _ticks is not None else timeline(schedule, cut, {**overlays, **position_overlays})
+    ticks = _ticks if _ticks is not None else timeline(schedule, cut, include_day=_include_day)
     first = gpr.day(ticks[0].get('start')) if ticks else None
     last = gpr.day(ticks[-1].get('finish')) if ticks else None
     length = ((last-first).days+1) if first and last else max((tick.get('finish_day', 0) for tick in ticks), default=0)
@@ -194,34 +230,24 @@ def presentation(schedule, overlays, cut, positions=(), *, statement=None, _tick
                 begin, end = part.get('start_offset', (part.get('start_day') or 1)-1), part.get('end_offset', part.get('finish_day') or 0)
             if schedule.get('calendar_basis') == 'relative' and 'start_offset' in part:
                 begin, end = part['start_offset'], part['end_offset']
+                anchor = gpr.day((schedule.get('anchor') or {}).get('handover_date'))
+                if first and anchor:
+                    begin, end = begin+(anchor-first).days, end+(anchor-first).days
             if end > begin:
                 parts.append((begin, end))
         overlay = overlays.get(line['code'])
-        total = sum(end-begin for begin, end in parts)
         bars = [{'start': begin, 'end': end, 'state': 'plan' if overlay else 'unknown'} for begin, end in parts]
-        consumed = 0
-        if overlay and total:
-            ready = total*overlay['fact_fraction']
-            due = total*(overlay.get('planned_fraction') or 0)
-            for begin, end in parts:
-                green = min(end-begin, max(ready-consumed, 0))
-                if green:
-                    bars.append({'start': begin, 'end': begin+green, 'state': 'fact'})
-                red_begin, red_end = max(ready-consumed, 0), min(end-begin, due-consumed)
-                if red_end > red_begin:
-                    bars.append({'start': begin+red_begin, 'end': begin+red_end, 'state': 'lag'})
-                consumed += end-begin
-            if first and line.get('finish') and line['finish'] < cut and overlay['fact_fraction'] < 1:
-                bars.append({'start': (gpr.day(line['finish'])-first).days+1,
-                             'end': (gpr.day(cut)-first).days+1, 'state': 'lag', 'overdue': True})
         rows.append({'code': line['code'], 'name': line['name'], 'start': line.get('start'),
                      'finish': line.get('finish'), 'relative_segments': line.get('relative_segments'),
                      'duration_printed': line.get('duration_printed'), 'relative_unit': line.get('relative_unit'),
                      'page': line.get('page'), 'bars': bars, 'physical': overlay,
+                     'progress': physical_progress(line, overlay, cut, source_dates),
                      **{key: line[key] for key in ('number', 'section', 'position_key', 'gpr_code', 'quantity', 'note') if key in line}})
-    projected = (presentation({**schedule, 'lines': positions}, position_overlays, cut, _ticks=ticks)['rows']
+    projected = (presentation({**schedule, 'lines': positions}, position_overlays, cut, source_dates=source_dates, _ticks=ticks)['rows']
                  if positions else [])
-    return {'ticks': ticks, 'length': length, 'rows': rows, 'positions': projected, 'statement': statement,
+    return {'schema': PRESENTATION_SCHEMA, 'ticks': ticks, 'length': length, 'start': first.isoformat() if first else None,
+            'cut': cut, 'cut_offset': (gpr.day(cut)-first).days if first and gpr.day(cut) else None,
+            'rows': rows, 'positions': projected, 'statement': statement,
             'legend': LEGEND, 'colors': COLORS}
 
 
@@ -237,12 +263,17 @@ def _edition_label(source):
     return label
 
 
-def _fact_source_label(comparison):
-    label = {'ks6a': 'КС-6а', 'ks2': 'КС-2'}.get(comparison.get('source'), 'не определён')
+def fact_source_dates(comparison):
     summary = comparison.get('statement_summary') or {}
     dates = [gpr.day(value) for value in summary.get('source_dates') or []]
     if not any(dates):
         dates = [gpr.day(act.get('date')) for act in (comparison.get('act_evidence') or {}).get('acts') or []]
+    return sorted({value.isoformat() for value in dates if value})
+
+
+def _fact_source_label(comparison):
+    label = {'ks6a': 'КС-6а', 'ks2': 'КС-2'}.get(comparison.get('source'), 'не определён')
+    dates = [gpr.day(value) for value in fact_source_dates(comparison)]
     dates = [value for value in dates if value]
     return label+(' · '+max(dates).strftime('%d.%m.%Y') if dates else '')
 
@@ -259,7 +290,9 @@ def workbook(meta, cached):
     sheet = book.create_sheet('ГПР', 0)
     schedule, overlays = state['schedule'], state.get('overlays') or {}
     positions = ordered_positions(gpr.position_projections(cached, comparison, schedule))
-    display = presentation(schedule, overlays, meta['cut'], positions)
+    display = presentation(schedule, overlays, meta['cut'], positions,
+                           source_dates=fact_source_dates(comparison),
+                           _include_day=(dt.date.today()+dt.timedelta(days=1)).isoformat())
     ticks = display['ticks']
     if len(ticks) > 1096 or len(schedule['lines'])+len(positions) > 10000:
         raise rds_export.ExportProblem('ГПР слишком большой для одной выгрузки. Проверьте диапазон исходного графика.')
@@ -275,7 +308,7 @@ def workbook(meta, cached):
     text_rows = ['ГПР · '+(label.get('contract') or 'Договор')+' · '+(label.get('contractor') or ''),
         'Проект: '+meta['project']+' · Редакция ГПР: '+_edition_label(source),
         'Срез: '+gpr.day(meta['cut']).strftime('%d.%m.%Y')+' · Источник выполнения: '+_fact_source_label(comparison),
-        'Синий — план; зелёный — выполненный объём; красный — отставание; серый — нет сопоставимого физического показателя.']
+        'Календарь — только исходный план. Физический объём — отдельная шкала 0–100%; даты производства не подтверждены.']
     statement = statement_projection(comparison)
     if statement:
         text_rows[3:3] = ['\n'.join(statement_text(statement))]
@@ -283,6 +316,9 @@ def workbook(meta, cached):
         known = sum(line.get('quantity') is not None for line in positions)
         text_rows.append('Объём известен по '+str(known)+' из '+str(len(positions))+
                          ' позиций РДС. Сначала показаны операции с ненулевым выполнением; исходный ГПР — ниже.')
+    if schedule.get('assumption'):
+        text_rows.append('Основа календарных дат ГПР: '+schedule['assumption'])
+    text_rows.append('Сегодня — оранжевая линия; дата среза — чёрная. При совпадении показана одна линия.')
     end_column = max(7, len(ticks)+6)
     for row, text in enumerate(text_rows, 1):
         put(row, 1, text)
@@ -295,8 +331,17 @@ def workbook(meta, cached):
     if statement:
         sheet['A4'].comment = Comment(rds_export._text(str(statement)+
             '\nЭто сумма исходного снимка КС-6а, не оплата и не историческая оценка РДС.'), 'DevelopAid')
-    header = len(text_rows)+2
-    for column, text in enumerate(('№', 'Работа / ресурс', 'Начало', 'Окончание', 'Физический факт', 'Источник / основание'), 1):
+    today_row = len(text_rows)+1
+    today = sheet.cell(today_row, 1)
+    cut_day = gpr.day(meta['cut'])
+    cut_formula = 'DATE('+str(cut_day.year)+','+str(cut_day.month)+','+str(cut_day.day)+')'
+    today.value = '=IF(TODAY()='+cut_formula+',"Сегодня и срез: "&TEXT(TODAY(),"dd.mm.yyyy"),"Сегодня: "&TEXT(TODAY(),"dd.mm.yyyy")&" · срез: '+cut_day.strftime('%d.%m.%Y')+'")'
+    today.alignment = Alignment(wrap_text=True, vertical='top')
+    sheet.merge_cells(start_row=today_row, start_column=1, end_row=today_row, end_column=6)
+    sheet.row_dimensions[today_row].height = 30
+    header = today_row+2
+    for column, text in enumerate(('№', 'Работа / ресурс', 'Начало по плану', 'Окончание по плану',
+                                  'Физический объём · 0–100%', 'План / отклонение на срез · источник'), 1):
         put(header, column, text)
     for index, tick in enumerate(ticks, 7):
         put(header, index, tick['label'])
@@ -311,15 +356,26 @@ def workbook(meta, cached):
         row += 1
         for line in positions:
             quantity = line.get('quantity')
+            progress = physical_progress(line, line.get('physical'), meta['cut'], fact_source_dates(comparison))
             text = (format(quantity['fact_quantity'], '.15g')+' / '+format(quantity['contract_quantity'], '.15g')+
                     ' '+quantity['unit']+' · '+format(quantity['fraction']*100, '.1f')+'%') if quantity else 'Нет сопоставленного объёма'
             for column, value in enumerate((line['number'], line['name']+'\nФакт: '+text, line.get('start'), line.get('finish'),
-                text, (line.get('section')+' · ' if line.get('section') else '')+_fact_source_label(comparison)), 1):
+                progress['fraction'] if progress else text,
+                progress_text(progress)+'\n'+(line.get('section')+' · ' if line.get('section') else '')+_fact_source_label(comparison)), 1):
                 put(row, column, value)
-            sheet.cell(row, 5).comment = Comment(rds_export._text(line['note']), 'DevelopAid')
+            if progress:
+                sheet.cell(row, 5).number_format = '0.0%'
+                sheet.conditional_formatting.add('E'+str(row), DataBarRule(start_type='num', start_value=0,
+                    end_type='num', end_value=1, color=COLORS['fact'], showValue=True))
+                if progress['delta_pp'] is not None and progress['delta_pp'] < 0:
+                    sheet.cell(row, 6).font = Font(name='Calibri', size=10, color=COLORS['lag'])
+            sheet.cell(row, 5).comment = Comment(rds_export._text(line['note']+'\n'+progress_text(progress)+
+                '\nНакопленный объём не задаёт календарный интервал. Шкала E: 0–100%.'), 'DevelopAid')
+            for column in range(7, end_column+1):
+                sheet.cell(row, column).border = Border(bottom=Side(style='thin', color='DCE6F1'))
             for index, state_name in cell_states(line, ticks, line.get('physical'), meta['cut']).items():
                 put(row, index+7, '').fill = PatternFill('solid', fgColor=COLORS[state_name])
-            sheet.row_dimensions[row].height = 64
+            sheet.row_dimensions[row].height = 78
             row += 1
         return row
     row = write_positions(header+1) if positions else header+1
@@ -329,17 +385,23 @@ def workbook(meta, cached):
     source_first_row = row
     for row, line in enumerate(schedule['lines'], source_first_row):
         overlay = overlays.get(line['code'])
+        progress = physical_progress(line, overlay, meta['cut'], fact_source_dates(comparison))
         for column, value in enumerate((line['code'], line['name'], line.get('start'), line.get('finish'),
-                 (str(overlay['fact_quantity'])+' / '+str(overlay['contract_quantity'])+' '+str(overlay['unit']))
-                 if overlay else 'Общий % не рассчитан; операции выше' if positions else 'не подтверждён',
-                 'ГПР, стр. '+str(line.get('page') or '—')), 1):
+                 progress['fraction'] if progress else 'Общий % не рассчитан; операции выше' if positions else 'не подтверждён',
+                 progress_text(progress)+'\nГПР, стр. '+str(line.get('page') or '—')), 1):
             put(row, column, value)
+        if progress:
+            sheet.cell(row, 5).number_format = '0.0%'
+            sheet.conditional_formatting.add('E'+str(row), DataBarRule(start_type='num', start_value=0,
+                end_type='num', end_value=1, color=COLORS['fact'], showValue=True))
+        for column in range(7, end_column+1):
+            sheet.cell(row, column).border = Border(bottom=Side(style='thin', color='DCE6F1'))
         for index, state_name in cell_states(line, ticks, overlay, meta['cut']).items():
             put(row, index+7, '').fill = PatternFill('solid', fgColor=COLORS[state_name])
         sheet.cell(row, 2).comment = Comment(rds_export._text(str(segments(line))+
             ('\nДлительность, напечатанная в ГПР: '+str(line['duration_printed'])+' '+str(line.get('relative_unit'))
              if line.get('duration_printed') is not None else '')+
-            ('\n'+overlay['note'] if overlay else '\nПригодного отдельного физического показателя нет.')), 'DevelopAid')
+            ('\n'+progress_text(progress) if progress else '\nПригодного отдельного физического показателя нет.')), 'DevelopAid')
     row = source_first_row+len(schedule['lines'])+2
     for resource in schedule.get('resources') or []:
         put(row, 2, resource['name'])
@@ -356,6 +418,23 @@ def workbook(meta, cached):
                     number = value.get('value')
                     put(row, index, str(number['min'])+'–'+str(number['max']) if isinstance(number, dict) else number)
         row += 1
+    # TODAY is intentionally dynamic in Excel. Calendar colors remain source
+    # plan; date markers are borders, never percentages stretched over dates.
+    last_calendar_row = row
+    for index, tick in enumerate(ticks, 7):
+        if not tick.get('start') or not tick.get('finish'):
+            continue
+        column = get_column_letter(index)
+        area = column+str(header)+':'+column+str(last_calendar_row)
+        first_day, last_day = gpr.day(tick['start']), gpr.day(tick['finish'])
+        def date_formula(value):
+            return 'DATE('+str(value.year)+','+str(value.month)+','+str(value.day)+')'
+        sheet.conditional_formatting.add(area, FormulaRule(formula=['AND(TODAY()>='+date_formula(first_day)+
+            ',TODAY()<='+date_formula(last_day)+')'], border=Border(left=Side(style='medium', color='D97706'))))
+        if tick['start'] <= meta['cut'] <= tick['finish']:
+            for marker_row in range(header, last_calendar_row+1):
+                cell = sheet.cell(marker_row, index)
+                cell.border = Border(left=Side(style='medium', color='111111'), bottom=cell.border.bottom)
     row += 2
     details = [LEGEND, schedule.get('assumption') or 'Календарные даты из исходного ГПР.',
         (state.get('workforce') or {}).get('reason') or (state.get('workforce') or {}).get('note')
