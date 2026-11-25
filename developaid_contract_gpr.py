@@ -527,9 +527,13 @@ def workforce_sources(project, row, register, date, schedule):
 def physical_overlays(listed, rds):
     """Use the reviewed RDS attribution gate, never a money readiness ratio."""
     current = next((edition for edition in listed.get('plan', {}).get('editions') or [] if edition.get('in_force')), {})
+    from collections import Counter
+    binding_counts = Counter((item['estimate'], item['index']) for item in current.get('position_links') or [])
     links = {(item['estimate'], item['index']): item for item in current.get('position_links') or []}
     collected = {}
     for row in rds.get('rows') or []:
+        if binding_counts[(row.get('estimate'), row.get('index'))] != 1:
+            continue
         binding = links.get((row.get('estimate'), row.get('index'))) or {}
         targets = binding.get('lines') or []
         if len(targets) != 1 or targets[0].get('share') != 1:
@@ -554,4 +558,56 @@ def physical_overlays(listed, rds):
                         'source': rds.get('source'), 'basis': 'physical_cut_projection',
                         'note': 'Доля физического выполнения на дату среза показана на исходной полосе. '
                                 'Это проекция накопительного объёма, а не ежедневная история производства.'}
+    return result
+
+
+def position_projections(listed, rds, schedule):
+    """Expose RDS operations without summing them into a construction percent.
+
+    The RDS reader already decides whether a physical observation is attributable.
+    Its day predicate is retained; the exact accepted link supplies the source
+    GPR segments, including gaps. Dates or similar position numbers are not links.
+    """
+    if not rds.get('available'):
+        return []
+    from collections import Counter
+    current = next((e for e in listed.get('plan', {}).get('editions') or [] if e.get('in_force')), {})
+    binding_counts = Counter((b['estimate'], b['index']) for b in current.get('position_links') or [])
+    bindings = {(b['estimate'], b['index']): b for b in current.get('position_links') or []}
+    source_lines = schedule.get('lines') or []
+    counts = Counter(line['code'] for line in source_lines)
+    source = {line['code']: line for line in source_lines}
+    identities = Counter((r.get('estimate'), r.get('index')) for r in rds.get('rows') or [])
+    headings = {h['before_position']: h['name'] for h in rds.get('headings') or [] if not h.get('number')}
+    result, section = [], ''
+    for index, row in enumerate(rds.get('rows') or []):
+        section = headings.get(index, section)
+        identity = (row.get('estimate'), row.get('index'))
+        binding = (bindings.get(identity) or {}) if binding_counts[identity] == 1 else {}
+        targets = binding.get('lines') or [] if binding.get('status') in ('confirmed', 'proposed') else []
+        target = targets[0] if len(targets) == 1 and targets[0].get('share') == 1 else {}
+        parent = source.get(target.get('code')) if counts[target.get('code')] == 1 else None
+        line = copy.deepcopy(parent) if parent else {}
+        key = 'rds:'+str(identity[0])+':'+str(identity[1])
+        line.update(code=key, name=row.get('name') or '', number=row.get('number') or '',
+                    section=section, gpr_code=(parent or {}).get('code'), position_key=list(identity))
+        quantity, total, ready = row.get('fact_quantity'), row.get('contract_quantity'), row.get('fact_quantity_ratio')
+        numeric = lambda value: type(value) in (int, float) and math.isfinite(value)
+        known = (numeric(quantity) and quantity >= 0 and numeric(total) and total > 0 and
+                 numeric(ready) and ready >= 0 and math.isclose(ready, quantity/total, abs_tol=1e-9))
+        line['quantity'] = {'fact_quantity': quantity, 'contract_quantity': total,
+                            'unit': row.get('unit') or '', 'fraction': ready} if known else None
+        line['physical'] = None
+        if (known and parent and row.get('unit') and numeric(row.get('day_deviation')) and identities[identity] == 1 and
+                day(row.get('start')) and day(row.get('finish')) and
+                (row['start'], row['finish']) == (parent.get('start'), parent.get('finish'))):
+            planned = row.get('plan_quantity_ratio')
+            line['physical'] = {**line['quantity'], 'fact_fraction': min(ready, 1),
+                'planned_fraction': min(max(planned, 0), 1) if numeric(planned) else None,
+                'lag_days': max(row['day_deviation'], 0), 'source': rds.get('source'),
+                'basis': 'physical_cut_projection', 'note': 'Факт отдельной операции по РДС. '
+                    'Операции не складываются в общий физический процент конструкции.'}
+        line['note'] = ((row.get('comments') or {}).get('fact_quantity') or
+                        'Известный объём отдельной операции; это не общий процент строки ГПР.')
+        result.append(line)
     return result

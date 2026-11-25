@@ -885,7 +885,9 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                 encoded['gpr']['staffing'] = gpr.workforce_sources(payload['project'], row or {}, register,
                     payload['cut'], encoded['gpr'].get('schedule'))
                 encoded['gpr']['presentation'] = gpr_export.presentation(encoded['gpr']['schedule'] or {},
-                    encoded['gpr']['overlays'], payload['cut'])
+                    encoded['gpr']['overlays'], payload['cut'],
+                    gpr.position_projections(encoded, encoded['rds_comparison'], encoded['gpr']['schedule'] or {}),
+                    statement=gpr_export.statement_projection(encoded['rds_comparison']))
                 encoded['gpr_export'] = gpr_export.bind_snapshot(payload['project'], payload['cut'],
                     encoded.get('contract_id') or payload['contract_id'], encoded,
                     {key: (row or {}).get(key) or '' for key in ('contract', 'contractor', 'contract_date')})

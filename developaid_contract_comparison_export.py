@@ -271,7 +271,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     widths = (9, 58, 11, 13, 13, 14, 13, 14, 13, 15, 17, 17, 17, 14, 18, 16)
     for column, width in enumerate(widths, 1):
         sheet.column_dimensions[get_column_letter(column)].width = width
-    sheet.freeze_panes = 'D7'
+    sheet.freeze_panes = None
     sheet.auto_filter.ref = f'A6:P{excel_row}'
     sheet.print_title_rows = '5:6'
     sheet.print_options.horizontalCentered = True

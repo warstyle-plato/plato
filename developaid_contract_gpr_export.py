@@ -20,7 +20,7 @@ SCHEMA = 'contract-gpr-performance-xlsx-v2'
 COLORS = {'plan': '9DC3E6', 'fact': '70AD47', 'lag': 'E06666', 'unknown': 'D9D9D9'}
 LEGEND = ('Синий — исходный план; зелёный — подтверждённая физическая доля на дату среза; '
           'красный — невыполненная часть плана к срезу и срок после окончания незавершённой работы; '
-          'серый — физическое выполнение не подтверждено. Цвет факта — проекция накопительного '
+          'серый — нет единого сопоставимого физического показателя строки. Цвет факта — проекция накопительного '
           'объёма на исходные полосы, а не ежедневная история работ. Деньги не заменяют физический объём.')
 
 
@@ -128,9 +128,52 @@ def cell_states(line, ticks, overlay, cut=''):
     return result
 
 
-def presentation(schedule, overlays, cut):
+def ordered_positions(positions):
+    """Keep known nonzero work visible; never reorder the original RDS table."""
+    return sorted(positions, key=lambda line: (0 if (line.get('quantity') or {}).get('fact_quantity', 0) > 0
+                                              else 1 if line.get('quantity') else 2))
+
+
+def statement_projection(comparison):
+    if comparison.get('source') != 'ks6a':
+        return None
+    summary = comparison.get('statement_summary') or {}
+    source = (summary.get('cash') or {}).get('source') or {}
+    if not source:
+        return None
+    keys = ('total', 'work', 'material', 'known_total', 'known_work', 'known_material')
+    def values(part):
+        return {key: part.get(key) if type(part.get(key)) in (int, float) and math.isfinite(part[key]) else None
+                for key in keys}
+    return {'source_dates': summary.get('source_dates') or [], 'kind': comparison.get('source'),
+            **values(source), 'cut': comparison.get('cut'),
+            **{key: values((summary.get('cash') or {}).get(key) or {}) for key in ('current', 'after_cut', 'undated')}}
+
+
+def statement_text(statement):
+    """Describe source totals separately from the amount attributable to the cut."""
+    def money(value):
+        return (format(value/1e6, '.1f').replace('.', ',')+' млн ₽' if abs(value) >= 1e6
+                else format(value, ',.2f').replace(',', ' ').replace('.', ',')+' ₽')
+    def amount(part, key):
+        if part.get(key) is not None:
+            return money(part[key])
+        known = part.get('known_'+key)
+        return 'известная часть '+money(known)+'; полный итог не подтверждён' if known is not None else 'не подтверждено'
+    lines = ['Всего в исходной КС-6а: '+amount(statement, 'total'),
+             'Работы: '+amount(statement, 'work')+' · материалы: '+amount(statement, 'material')+'.']
+    if any(statement[key].get('total') != 0 for key in ('after_cut', 'undated')):
+        lines.append('В учёте на срез: '+amount(statement['current'], 'total')+
+            '; позже среза: '+amount(statement['after_cut'], 'total')+
+            '; без подтверждённой даты: '+amount(statement['undated'], 'total')+'.')
+    return lines
+
+
+def presentation(schedule, overlays, cut, positions=(), *, statement=None, _ticks=None):
     """Geometry shared by the native popup and the export's source commentary."""
-    ticks = timeline(schedule, cut, overlays)
+    positions = ordered_positions(positions)
+    position_overlays = {line['code']: line['physical'] for line in positions if line.get('physical')}
+    ticks = _ticks if _ticks is not None else timeline(schedule, cut, {**overlays, **position_overlays})
     first = gpr.day(ticks[0].get('start')) if ticks else None
     last = gpr.day(ticks[-1].get('finish')) if ticks else None
     length = ((last-first).days+1) if first and last else max((tick.get('finish_day', 0) for tick in ticks), default=0)
@@ -167,8 +210,34 @@ def presentation(schedule, overlays, cut):
         rows.append({'code': line['code'], 'name': line['name'], 'start': line.get('start'),
                      'finish': line.get('finish'), 'relative_segments': line.get('relative_segments'),
                      'duration_printed': line.get('duration_printed'), 'relative_unit': line.get('relative_unit'),
-                     'page': line.get('page'), 'bars': bars, 'physical': overlay})
-    return {'ticks': ticks, 'length': length, 'rows': rows, 'legend': LEGEND, 'colors': COLORS}
+                     'page': line.get('page'), 'bars': bars, 'physical': overlay,
+                     **{key: line[key] for key in ('number', 'section', 'position_key', 'gpr_code', 'quantity', 'note') if key in line}})
+    projected = (presentation({**schedule, 'lines': positions}, position_overlays, cut, _ticks=ticks)['rows']
+                 if positions else [])
+    return {'ticks': ticks, 'length': length, 'rows': rows, 'positions': projected, 'statement': statement,
+            'legend': LEGEND, 'colors': COLORS}
+
+
+def _edition_label(source):
+    edition = source.get('edition') or {}
+    if not isinstance(edition, dict):
+        return 'редакция по исходному документу'
+    label = 'ДС' if edition.get('kind') == 'agreement' else 'договор'
+    if edition.get('number'):
+        label += ' № '+str(edition['number'])
+    if gpr.day(edition.get('date')):
+        label += ' от '+gpr.day(edition['date']).strftime('%d.%m.%Y')
+    return label
+
+
+def _fact_source_label(comparison):
+    label = {'ks6a': 'КС-6а', 'ks2': 'КС-2'}.get(comparison.get('source'), 'не определён')
+    summary = comparison.get('statement_summary') or {}
+    dates = [gpr.day(value) for value in summary.get('source_dates') or []]
+    if not any(dates):
+        dates = [gpr.day(act.get('date')) for act in (comparison.get('act_evidence') or {}).get('acts') or []]
+    dates = [value for value in dates if value]
+    return label+(' · '+max(dates).strftime('%d.%m.%Y') if dates else '')
 
 
 def workbook(meta, cached):
@@ -182,8 +251,10 @@ def workbook(meta, cached):
         book.active['A4'] = comparison.get('detail') or 'РДС или пригодные данные выполнения не определены.'
     sheet = book.create_sheet('ГПР', 0)
     schedule, overlays = state['schedule'], state.get('overlays') or {}
-    ticks = timeline(schedule, meta['cut'], overlays)
-    if len(ticks) > 1096 or len(schedule['lines']) > 10000:
+    positions = ordered_positions(gpr.position_projections(cached, comparison, schedule))
+    display = presentation(schedule, overlays, meta['cut'], positions)
+    ticks = display['ticks']
+    if len(ticks) > 1096 or len(schedule['lines'])+len(positions) > 10000:
         raise rds_export.ExportProblem('ГПР слишком большой для одной выгрузки. Проверьте диапазон исходного графика.')
     label = meta.get('label') or {}
     source = state['source']
@@ -194,26 +265,29 @@ def workbook(meta, cached):
         cell.font = Font(name='Calibri', size=10)
         cell.alignment = Alignment(vertical='top', wrap_text=True)
         return cell
-    text_rows = [
-        'ГПР · '+(label.get('contract') or 'Договор'),
-        'Проект: '+meta['project']+' · '+(label.get('contractor') or '')+' · срез '+meta['cut'],
-        'Источник SHA256: '+source['sha256']+' · редакция: '+str(source['edition']),
-        'Дата передачи площадки: '+str((schedule.get('anchor') or {}).get('handover_date') or 'не указана')+
-            ' · версия основания: '+str((schedule.get('anchor') or {}).get('event_id') or 'нет'),
-        LEGEND,
-        schedule.get('assumption') or 'Календарные даты из исходного ГПР.',
-        'Подпись: '+str((state.get('signature_evidence') or {}).get('state') or 'unknown')+
-            '. Визуальные отметки ЭДО и ручное подтверждение не являются криптографической проверкой.',
-    ]
-    for condition in state.get('conditions') or []:
-        text_rows.append(condition['quote']+' '+condition['note']+
-                         (' Расчётный ориентир: '+condition['reference_finish'] if condition.get('reference_finish') else
-                          ' Все условия начала работ не подтверждены.'))
+    text_rows = ['ГПР · '+(label.get('contract') or 'Договор')+' · '+(label.get('contractor') or ''),
+        'Проект: '+meta['project']+' · Редакция ГПР: '+_edition_label(source),
+        'Срез: '+gpr.day(meta['cut']).strftime('%d.%m.%Y')+' · Источник выполнения: '+_fact_source_label(comparison),
+        'Синий — план; зелёный — выполненный объём; красный — отставание; серый — нет сопоставимого физического показателя.']
+    statement = statement_projection(comparison)
+    if statement:
+        text_rows[3:3] = ['\n'.join(statement_text(statement))]
+    if positions:
+        known = sum(line.get('quantity') is not None for line in positions)
+        text_rows.append('Объём известен по '+str(known)+' из '+str(len(positions))+
+                         ' позиций РДС. Сначала показаны операции с ненулевым выполнением; исходный ГПР — ниже.')
     end_column = max(7, len(ticks)+6)
     for row, text in enumerate(text_rows, 1):
         put(row, 1, text)
-        sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=end_column)
-        sheet.row_dimensions[row].height = 32 if row in {3, 5, 6} else 26
+        sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+        sheet.row_dimensions[row].height = (max(42, 6+14*sum(max(1, math.ceil(len(line)/110))
+            for line in statement_text(statement))) if statement and row == 4 else 30)
+    sheet['A1'].comment = Comment(rds_export._text('Источник SHA256: '+source['sha256']+
+        '\nРедакция: '+str(source['edition'])+'\nОснование начала: '+str(schedule.get('anchor') or {})+
+        '\nПодписание: '+str(state.get('signature_evidence') or {})), 'DevelopAid')
+    if statement:
+        sheet['A4'].comment = Comment(rds_export._text(str(statement)+
+            '\nЭто сумма исходного снимка КС-6а, не оплата и не историческая оценка РДС.'), 'DevelopAid')
     header = len(text_rows)+2
     for column, text in enumerate(('№', 'Работа / ресурс', 'Начало', 'Окончание', 'Физический факт', 'Источник / основание'), 1):
         put(header, column, text)
@@ -224,11 +298,34 @@ def workbook(meta, cached):
         cell = sheet.cell(header, column)
         cell.fill = PatternFill('solid', fgColor='1F4E78')
         cell.font = Font(color='FFFFFF', bold=True, size=9)
-    for row, line in enumerate(schedule['lines'], header+1):
+    def write_positions(row):
+        put(row, 2, 'Физический факт по позициям РДС — отдельно от общего процента конструкции')
+        sheet.row_dimensions[row].height = 34
+        row += 1
+        for line in positions:
+            quantity = line.get('quantity')
+            text = (format(quantity['fact_quantity'], '.15g')+' / '+format(quantity['contract_quantity'], '.15g')+
+                    ' '+quantity['unit']+' · '+format(quantity['fraction']*100, '.1f')+'%') if quantity else 'Нет сопоставленного объёма'
+            for column, value in enumerate((line['number'], line['name']+'\nФакт: '+text, line.get('start'), line.get('finish'),
+                text, (line.get('section')+' · ' if line.get('section') else '')+_fact_source_label(comparison)), 1):
+                put(row, column, value)
+            sheet.cell(row, 5).comment = Comment(rds_export._text(line['note']), 'DevelopAid')
+            for index, state_name in cell_states(line, ticks, line.get('physical'), meta['cut']).items():
+                put(row, index+7, '').fill = PatternFill('solid', fgColor=COLORS[state_name])
+            sheet.row_dimensions[row].height = 64
+            row += 1
+        return row
+    row = write_positions(header+1) if positions else header+1
+    if positions:
+        put(row, 2, "Исходный ГПР — строки и интервалы документа")
+        row += 1
+    source_first_row = row
+    for row, line in enumerate(schedule['lines'], source_first_row):
         overlay = overlays.get(line['code'])
         for column, value in enumerate((line['code'], line['name'], line.get('start'), line.get('finish'),
                  (str(overlay['fact_quantity'])+' / '+str(overlay['contract_quantity'])+' '+str(overlay['unit']))
-                 if overlay else 'не подтверждён', 'ГПР, стр. '+str(line.get('page') or '—')), 1):
+                 if overlay else 'Общий % не рассчитан; операции выше' if positions else 'не подтверждён',
+                 'ГПР, стр. '+str(line.get('page') or '—')), 1):
             put(row, column, value)
         for index, state_name in cell_states(line, ticks, overlay, meta['cut']).items():
             put(row, index+7, '').fill = PatternFill('solid', fgColor=COLORS[state_name])
@@ -236,7 +333,7 @@ def workbook(meta, cached):
             ('\nДлительность, напечатанная в ГПР: '+str(line['duration_printed'])+' '+str(line.get('relative_unit'))
              if line.get('duration_printed') is not None else '')+
             ('\n'+overlay['note'] if overlay else '\nПригодного отдельного физического показателя нет.')), 'DevelopAid')
-    row = header+len(schedule['lines'])+2
+    row = source_first_row+len(schedule['lines'])+2
     for resource in schedule.get('resources') or []:
         put(row, 2, resource['name'])
         put(row, 6, 'Категория: '+resource['category']+'; повторённые строки не суммируются.')
@@ -252,8 +349,23 @@ def workbook(meta, cached):
                     number = value.get('value')
                     put(row, index, str(number['min'])+'–'+str(number['max']) if isinstance(number, dict) else number)
         row += 1
-    put(row+1, 1, (state.get('staffing') or {}).get('note') or 'Сопоставление численности требует одинакового состава работ.')
-    sheet.freeze_panes = f'G{header+1}'
+    row += 2
+    details = [LEGEND, schedule.get('assumption') or 'Календарные даты из исходного ГПР.',
+        (state.get('staffing') or {}).get('note') or 'Сопоставление численности требует одинакового состава работ.',
+        'Видимые отметки ЭДО и подтверждение оператора не являются криптографической проверкой подписи.']
+    for condition in state.get('conditions') or []:
+        details.append(condition['quote']+' '+condition['note']+
+                       (' Расчётный ориентир: '+condition['reference_finish'] if condition.get('reference_finish') else
+                        ' Все условия начала работ не подтверждены.'))
+    for detail in details:
+        put(row+1, 1, detail)
+        sheet.merge_cells(start_row=row+1, start_column=1, end_row=row+1, end_column=6)
+        sheet.row_dimensions[row+1].height = 44
+        row += 1
+    for page in book:
+        page.freeze_panes = None
+        page.sheet_view.topLeftCell = 'A1'
+    book.active = 0
     sheet.column_dimensions['A'].width = 9
     sheet.column_dimensions['B'].width = 55
     for column in ('C', 'D', 'E'):

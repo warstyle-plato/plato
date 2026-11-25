@@ -303,11 +303,133 @@ def test_two_sheet_export_preserves_current_source_and_disjoint_bars(card):
     book = load_workbook(io.BytesIO(export.workbook(selected, result)))
     assert book.sheetnames == ['ГПР', 'Выполнение']
     text = '\n'.join(str(cell.value) for row in book['ГПР'] for cell in row if cell.value is not None)
-    assert listed['gpr']['source']['sha256'] in text and listed['gpr']['schedule']['anchor']['event_id'] in text
+    provenance = book['ГПР']['A1'].comment.text
+    assert listed['gpr']['source']['sha256'] in provenance and listed['gpr']['schedule']['anchor']['event_id'] in provenance
+    assert listed['gpr']['source']['sha256'] not in text
+    assert 'Редакция ГПР:' in book['ГПР']['A2'].value and 'Срез:' in book['ГПР']['A3'].value
+    assert all(sheet.freeze_panes is None for sheet in book), 'The source/name columns must not lock the phone viewport.'
     row = next(row for row in book['ГПР'] if row[1].value == 'Учебная работа')
     colored = [cell.fill.fgColor.rgb for cell in row[6:27]]
     assert colored[:7] == ['00D9D9D9']*7 and colored[7:14] == ['00000000']*7 and colored[14:] == ['00D9D9D9']*7
     assert book['Выполнение'].max_column == 16
+
+
+def operation_projection_case():
+    schedule = {'lines': [{'code': 'G1', 'name': 'Составная конструкция', 'start': '2026-02-01',
+        'finish': '2026-02-21', 'segments': [{'start': '2026-02-01', 'finish': '2026-02-07'},
+                                          {'start': '2026-02-15', 'finish': '2026-02-21'}]}]}
+    listed = {'plan': {'editions': [{'in_force': True, 'position_links': [
+        {'estimate': 0, 'index': i, 'status': 'confirmed', 'lines': [{'code': 'G1', 'share': 1}]}
+        for i in range(2)]}]}}
+    rds = {'available': True, 'source': 'ks6a', 'headings': [{'before_position': 0, 'number': '', 'name': 'Корпус 1'}],
+        'rows': [{'estimate': 0, 'index': i, 'number': f'1.{i+1}', 'name': name,
+            'start': '2026-02-01', 'finish': '2026-02-21', 'unit': 'м2',
+            'contract_quantity': 100, 'fact_quantity': qty, 'fact_quantity_ratio': qty/100,
+            'plan_quantity_ratio': .8, 'day_deviation': 4, 'comments': {}}
+            for i, (name, qty) in enumerate([('Монтаж каркаса', 40), ('Остекление', 0)])]}
+    return listed, rds, schedule
+
+
+def test_composite_gpr_keeps_known_operation_facts_and_source_gaps():
+    listed, rds, schedule = operation_projection_case()
+    assert gpr.physical_overlays(listed, rds) == {}, 'Operations are not summed into the parent construction percent.'
+    positions = gpr.position_projections(listed, rds, schedule)
+    shown = export.presentation(schedule, {}, '2026-02-25', positions)
+    assert all(bar['state'] == 'unknown' for bar in shown['rows'][0]['bars'])
+    assert [row['quantity']['fact_quantity'] for row in shown['positions']] == [40, 0]
+    assert [row['gpr_code'] for row in shown['positions']] == ['G1', 'G1']
+    assert all(row['section'] == 'Корпус 1' for row in shown['positions'])
+    assert any(bar['state'] == 'fact' for bar in shown['positions'][0]['bars'])
+    assert not any(bar['state'] == 'fact' for bar in shown['positions'][1]['bars'])
+    assert any(bar['state'] == 'lag' for bar in shown['positions'][1]['bars'])
+    assert all(bar['end'] <= 7 or bar['start'] >= 14 for row in shown['positions'] for bar in row['bars'])
+
+
+@pytest.mark.parametrize('defect', ['no_quantity', 'money_readiness', 'split', 'unproved_days', 'duplicate_code', 'duplicate_binding', 'ratio_mismatch'])
+def test_operation_chart_refuses_unattributable_or_money_only_facts(defect):
+    listed, rds, schedule = operation_projection_case()
+    if defect in {'no_quantity', 'money_readiness'}:
+        rds['rows'][0]['fact_quantity'] = rds['rows'][0]['fact_quantity_ratio'] = None
+        rds['rows'][0]['readiness'] = .95
+    elif defect == 'split':
+        listed['plan']['editions'][0]['position_links'][0]['lines'][0]['share'] = .5
+    elif defect == 'unproved_days':
+        rds['rows'][0]['day_deviation'] = None
+    elif defect == 'duplicate_code':
+        schedule['lines'].append(copy.deepcopy(schedule['lines'][0]))
+    elif defect == 'duplicate_binding':
+        listed['plan']['editions'][0]['position_links'].append(
+            copy.deepcopy(listed['plan']['editions'][0]['position_links'][0]))
+    else:
+        rds['rows'][0]['fact_quantity_ratio'] = .9
+    positions = gpr.position_projections(listed, rds, schedule)
+    assert positions[0]['physical'] is None
+    shown = export.presentation(schedule, {}, '2026-02-25', positions)
+    refused = next(row for row in shown['positions'] if row['position_key'] == [0, 0])
+    assert not any(bar['state'] in {'fact', 'lag'} for bar in refused['bars'])
+    if defect == 'unproved_days':
+        assert refused['quantity']['fact_quantity'] == 40, 'An unavailable time projection does not remove a known quantity.'
+
+
+def test_duplicate_operation_binding_also_cannot_paint_a_parent_percent():
+    listed, rds, _ = operation_projection_case()
+    rds['rows'] = rds['rows'][:1]
+    binding = copy.deepcopy(listed['plan']['editions'][0]['position_links'][0])
+    listed['plan']['editions'][0]['position_links'] = [binding, copy.deepcopy(binding)]
+    assert gpr.physical_overlays(listed, rds) == {}
+
+
+@pytest.mark.parametrize('partial', [False, True])
+def test_source_cash_header_keeps_partial_and_after_cut_amounts_separate(partial):
+    source = {'total': None if partial else 100e6, 'work': None if partial else 20e6,
+              'material': 80e6, 'known_total': 100e6, 'known_work': 20e6, 'known_material': 80e6}
+    comparison = {'source': 'ks6a', 'cut': '2026-11-01', 'statement_summary': {
+        'source_dates': ['2026-11-18'], 'historical': {'total': None}, 'cash': {'source': source,
+        'current': {'total': 40e6}, 'after_cut': {'total': 60e6}, 'undated': {'total': 0}}}}
+    shown = export.statement_projection(comparison)
+    text = '\n'.join(export.statement_text(shown))
+    assert shown['total'] is source['total'] or shown['total'] == source['total']
+    assert 'Всего в исходной КС-6а:' in text and '100,0 млн ₽' in text
+    assert 'В учёте на срез: 40,0 млн ₽' in text and 'позже среза: 60,0 млн ₽' in text
+    if partial:
+        assert 'известная часть 100,0 млн ₽; полный итог не подтверждён' in text
+        assert 'Работы: известная часть 20,0 млн ₽; полный итог не подтверждён' in text
+        assert shown['total'] is None and shown['work'] is None
+    else:
+        assert 'известная часть' not in text
+    assert export.statement_projection({**comparison, 'source': 'ks2'}) is None
+
+
+def test_workbook_keeps_operation_facts_mobile_header_and_source_identity(card):
+    binding, rds, schedule = operation_projection_case()
+    listed = change(files.listing(PROJECT, ROW['id'], CUT))
+    listed['plan']['editions'] = binding['plan']['editions']
+    rds.update(layout=export.LAYOUT, cut='2026-02-25')
+    from developaid_contract_rds import FIELDS
+    rds['rows'] = [{**{field: None for field in FIELDS}, **row,
+        'plan_quantity': 80, 'quantity_deviation': row['fact_quantity']-80} for row in rds['rows']]
+    listed['rds_comparison'] = rds
+    listed['gpr']['schedule'] = schedule
+    listed['gpr']['overlays'] = {}
+    result = {'ok': True, **listed}
+    meta = export.bind_snapshot(PROJECT, rds['cut'], ROW['id'], result, ROW)
+    book = load_workbook(io.BytesIO(export.workbook(meta, result)))
+    assert all(sheet.freeze_panes is None for sheet in book)
+    header = '\n'.join(str(book['ГПР'].cell(i, 1).value or '') for i in range(1, 6))
+    assert 'Редакция ГПР:' in header and 'Срез: 25.02.2026' in header
+    assert not any(word in header for word in ('SHA256', 'event_id', 'cryptograph', "'kind'"))
+    assert result['gpr']['source']['sha256'] in book['ГПР']['A1'].comment.text
+    source = next(row for row in book['ГПР'] if row[1].value == 'Составная конструкция')
+    assert not any(c.fill.fgColor.rgb == '0070AD47' for c in source)
+    operation = next(row for row in book['ГПР'] if str(row[1].value or '').startswith('Монтаж каркаса'))
+    assert operation[4].value == '40 / 100 м2 · 40.0%'
+    assert any(c.fill.fgColor.rgb == '0070AD47' for c in operation)
+    assert all(c.fill.fgColor.rgb == '00000000' for c in operation[13:20]), 'The original gap stays unpainted.'
+    zero = next(row for row in book['ГПР'] if str(row[1].value or '').startswith('Остекление'))
+    assert zero[4].value == '0 / 100 м2 · 0.0%'
+    execution = [row for row in book['Выполнение'] if row[1].value in {'Монтаж каркаса', 'Остекление'}]
+    assert [row[7].value for row in execution] == [40, 0]
+    assert [row[8].value for row in execution] == [.4, 0]
 
 
 def _parallel_anchor(root, guard, sha, date, start, output):
@@ -441,6 +563,29 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         assert page.locator('.contract-gpr-track rect[fill="#9DC3E6"]').count() == 2
         expect(page.locator('#contractGprBody')).to_contain_text('не ежедневная история работ')
         page.screenshot(path=str(tmp_path/f'gpr-physical-projection-{width}.png'), full_page=True)
+        child_listed, child_rds, child_schedule = operation_projection_case()
+        physical['schedule'] = child_schedule
+        physical['overlays'] = {}
+        physical['presentation'] = export.presentation(child_schedule, {}, '2026-02-25',
+            gpr.position_projections(child_listed, child_rds, child_schedule))
+        page.evaluate('(state)=>renderContractGpr(state)', physical)
+        expect(page.locator('.contract-gpr-position')).to_have_count(2)
+        expect(page.locator('.contract-gpr-position[data-rds-position="0:0"]')).to_contain_text('Монтаж каркаса')
+        expect(page.locator('.contract-gpr-position[data-rds-position="0:0"]')).to_contain_text('40')
+        assert page.locator('.contract-gpr-position[data-rds-position="0:0"] rect[fill="#70AD47"]').count() > 0
+        assert page.locator('.contract-gpr-position[data-rds-position="0:1"] rect[fill="#70AD47"]').count() == 0
+        assert page.locator('.contract-gpr-position[data-rds-position="0:1"] rect[fill="#E06666"]').count() > 0
+        assert page.locator('.contract-gpr-source-chart rect[fill="#70AD47"]').count() == 0
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+        page.screenshot(path=str(tmp_path/f'gpr-operation-facts-{width}.png'), full_page=True)
+        physical['presentation']['statement'] = {'total': None, 'known_total': 100e6, 'work': None,
+            'known_work': 20e6, 'material': 80e6, 'known_material': 80e6, 'source_dates': ['2026-11-18'],
+            'current': {'total': 40e6}, 'after_cut': {'total': 60e6}, 'undated': {'total': 0}}
+        page.evaluate('(state)=>renderContractGpr(state)', physical)
+        cash_text = page.locator('.contract-gpr-statement').inner_text().replace('\u00a0', '')
+        assert 'известная часть 100000000 ₽; полный итог не подтверждён' in cash_text
+        assert 'Всего в исходной КС-6а' in cash_text and 'позже среза: 60000000 ₽' in cash_text
+        assert 'В учёте на срез: 40000000 ₽' in cash_text
         pending_records = gpr.project_records([{**card[2], 'gpr_pending': True}], [])
         pending = gpr.view(PROJECT, ROW['id'], pending_records, [card[0]], CUT)
         page.evaluate('(state)=>renderContractGpr(state)', pending)
