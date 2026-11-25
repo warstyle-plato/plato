@@ -99,14 +99,14 @@ def test_component_rows_count_source_coverage_once_and_export_each_contribution(
     assert view['coverage']['unknown']==0
     assert [r['code'] for r in view['lines']]==['1','1::material','2']
     assert view['lines'][0]['fact']==50 and view['lines'][1]['fact']==450
-    cached={'ok':True,'contract_id':'f'*64,'comparison':view}
-    meta=export.bind_snapshot('Учебный','2026-03-10','f'*64,cached,{})
-    book=load_workbook(io.BytesIO(export.workbook(meta,view,view['lines'])),data_only=True)
-    values=list(book.active.values)
-    assert any(row[0] and 'Общая готовность' in str(row[0]) for row in values)
-    assert any(row[0] and 'Поставка материалов' in str(row[0]) and 'вклад' in str(row[0]) for row in values)
-    delivery=[row for row in values if row[0] and '— поставка материалов' in str(row[0])]
-    assert len(delivery)==2 and [r[3] for r in delivery]==[450,500]
+    # The compact Excel is RDS-led and does not repeat component display rows.
+    from tests.contract_rds_fixtures import native_card
+    cached=native_card()
+    meta=cached['comparison_export']; rds=cached['rds_comparison']
+    book=load_workbook(io.BytesIO(export.workbook(meta,rds,rds['rows'])),data_only=True)
+    assert len(book.worksheets)==1 and book.active.max_column==16
+    assert book.active.max_row==8
+    assert not any('— поставка материалов' in str(cell.value) for row in book.active for cell in row)
 
 
 def test_native_page_names_full_value_and_keeps_visible_component_numbers_without_mutation():
@@ -187,7 +187,10 @@ def test_native_page_keeps_work_and_delivery_rows_and_unknowns_visible(source_ca
 
 
 @pytest.mark.parametrize('operation',['view','documents'])
-def test_old_method_ticket_is_immutable_but_cannot_readmit_or_replace_fresh_calculation(api,monkeypatch,operation):
+@pytest.mark.parametrize('prior_revision',[None,'contract-full-value-v1','contract-full-value-ks-source-fallback-v1',
+                                          'contract-full-value-ks-source-fallback-v2',
+                                          'contract-full-value-ks-source-fallback-v3','contract-rds-plan-fact-v1','contract-rds-plan-fact-v2'])
+def test_old_method_ticket_is_immutable_but_cannot_readmit_or_replace_fresh_calculation(api,monkeypatch,operation,prior_revision):
     import developaid_management_report_jobs as jobs
     from tests.test_monitor_cumulative_api import post,poll,core,KEY
     client,root=api
@@ -199,6 +202,9 @@ def test_old_method_ticket_is_immutable_but_cannot_readmit_or_replace_fresh_calc
     import developaid_monitor_ledgers as ledgers
     context=ledgers.snapshot_job_context('Учебный')
     payload['source_context']=context
+    if prior_revision is not None:
+        # Main уже считает полную стоимость, но ещё не выбирает КС-2 при отсутствии КС-6а.
+        payload['contract_calculation_revision']=prior_revision
     old={'ok':True,'weights':'Готовность работ без материалов','legacy':True}
     store=jobs.Store(root/'monitor'/'.cumulative_jobs')
     store.start(owner,purpose,payload,lambda:old,'a'*32,context=context)

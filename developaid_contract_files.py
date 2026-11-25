@@ -397,7 +397,7 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     folders = _folders(project, contract_id, acts)
     cut = cut or dt.date.today().isoformat()
     if not any(candidate.is_dir() for candidate in folders):
-        acts = act_dates.resolve(acts, [])
+        acts = act_dates.resolve(acts, [], cut)
         performed = acts_in_card.accumulated([], cut)
         return _with_control({"contract_id": contract_id, "documents": [], "removed": [],
                               "plan": plan.build([], cut), "fact": _fact([], None, acts, cut, performed),
@@ -406,7 +406,7 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
     records = [r for r in every if not r.get("removed_at")]
     # An unconfirmed scan is listed with its proposal; the plan, the fact and the act dates do not see it.
     counted = [r for r in records if not awaits_confirmation(r)]
-    acts = act_dates.resolve(acts, counted)
+    acts = act_dates.resolve(acts, counted, cut)
     performed = acts_in_card.accumulated(counted, cut)
     performed['excluded'].extend({
         'number': r['act'].get('number'), 'date': r['act'].get('date'),
@@ -553,10 +553,13 @@ def _with_control(listed, acts, cut):
     listed["control"] = control.build(listed["plan"], listed["fact"], deadline, label, cut)
     # Known source dates are useful even before money/fact can be matched.
     # They are a source-plan interval, never a legal deadline or a forecast.
-    if listed["control"].get("total") is None:
-        source = _schedule_source(listed.get("documents") or [], cut)
-        if source:
-            listed["control"]["schedule_source"] = source
+    current = next((edition for edition in listed['plan'].get('editions') or [] if edition.get('in_force')), None)
+    source_sha = (current or {}).get('schedule_sha256')
+    records = listed.get('documents') or []
+    source = _schedule_source([record for record in records if record['sha256'] == source_sha]
+                              if source_sha else records, cut)
+    if source:
+        listed['control']['schedule_source'] = source
     identity = _schedule_identity(listed.get('documents') or [],cut)
     # The new undated, source-only fallback needs an explicit contract binding.
     # Keep the existing dated-interval/control policy unchanged.
@@ -596,10 +599,12 @@ def _schedule_source(records, cut):
     dated = [r for r in lines if r.get('start') and r.get('finish') and r['start'] <= r['finish']]
     if not dated:
         return None
+    precision = {line['date_precision'] for line in lines if line.get('date_precision')}
     return {'start': min(r['start'] for r in dated), 'finish': max(r['finish'] for r in dated),
             'title': record.get('title') or _title(record), 'date': _date(record),
             'sha256': record['sha256'], 'dated': len(dated), 'undated': len(lines)-len(dated),
-            'assumption': record['schedule'].get('assumption') or '', 'basis': 'source_gpr'}
+            'assumption': record['schedule'].get('assumption') or '',
+            'date_precision': next(iter(precision)) if len(precision) == 1 else None, 'basis': 'source_gpr'}
 
 
 def _register_control_raw(project: str, register: dict, cut: str) -> dict:
@@ -630,6 +635,7 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
                                          "auto", "incomplete")},
             "source": found.get("source"), "preliminary": bool(found.get("preliminary")),
             "confirmation": found.get("confirmation"),
+            'act_evidence': found.get('act_evidence'),
             "left_out": found["left_out"],
             "coverage": found.get("coverage"),
             "components": found.get("components") or {},

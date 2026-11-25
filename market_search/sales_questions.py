@@ -14,8 +14,8 @@
   ухода брони (`salesroom.booking_outcomes`: исход «снята без сделки»), иначе
   вопрос без этого утверждения;
 - **нетипичные условия** — вариант оплаты, который правило отчёта о продажах не
-  узнаёт (`contracting.payment_variant`), и цена метра ниже средней по договорам
-  той же комнатности за последние три месяца больше чем на 15%.
+  узнаёт (`contracting.payment_variant`), и цена метра ниже медианы по договорам
+  той же комнатности в том же явном корпусе за последние три месяца больше чем на 15%.
   Прайс-листа в источниках нет, поэтому «текущая цена» — это сделки, и в
   вопросе так и сказано.
 
@@ -44,7 +44,7 @@ import statistics
 from pathlib import Path
 from typing import Any, Iterator
 
-from market_search import contracting, salesroom
+from market_search import chessboard, contracting, salesroom
 
 # Через сколько дней после подписания без платежа уже стоит спросить: живой
 # договор от 24.10 на 124,5 млн ₽ к выгрузке 02.11 стоял без денег девять дней.
@@ -57,7 +57,7 @@ DROPPED_DAYS = 14
 RECENT_DAYS = 60
 # Выгрузка договоров старше отчёта на столько дней — о деньгах и бронях молчим.
 FRESH_DAYS = 7
-# Снижение цены метра относительно средней по той же комнатности.
+# Снижение цены метра относительно медианы по той же комнатности и корпусу.
 PRICE_GAP = 0.15
 PRICE_WINDOW_DAYS = 90
 PRICE_MIN_PEERS = 3
@@ -183,9 +183,26 @@ def _dropped(read: dict[str, Any] | None, rows: list[dict[str, Any]], uploaded: 
     return out
 
 
+def _price_buildings(rows: list[dict[str, Any]]) -> dict[int, str]:
+    """Не теряем противоречивый корпус договора при удалении повторов источника."""
+    def identity(row):
+        contract = " ".join(str(row.get("contract") or "").casefold().split())
+        return ((contract, _date(row.get("signed")),
+                 contracting.product_name(row.get("product") or "")) if contract else None)
+
+    corpora = {id(row): chessboard.explicit_building(row.get("unit")) for row in rows}
+    by_contract = {}
+    for row in rows:
+        if (key := identity(row)) is not None:
+            by_contract.setdefault(key, set()).add(corpora[id(row)])
+    ambiguous = {key for key, corps in by_contract.items() if "" in corps or len(corps) != 1}
+    return {id(row): "" if identity(row) in ambiguous else corpora[id(row)] for row in rows}
+
+
 def _unusual(rows: list[dict[str, Any]], uploaded: datetime.date) -> list[dict[str, Any]]:
     out = []
-    recent = [row for row in rows if (d := _date(row.get("signed")))
+    corpora = _price_buildings(rows)
+    recent = [row for row in chessboard.reconciled_contracts(rows)[0] if (d := _date(row.get("signed")))
               and 0 <= (uploaded - d).days <= PRICE_WINDOW_DAYS]
     for row in recent:
         signed = _date(row.get("signed"))
@@ -204,9 +221,13 @@ def _unusual(rows: list[dict[str, Any]], uploaded: datetime.date) -> list[dict[s
         area = float(row.get("area") or 0.0)
         if contracting.product_name(row.get("product") or "") != "Квартира" or area <= 0:
             continue
+        corpus = corpora[id(row)]
+        if not corpus:
+            continue
         rooms = str(row.get("rooms") or "").strip()
         peers = [float(p["amount"]) / float(p["area"]) for p in recent
                  if p is not row and str(p.get("rooms") or "").strip() == rooms and rooms
+                 and corpora[id(p)] == corpus
                  and contracting.product_name(p.get("product") or "") == "Квартира"
                  and float(p.get("area") or 0.0) > 0]
         if len(peers) < PRICE_MIN_PEERS:
@@ -223,7 +244,7 @@ def _unusual(rows: list[dict[str, Any]], uploaded: datetime.date) -> list[dict[s
             "kind": "price",
             "text": (f"{_cap(_name(row))}: цена метра "
                      f"{price / 1000:,.0f}".replace(",", " ") + " тыс. ₽ — на "
-                     f"{-gap * 100:.0f}% ниже средней по договорам {rooms} за три "
+                     f"{-gap * 100:.0f}% ниже медианы по договорам {rooms} в корпусе {corpus} за три "
                      f"месяца ({typical / 1000:,.0f}".replace(",", " ")
                      + " тыс. ₽). Были особые условия?")})
     return out
@@ -240,13 +261,12 @@ def questions(read: dict[str, Any] | None, contracts: dict[str, Any] | None,
     if not _date(today):
         return []
     fresh = bool(loaded) and 0 <= (_date(today) - loaded).days <= FRESH_DAYS
-    from . import chessboard
     found = chessboard.questions(snapshot, rows if fresh else [], report_text, today)
     if rows and fresh:
         found += _no_money(rows, loaded)
     found += _dropped(read, rows, str(uploaded)[:10] if loaded else None, today, fresh)
     if rows and loaded:
-        found += _unusual(chessboard.reconciled_contracts(rows)[0], loaded)
+        found += _unusual(rows, loaded)
     seen = set(asked or ())
     out = []
     for item in found:

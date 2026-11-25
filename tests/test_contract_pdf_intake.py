@@ -96,7 +96,8 @@ console.log(JSON.stringify({label:contractUniverseLabel(),physical:contractPhysi
 financial:contractFinancialSourceHtml(row)}));
 """, page=MONITOR_PAGE)
     assert rendered['label'] == 'Источников договоров'
-    assert 'КС-2 и накопительная КС-6а не предоставлены' in rendered['physical']
+    assert 'Накопительная КС-6а к ней не привязана' in rendered['physical']
+    assert 'КС-2 и накопительная КС-6а не предоставлены' not in rendered['physical']
     assert 'В накопительной нет объёмов' not in rendered['physical']
     assert 'Выполнение по документам' in rendered['financial']
     assert 'Выполнено по накопительным' not in rendered['financial']
