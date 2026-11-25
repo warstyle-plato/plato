@@ -1,8 +1,9 @@
 """Accumulated fact of a contract: KS quantities priced by the Расчёт and laid on the ГПР lines.
 
-The cumulative KS-6a supplies the quantities of the fact. Uploaded acts КС-2
-confirm and reconcile those quantities; adding or removing an act never
-replaces the statement's quantities (owner's instruction of 19.11.2026).
+The cumulative KS-6a has priority. If it is absent or wholly unreadable,
+uploaded acts КС-2 supply the quantities, with their scope explicitly labelled.
+The two sources are never added together. A partly readable KS-6a retains its
+unknown works instead of filling them with acts (owner's clarification of 24.11.2026).
 
 A fact row is one dated period of one work of the cumulative KS-6a. It belongs
 to the edition of the plan in force on the last day of its period, and its money
@@ -43,6 +44,8 @@ ASSUMPTION = ("Работы периода КС относятся к редак
 _STATUSES = ("review", "extra", "missing")
 _LINKED = ("confirmed", "proposed")
 FROM_KS6A = "Выполнение рассчитано по накопительной КС-6а. Акты КС-2 используются для сверки и подтверждения."
+FROM_KS2 = ("Выполнение рассчитано по позициям загруженных актов КС-2: пригодная для расчёта КС-6а отсутствует. "
+            "Полнота комплекта актов не подтверждена. Итоги актов показаны отдельно от факта по графику.")
 
 
 def _day(iso):
@@ -289,11 +292,11 @@ def _month_ends(first: dt.date, last: dt.date):
 
 
 def from_acts(performed: dict | None) -> list[dict]:
-    """КС-2 rows for reconciliation: one row per act and position of the estimate."""
+    """КС-2 rows for reconciliation or fallback fact: one row per act and position."""
     rows = []
     for position in (performed or {}).get("positions") or []:
         for part in position["parts"]:
-            if not part["quantity"] and not part.get('quantity_material'):
+            if part["quantity"] is None and not part.get('quantity_material'):
                 continue
             rows.append({"number": position["number"], "name": part["name"] or position["name"],
                          "unit": position["unit"], "quantity": part["quantity"], "act_amount": part["amount"],
@@ -393,17 +396,35 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
           performed: dict | None = None) -> dict:
     """The fact on `cut` by the lines of the edition `in_force` (sha256) of the plan.
 
-    KS-6a supplies the fact. `performed` is used only to reconcile and confirm it.
+    KS-6a supplies the fact when at least one of its works is readable.
+    Otherwise `performed` supplies КС-2 quantities, never added to the statement.
     """
     result = {"cut": cut, "assumption": ASSUMPTION, "total": 0.0, "lines": [], "months": [], "positions": [],
               "outside": {status: {"count": 0, "amount": 0.0} for status in _STATUSES},
               "before": None, "review": [], "unread": [], "price_differs": 0, "after_cut": 0, "note": "",
               "source": None, "source_note": "", "preliminary": False, "reconciliation": None,
               "materials": [], "component_gaps": [], 'material_statement': statement_materials(found, cut),
-              'physical_groups': (found or {}).get('physical_groups') or []}
+              'physical_groups': (found or {}).get('physical_groups') or [],
+              'act_evidence': (performed or {}).get('evidence')}
     result['reconciliation'] = reconcile(performed, None if (found or {}).get('problem') else found, cut)
     result['confirmation'] = confirmation(performed, found, cut, result['reconciliation'])
-    if found is None:
+    act_rows = from_acts(performed)
+    statement_usable = found is not None and not found.get('problem') and bool(found.get('works'))
+    if not statement_usable and act_rows:
+        result['source'], result['source_note'] = 'ks2', FROM_KS2
+        if found is not None:
+            problem = (found.get('problem') or
+                       ('В КС-6а не прочитаны объёмы ни одной работы.' if found.get('unread') else
+                        'В КС-6а нет позиций работ для расчёта.'))
+            result['source_note'] += ' ' + problem
+        result['source_incomplete'] = True
+        result['physical_groups'] = []
+        result['confirmation'] = {'state': 'acts_only', 'missing_acts': [], 'upload_required': False,
+                                  'message': 'Выполнение по загруженным КС-2; полнота комплекта актов не подтверждена.'}
+        rows = act_rows
+        result['preliminary'] = any(row.get('preliminary') for row in rows)
+        result['after_cut'] = (performed or {}).get('later') or 0
+    elif found is None:
         result['total'] = None
         result["note"] = "Накопительная КС-6а этого договора на дату среза не найдена: загрузите КС-6а для расчёта выполнения."
         return result
@@ -418,6 +439,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
         result['preliminary'] = any(row.get('preliminary') for row in rows)
     current = next((e for e in editions if e["sha256"] == in_force), None)
     if current is None:
+        result['total'] = None
         result["note"] = "Нет редакции плана, действующей на дату среза: факт не с чем сопоставить."
         return result
     if result["source"] == "ks6a" and not found.get("works"):

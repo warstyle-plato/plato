@@ -187,7 +187,9 @@ def test_native_page_keeps_work_and_delivery_rows_and_unknowns_visible(source_ca
 
 
 @pytest.mark.parametrize('operation',['view','documents'])
-def test_old_method_ticket_is_immutable_but_cannot_readmit_or_replace_fresh_calculation(api,monkeypatch,operation):
+@pytest.mark.parametrize('prior_revision',[None,'contract-full-value-v1','contract-full-value-ks-source-fallback-v1',
+                                          'contract-full-value-ks-source-fallback-v2'])
+def test_old_method_ticket_is_immutable_but_cannot_readmit_or_replace_fresh_calculation(api,monkeypatch,operation,prior_revision):
     import developaid_management_report_jobs as jobs
     from tests.test_monitor_cumulative_api import post,poll,core,KEY
     client,root=api
@@ -199,6 +201,9 @@ def test_old_method_ticket_is_immutable_but_cannot_readmit_or_replace_fresh_calc
     import developaid_monitor_ledgers as ledgers
     context=ledgers.snapshot_job_context('Учебный')
     payload['source_context']=context
+    if prior_revision is not None:
+        # Main уже считает полную стоимость, но ещё не выбирает КС-2 при отсутствии КС-6а.
+        payload['contract_calculation_revision']=prior_revision
     old={'ok':True,'weights':'Готовность работ без материалов','legacy':True}
     store=jobs.Store(root/'monitor'/'.cumulative_jobs')
     store.start(owner,purpose,payload,lambda:old,'a'*32,context=context)

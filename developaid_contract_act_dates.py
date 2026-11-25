@@ -112,7 +112,7 @@ def _dates(n: str, records: list[dict], summary: list[dict], notes: dict | None 
     return out
 
 
-def resolve(found: dict | None, records: list[dict]) -> dict | None:
+def resolve(found: dict | None, records: list[dict], cut: str = '') -> dict | None:
     """`found` (`fact.acts`) with the works whose periods the acts date moved from unread into the fact.
 
     `records` are the documents in the contract card. The result carries
@@ -127,8 +127,10 @@ def resolve(found: dict | None, records: list[dict]) -> dict | None:
             n = number(period["label"]) if not period.get("end") else None
             if n and (period.get("quantity") or period.get('material_quantity') or period.get("amount")):
                 labels.setdefault(n, period["label"])
-    chosen = acts_in_card.in_force(records)
-    dates = {n: _dates(n, chosen["acts"], found.get("summary_acts") or [], chosen["notes"]) for n in labels}
+    chosen = acts_in_card.in_force(records, cut)
+    summary = [act for act in found.get('summary_acts') or []
+               if not cut or not act.get('date') or act['date'] <= cut]
+    dates = {n: _dates(n, chosen["acts"], summary, chosen["notes"]) for n in labels}
     for n, row in dates.items():
         row["label"] = labels[n]
         row["ks6_amount"] = (found.get("period_amounts") or {}).get(labels[n])

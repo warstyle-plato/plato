@@ -1,7 +1,7 @@
 """Plan and fact of the contract's works in natural volumes, three percentages, lag, overdue and forecast.
 
 The plan is the edition in force on the cut (`developaid_contract_plan`), the
-fact is the KS-6a priced by the estimate; КС-2 supplies confirmation and reconciliation
+fact is the KS-6a (or КС-2 when no statement is usable) priced by the estimate
 (`developaid_contract_fact`); both lie on the same ГПР lines. Methodology of
 12.11.2026 (docs/contract_schedule_control.md):
 
@@ -40,7 +40,7 @@ import datetime as dt
 import developaid_contract_plan as plan
 from developaid_monitor_statement_union import _unit
 
-CALCULATION_REVISION = 'contract-full-value-v1'
+CALCULATION_REVISION = 'contract-full-value-ks-source-fallback-v3'
 
 ASSUMPTION = ("Отставание в днях — на сколько дней назад от даты среза план нарастающим итогом был равен "
               "сегодняшнему факту. Просрочка считается отдельно: сколько дней прошло после срока работы по "
@@ -233,6 +233,7 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
               "behind": [], "ahead": [], "done": [], "overdue": [], "forecast": None, "left_out": _left_out(fact),
               "source": fact.get("source"), "source_note": fact.get("source_note") or "",
               "confirmation": fact.get("confirmation"),
+              'act_evidence': fact.get('act_evidence'),
               "preliminary": bool(fact.get("preliminary")), "data_gaps": _data_gaps(fact)}
     current = next((e for e in planned.get("editions") or [] if e.get("in_force")), None)
     if current is None:
@@ -386,6 +387,11 @@ def _left_out(fact):
 def _data_gaps(fact):
     gaps = ([f'Позиций КС с неподтверждённым разделением работ и материалов: {len(fact["component_gaps"])}.']
             if fact.get('component_gaps') else [])
+    if fact.get('source_incomplete'):
+        gaps.append('Выполнение рассчитано по загруженным КС-2; полнота комплекта актов не подтверждена.')
+        unread = (fact.get('act_evidence') or {}).get('unread_count', 0)
+        if unread:
+            gaps.append(f'Актов КС-2 без прочитанных позиций: {unread}; их объёмы в расчёт не вошли.')
     if fact.get('unread'):
         gaps.append(f'Работ КС-6а без подтверждённой истории выполнения: {len(fact["unread"])}.')
     outside = sum(v.get('count', 0) for v in (fact.get('outside') or {}).values())
