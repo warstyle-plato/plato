@@ -8,10 +8,12 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
 import developaid_contract_files as files
+import developaid_contract_gpr as gpr
 import developaid_contract_gpr_export as export
 import developaid_monitor_contracts as contracts
 import developaid_monitor_daily as daily
 from tests.test_contract_relative_gpr_calendar import card, record, ROW, PROJECT, CUT, KEY, finished
+from tests.test_contract_logical_ownership import pair
 
 
 @pytest.mark.parametrize('has_plan', [True, False])
@@ -132,3 +134,39 @@ def test_persisted_document_change_rebuilds_fresh_scope_and_keeps_gpr_download_u
     response = client.post('/monitor/contracts/gpr.xlsx', json={**base, 'ticket': changed['ticket'],
         'revision': changed['gpr_export']['revision']})
     assert response.status_code == 200 and load_workbook(io.BytesIO(response.content)).sheetnames == ['ГПР', 'Выполнение']
+
+
+def test_corrected_operational_document_write_seals_old_context_then_reads_fresh_gpr_card(pair, monkeypatch):
+    import main
+    import developaid_contract_workforce as workforce
+    from tests.test_contract_logical_ownership import PROJECT as project, CUT as cut
+    from tests.test_contract_source_correction import confirm
+    from tests.test_contract_documents_are_read_from_their_tables import schedule_pdf
+    from tests.test_contract_disk_source_operational import pdf_for
+    native = next(row for row in contracts.build(project, cut, include_history=False)['rows'] if row['id'] == pair['new'])
+    date = '.'.join(reversed(native['contract_date'].split('-')))
+    graph = files.store(project, native, 'Действующий ГПР.pdf', schedule_pdf(title=(
+        'к Договору подряда № '+native['contract']+' от '+date,)))
+    listed = files.listing(project, native['id'], cut)
+    gpr.save(project, native, cut, graph['sha256'], listed['gpr']['guard'], 'activate',
+        'Учебная проверка подписанного графика: страница 1', 'synthetic-owner', counterparty_signed=True)
+    auxiliary = files.store(project, native, 'Документ без графика.pdf', pdf_for(native))['sha256']
+    confirm(pair)
+    row, = contracts.build(project, cut, include_history=False)['rows']
+    selection = row['source_correction']
+    monkeypatch.setenv('DEVELOPAID_ADMIN_KEY', KEY)
+    monkeypatch.setattr(daily, '_load_reports', lambda _: [])
+    client = TestClient(main.app)
+    body = {'key': KEY, 'session': 'synthetic-owner', 'project': project, 'cut': cut,
+        'contract_id': row['id'], 'view': 'operational', 'logical_contract_id': row['id'],
+        'correction_id': selection['decision_id'], 'correction_guard': selection['read_guard']}
+    opened = finished(client, client.post('/monitor/contracts/documents', json=body))
+    assert opened['ok'] and opened['gpr']['source']
+    removed = finished(client, client.post('/monitor/contracts/document-remove', json={**body,
+        'contract_id': selection['roles']['documents_raw_id'], 'sha256': auxiliary}))
+    assert removed['ok'] and removed['gpr']['source'] == opened['gpr']['source']
+    assert auxiliary in {doc['sha256'] for doc in removed['removed']}
+    assert removed['source_correction']['read_guard'] != selection['read_guard']
+    assert workforce.require_current(removed['gpr']['workforce'], project)
+    assert client.post('/monitor/contracts/gpr.xlsx', json={**body, 'ticket': removed['ticket'],
+        'revision': removed['gpr_export']['revision']}).status_code == 200

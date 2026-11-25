@@ -872,27 +872,12 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                 raise RuntimeError("unknown monitor operation")
             if operation != 'documents':
                 document_change_saved = True
-                current_sources = workforce.cohort_sources(payload['project'], payload['cut'])
-                if current_sources != register.get('_workforce_source_guard'):
-                    # A successful native write can change the peer domain.
-                    # Rebuild inside this async worker, with a NEW prebuild pin;
-                    # never sign the old register with post-write sources.
-                    fresh = contracts.build(payload['project'], payload['cut'], include_history=False)
-                    fresh['_workforce_source_guard'] = current_sources
-                    if correction_state:
-                        import developaid_contract_correction as correction
-                        active = next((value for value in fresh.get('rows') or [] if value['id'] == logical_id), None)
-                        selected = (active or {}).get('source_correction') or {}
-                        if (selected.get('decision_id') != correction_state.get('decision_id')
-                                or selected.get('roles') != correction_state.get('roles')):
-                            raise workforce.SourceChanged('Выбор источников изменился. Откройте карточку заново.')
-                        row = correction.materialize(fresh, active)
-                        correction_state = selected
-                    else:
-                        row = contracts.find_raw_row(fresh, payload['contract_id'])
-                    register = fresh
-                    acts = contract_fact.acts(row)
-                    result = {**result, **contract_files.listing(payload['project'], documents_owner, payload['cut'], acts)}
+                if ('comparison' in result and workforce.cohort_sources(payload['project'], payload['cut'])
+                        != register.get('_workforce_source_guard')):
+                    # Refresh the full card only AFTER the old owned read scope
+                    # has sealed its successful native write. SourceHub's
+                    # document-only acknowledgement deliberately stays an ack.
+                    result['_refresh_document_scope'] = True
             if correction_state:
                 result.update(contract_id=logical_id, documents_raw_id=documents_owner, source_correction=correction_state)
                 if result.get('gpr'):
@@ -901,6 +886,8 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
             raise RuntimeError("unknown monitor operation")
         import developaid_contract_stage_profile as stage_profile
         encoded = stage_profile.call('jsonable_encoder', jsonable_encoder, result)
+        if encoded.get('_refresh_document_scope'):
+            return {'ok': True, **encoded}
         if operation.startswith("document") and "comparison" in encoded:
             import developaid_contract_comparison_export as comparison_export
             import developaid_contract_rds as rds
@@ -979,7 +966,17 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
                                 import developaid_contract_gpr_export as gpr_export
                                 result['gpr_export'] = gpr_export.bind_snapshot(payload['project'], payload['cut'],
                                     result['contract_id'], result, label)
-                return result
+            if result.pop('_refresh_document_scope', False):
+                fresh_payload = dict(payload)
+                selected = result.get('source_correction')
+                if selected:
+                    fresh_payload.update(correction_guard=selected['read_guard'])
+                fresh = _monitor_cumulative_execute('documents', fresh_payload)
+                if fresh.get('ok') is not True:
+                    fresh['detail'] = 'Изменения сохранены. '+str(fresh.get('detail') or 'Откройте карточку заново.')
+                    fresh['document_change_saved'] = True
+                result.update(fresh)
+            return result
     except (ownership.OwnershipProblem, identity_store.IdentityProblem) as exc:
         return {'ok': False, 'detail': str(exc)}
 
