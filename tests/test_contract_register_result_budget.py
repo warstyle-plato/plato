@@ -280,7 +280,10 @@ def route_helper(monkeypatch, store_type):
                  "_monitor_cumulative_execute": lambda *args: pytest.fail("No business builder in route-policy test"),
                  "developaid_monitor": SimpleNamespace(_SNAPSHOT_DIR=Path("synthetic-unused-directory")),
                  "base64": __import__("base64"), "logging": __import__("logging")}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(ROUTE_SOURCE), "exec"), namespace)
+    # Keep the real retained-ticket source guard in the isolated harness.
+    guard = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                 and node.name == "_monitor_contract_gpr_current")
+    exec(compile(ast.Module(body=[guard, function], type_ignores=[]), str(ROUTE_SOURCE), "exec"), namespace)
     return namespace[function.name], Refused
 
 
@@ -288,6 +291,7 @@ def request():
     return SimpleNamespace(key="", session="", ticket="a" * 32, project="Synthetic", cut="2026-11-16",
         taken_at="2026-11-16", filename="synthetic", content_base64="YQ==", contract_id="b" * 64,
         deadline="", contract_date="", note="", evidence_id="", confirmed=False, book_sha256=[], corpus_token="",
+        expected_guard="c" * 64, action="anchor", handover_date="", advance_date="", counterparty_signed=False,
         sha256="", estimate=0, choices=[], clear=False, restore=False, source_sha256="", revision="",
         assignments=[], item_ids=[], management_article="", model_dump=lambda **kwargs: {},
         kind="synthetic", snapshot_id="", file_sha256="", sheet="", cell="", raw="",

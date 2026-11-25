@@ -345,3 +345,11 @@ def test_sync_export_writer_is_offloaded_and_does_not_block_the_event_loop(route
         status, body = await running
         assert status == 200 and body.startswith(b"PK")
     asyncio.run(exercise())
+
+
+def test_previous_export_v4_schema_cannot_be_reused_as_current_snapshot():
+    cached=native_card();binding=cached['comparison_export']
+    assert binding['schema']==export.SCHEMA and export.SCHEMA!='contract-rds-plan-fact-export-v4'
+    cached['comparison_export']={**binding,'schema':'contract-rds-plan-fact-export-v4'}
+    with pytest.raises(export.ExportProblem,match='Версия таблицы изменилась'):
+        export.select_snapshot(cached,PROJECT,binding['cut'],CONTRACT,binding['revision'],binding['row_tokens'])

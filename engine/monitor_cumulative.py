@@ -37,6 +37,30 @@ class MonitorContractsBuild(MonitorCumulativeProject):
     ticket: str = ""
 
 
+class MonitorContractDiskScan(MonitorContractsBuild):
+    model_config = {'extra': 'forbid', 'strict': True}
+    source: str = _CumulativeField(min_length=1, max_length=512)
+
+
+class MonitorContractDiskStage(MonitorContractsBuild):
+    model_config = {'extra': 'forbid', 'strict': True}
+    revision: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
+    item_ids: list[str] = _CumulativeField(min_length=1, max_length=20)
+
+    @_CumulativeValidator('item_ids')
+    @classmethod
+    def checked_ids(cls, value):
+        if len(set(value)) != len(value) or any(not re.fullmatch(r'[0-9a-f]{64}', item) for item in value):
+            raise ValueError('Выберите разные исходники из этой проверки каталога.')
+        return value
+
+
+class MonitorContractDiskApply(MonitorContractsBuild):
+    model_config = {'extra': 'forbid', 'strict': True}
+    stage_token: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
+    taken_at: str = _CumulativeField(default='', max_length=10)
+
+
 class MonitorContractRegisterBuild(MonitorContractsBuild):
     chunked: bool = _CumulativeField(default=False, strict=True)
     profile_stages: bool = _CumulativeField(default=False, strict=True)
@@ -342,12 +366,14 @@ class MonitorGprPhysicalSave(MonitorCumulativeProject):
 _IDENTITY_PATHS = frozenset('/monitor/contracts/identity/'+name for name in
                             ('inventory', 'confirm', 'revoke', 'resolve', 'result',
                              'correction-inventory', 'correction-preview', 'correct-sources'))
+_CONTRACT_DISK_PATHS = frozenset('/monitor/contracts/disk/'+name for name in ('scan','stage','apply','result'))
 _SNAPSHOT_ACTIVITY_PATHS = frozenset({'/monitor/cumulative/remove'})
 _PDF_INTAKE_PATHS = frozenset('/monitor/contracts/pdf-intake/'+name for name in ('preview', 'commit', 'result'))
 _CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS | frozenset({
     '/monitor/schedule/version-preview', '/monitor/schedule/version-approve',
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
     "/monitor/cumulative/list", "/monitor/contracts/build",
+    "/monitor/contracts/disk/scan", "/monitor/contracts/disk/stage", "/monitor/contracts/disk/apply", "/monitor/contracts/disk/result",
     "/monitor/contracts/result", "/monitor/contracts/result-part", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
     "/monitor/contracts/source-review",
     "/monitor/contracts/source-audit",
@@ -372,7 +398,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PAT
 
 @app.middleware("http")
 async def monitor_cumulative_private_headers(request: Request, call_next):
-    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS or request.url.path in {"/monitor/contracts/comparison.xlsx", "/monitor/contracts/gpr.xlsx", "/monitor/contracts/gpr-change"}) and request.method == 'POST':
+    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS | _CONTRACT_DISK_PATHS or request.url.path in {"/monitor/contracts/comparison.xlsx", "/monitor/contracts/gpr.xlsx", "/monitor/contracts/gpr-change"}) and request.method == 'POST':
         private = {"Cache-Control": "private, no-store"}
         cap = 1024*1024 if request.url.path == "/monitor/contracts/comparison.xlsx" else 64*1024
         if request.url.path in _PDF_INTAKE_PATHS - {'/monitor/contracts/pdf-intake/result'}:
@@ -521,7 +547,163 @@ def monitor_schedule_gpr_physical_save(req: MonitorGprPhysicalSave) -> Response:
     return _monitor_schedule_gpr_physical(req, save=True)
 
 
+def _monitor_contract_document_context(register, payload, operation):
+    """One native raw/operational document owner resolver, also used by Disk intake."""
+    import developaid_monitor_contracts as contracts
+    import developaid_contract_correction as correction
+    import developaid_contract_identity_store as identity_store
+    rows = contracts.raw_rows(register)
+    row = next((value for value in rows if value['id'] == payload['contract_id']), None)
+    documents_owner, selected = payload['contract_id'], None
+    checked = payload.get('_disk_context')
+    if payload.get('view') == 'operational':
+        logical_id = payload.get('logical_contract_id') or payload['contract_id']
+        active = next((value for value in register.get('rows') or [] if value['id'] == logical_id), None)
+        selected = (active or {}).get('source_correction')
+        if not selected:
+            raise contracts.ContractProblem('Исправленная карточка не представлена на выбранную дату. Обновите реестр.')
+        if payload.get('correction_id') != selected['decision_id'] or payload.get('correction_guard') != selected['read_guard']:
+            raise contracts.ContractProblem('Данные карточки отличаются от списка договоров. Закройте карточку, обновите страницу Монитора и откройте договор снова.')
+        if operation != 'documents' and payload['contract_id'] != selected['roles']['documents_raw_id']:
+            raise contracts.ContractProblem('Карточка документов изменилась. Обновите договор перед сохранением.')
+        if checked is not None and (any(checked.get(key) != payload.get(key) for key in ('view','logical_contract_id','contract_id','correction_id','correction_guard')) or checked.get('roles') != selected['roles']
+                or checked.get('source_policy') != correction.SOURCE_POLICY or selected.get('source_policy') != correction.SOURCE_POLICY
+                or selected.get('fresh') is not True):
+            raise contracts.ContractProblem('Операционный выбор источников устарел или не поддерживается. Обновите его проверку в карточке договора.')
+        row = correction.materialize(register, active)
+        documents_owner = selected['roles']['documents_raw_id']
+    elif checked is not None:
+        if checked.get('view') != 'raw' or checked.get('contract_id') != payload['contract_id']:
+            raise contracts.ContractProblem('Проверка Диска относится к другому виду карточки.')
+        if any(event.get('action') == 'correct_sources' and any(member['raw_id'] == payload['contract_id']
+               for member in event['payload']['members']) for event in identity_store.load(payload['project'])['active']):
+            raise contracts.ContractProblem('Исходная карточка участвует в операционном выборе источников. Нужен текущий операционный допуск.')
+    owner = contracts.find_raw_row(register, documents_owner) if selected else row
+    if checked is not None:
+        import developaid_contract_disk_source as disk
+        if owner is None or payload.get('_disk_owner_guard') != disk.row_guard(owner):
+            raise contracts.ContractProblem('Реквизиты выбранной карточки документов изменились. Проверьте каталог заново.')
+    return row, owner, documents_owner, selected
+
+
+def _monitor_contract_disk_rows(project, cut):
+    import developaid_monitor_contracts as contracts
+    register = contracts.build(project, cut, include_history=False)
+    raw = contracts.raw_rows(register)
+    import developaid_contract_identity_store as identity_store
+    events = [event for event in identity_store.load(project)['active'] if event.get('action')=='correct_sources']
+    covered = {member['raw_id'] for event in events for member in event['payload']['members']}
+    represented, candidates = set(), []
+    for active in register.get('rows') or []:
+        state = active.get('source_correction')
+        if not state:
+            continue
+        represented.update(active.get('raw_member_ids') or [])
+        context = {'view': 'operational', 'logical_contract_id': active['id'],
+                   'contract_id': state['roles']['documents_raw_id'], 'correction_id': state['decision_id'],
+                   'correction_guard': state.get('read_guard'), 'roles': state['roles'],
+                   'source_policy': state.get('source_policy')}
+        event = next((event for event in events if event['event_id']==state['decision_id']), None)
+        context['member_ids'] = sorted(member['raw_id'] for member in event['payload']['members']) if event else []
+        source_owner = contracts.find_raw_row(register, state['roles']['documents_raw_id'])
+        import developaid_contract_disk_source as disk
+        payload = dict(project=project, cut=cut, **context, _disk_context=context,
+                       _disk_owner_guard=disk.row_guard(source_owner) if source_owner else '')
+        try:
+            _, owner, _, _ = _monitor_contract_document_context(register, payload, 'document-upload')
+            execution = contracts.find_raw_row(register, state['roles']['execution_raw_id'])
+            if owner is None or execution is None:
+                raise contracts.ContractProblem('Выбранный источник документов или выполнения не найден.')
+            compact = lambda value: {key: value.get(key) for key in ('id','contractor','customer','contract','contract_date','document_source_ids')}
+            candidates.append({**active, '_disk_native_owner': compact(owner),
+                               '_disk_execution_owner': compact(execution), '_disk_operational': context})
+        except (contracts.ContractProblem, ValueError) as exc:
+            candidates.append({**active, '_disk_review_reason': str(exc)})
+    candidates.extend(row if row['id'] not in covered else {**row, '_disk_review_reason':
+        'На выбранную дату нет текущего операционного допуска для этого выбора источников.'}
+        for row in raw if row['id'] not in represented)
+    return candidates
+
+
+def _monitor_contract_disk_payload(project, cut, row, entry):
+    import developaid_contract_disk_source as disk
+    context = entry.get('native_context')
+    if context is None:
+        context = {'view':'raw', 'contract_id':row['id']}
+    elif context != row.get('_disk_operational'):
+        raise disk.DiskSourceProblem('Операционный выбор источников изменился. Проверьте каталог заново.')
+    return dict(project=project,cut=cut, **context, _disk_context=context,
+                _disk_owner_guard=disk.row_guard(disk.native_owner(row)))
+
+
+def _monitor_contract_disk_document_commit(project, cut, row, entry, raw, policy):
+    import developaid_contract_disk_source as disk
+    payload = _monitor_contract_disk_payload(project,cut,row,entry)
+    payload.update(filename=entry['filename'], _source_policy=policy)
+    value = _monitor_cumulative_execute('document-upload',payload,raw)
+    if value.get('ok') is not True:
+        raise disk.DiskSourceProblem(value.get('detail') or 'Штатный приём документа остановлен.')
+    return value['document']
+
+
+def _monitor_contract_disk_book_commit(project, cut, books, taken_at, archive, policy):
+    """Import into native raw execution scope, without changing a role choice.
+
+    The complete union is acquired once in native global order before the
+    current operational guard is read. Removed archives remain retained.
+    """
+    import developaid_contract_disk_source as disk
+    import developaid_contract_identity_store as journal
+    import developaid_contract_identity as identity
+    import developaid_contract_ownership as ownership
+    import developaid_monitor_contracts as contracts
+    import developaid_monitor_ledgers as ledgers
+    try:
+        with journal.locked(project):
+            groups = []
+            for entry,_ in books:
+                context = entry.get('native_context')
+                group = sorted(set((context.get('member_ids') if context else [entry.get('contract_id')]) or []) | set(entry.get('source_family') or []))
+                if disk.COMMON not in entry['kinds']:
+                    groups.append(group)
+            import contextlib
+            lock = identity._binding_group_locks(project,groups) if groups else contextlib.nullcontext()
+            with lock:
+                with ownership.read_scope(project,cut):
+                    candidates = {row['id']:row for row in _monitor_contract_disk_rows(project,cut)}
+                    for entry,_ in books:
+                        if disk.COMMON in entry['kinds']:
+                            continue
+                        row = candidates.get(entry['contract_id'])
+                        disk.need(row and disk.row_guard(row)==entry['row_guard'],
+                                  'Данные или выбор источников изменились. Проверьте ведомости заново.')
+                        payload = _monitor_contract_disk_payload(project,cut,row,entry)
+                        register = contracts.build(project,cut,include_history=False)
+                        _monitor_contract_document_context(register,payload,'document-upload')
+                        disk.need(disk.legal_identity(disk.native_owner(row,execution=True))==entry['identity'],
+                                  'Источник выполнения относится к другой карточке. Сверьте реквизиты КС-6а.')
+                result = ledgers.store_archive(project,archive,taken_at,'Обновление с Диска.zip',source_policy=policy)
+            return result
+    except (journal.IdentityProblem,ownership.OwnershipProblem,contracts.ContractProblem) as exc:
+        raise disk.DiskSourceProblem(str(exc)) from None
+
+
 def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: bytes = b"") -> dict:
+    if operation.startswith('disk-source-'):
+        import developaid_contract_disk_source as disk_source
+        values = {k: v for k, v in payload.items() if k != 'cut' or operation == 'disk-source-scan'}
+        try:
+            function = {'disk-source-scan': disk_source.scan,
+                        'disk-source-stage': disk_source.stage,
+                        'disk-source-apply': disk_source.apply}[operation]
+            with disk_source.ns.namespace(payload['project']):
+                kwargs = {'row_provider': _monitor_contract_disk_rows}
+                if operation=='disk-source-apply':
+                    kwargs.update(document_commit=_monitor_contract_disk_document_commit,
+                                  book_commit=_monitor_contract_disk_book_commit)
+                return {'ok': True, 'disk_source': function(**values, **kwargs)}
+        except (disk_source.DiskSourceProblem, ValueError) as exc:
+            return {'ok': False, 'detail': str(exc)}
     """Only validated calculation inputs enter the background worker."""
     from fastapi.encoders import jsonable_encoder
     if operation.startswith('pdf-initial-'):
@@ -643,24 +825,8 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                 if operation == "document-upload":
                     raise
                 register, rows, problem = {}, [], str(exc)
-            row = next((r for r in rows if r["id"] == payload["contract_id"]), None)
-            documents_owner = payload['contract_id']
-            correction_state = None
-            if payload.get('view') == 'operational':
-                import developaid_contract_correction as correction
-                logical_id = payload.get('logical_contract_id') or payload['contract_id']
-                active = next((r for r in register.get('rows') or [] if r['id'] == logical_id), None)
-                correction_state = (active or {}).get('source_correction')
-                if not correction_state:
-                    raise contracts.ContractProblem('Исправленная карточка не представлена на выбранную дату. Обновите реестр.')
-                if (payload.get('correction_id') != correction_state['decision_id']
-                        or payload.get('correction_guard') != correction_state['read_guard']):
-                    raise contracts.ContractProblem('Данные карточки отличаются от списка договоров. Закройте карточку, обновите страницу Монитора и откройте договор снова.')
-                if operation != 'documents' and payload['contract_id'] != correction_state['roles']['documents_raw_id']:
-                    raise contracts.ContractProblem('Карточка документов изменилась. Обновите договор перед сохранением.')
-                row = correction.materialize(register, active)
-                documents_owner = correction_state['roles']['documents_raw_id']
-            owner_row = contracts.find_raw_row(register, documents_owner) if correction_state else row
+            row, owner_row, documents_owner, correction_state = _monitor_contract_document_context(register, payload, operation)
+            logical_id = payload.get('logical_contract_id') or payload['contract_id']
             acts = contract_fact.unavailable(problem) if problem else contract_fact.acts(row)
             if operation == "documents":
                 ownership_state = register.get('logical_ownership',{}).get('states') or {}
@@ -673,8 +839,12 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
             elif operation == "document-upload":
                 if row is None:
                     raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
-                result = {"document": contract_files.store(payload["project"], owner_row, payload["filename"], archive),
-                          **contract_files.listing(payload["project"], payload["contract_id"], payload["cut"], acts)}
+                if payload.get('_source_policy') is not None:
+                    result = {"document": contract_files.store(payload["project"],owner_row,payload["filename"],archive,
+                                                               source_policy=payload['_source_policy'])}
+                else:
+                    result = {"document": contract_files.store(payload["project"],owner_row,payload["filename"],archive),
+                              **contract_files.listing(payload["project"],payload["contract_id"],payload["cut"],acts)}
             elif operation == "document-links":
                 result = contract_files.save_links(payload["project"], payload["contract_id"], payload["sha256"],
                                                    payload["estimate"], payload["choices"], payload["clear"],
@@ -736,17 +906,23 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
     import developaid_contract_ownership as ownership
     import developaid_contract_identity as identity
     import developaid_contract_identity_store as identity_store
-    mutation = (operation.startswith('document-') or operation == 'term') and payload.get('view') == 'operational'
+    operational = (operation.startswith('document-') or operation == 'term') and payload.get('view') == 'operational'
+    source_intake = operation=='document-upload' and payload.get('_source_policy') is not None
+    mutation = operational or source_intake
     try:
         with contextlib.ExitStack() as locks:
             if mutation:
                 locks.enter_context(identity_store.locked(payload['project']))
-                event = next((event for event in identity_store.load(payload['project'])['active']
-                              if event['event_id'] == payload.get('correction_id') and event['action'] == 'correct_sources'), None)
-                if event is None:
-                    raise ownership.OwnershipProblem('Выбор источников изменился. Обновите договор перед сохранением.')
-                ids = sorted({member['raw_id'] for member in event['payload']['members']})
-                locks.enter_context(identity._binding_locks(payload['project'], ids, correction=True))
+                ids = set()
+                if operational:
+                    event = next((event for event in identity_store.load(payload['project'])['active']
+                                  if event['event_id'] == payload.get('correction_id') and event['action'] == 'correct_sources'), None)
+                    if event is None:
+                        raise ownership.OwnershipProblem('Выбор источников изменился. Обновите договор перед сохранением.')
+                    ids.update(member['raw_id'] for member in event['payload']['members'])
+                if source_intake:
+                    ids.update(payload['_source_policy'].get('family') or [])
+                locks.enter_context(identity._binding_locks(payload['project'], sorted(ids), correction=True))
             if operation not in {'view', 'source-review'} and not operation.startswith('document') and not mutation:
                 return _monitor_cumulative_execute_raw(operation, payload, archive)
             with ownership.read_scope(payload['project'], payload['cut']) as context:
@@ -844,6 +1020,11 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     raise HTTPException(400, 'PDF не передан целиком. Выберите исходный файл заново.') from None
                 if not archive or len(archive) > 20 * 1024 * 1024:
                     raise HTTPException(413, 'Выберите непустой PDF размером не больше 20 МБ.')
+            elif operation.startswith('disk-source-'):
+                payload.update(req.model_dump(exclude={'key', 'session', 'ticket', 'project'}))
+                payload['cut'] = _monitor_cumulative_day(req.cut)
+                if operation == 'disk-source-apply' and req.taken_at:
+                    payload['taken_at'] = _monitor_cumulative_day(req.taken_at)
             elif operation == "upload":
                 payload.update(taken_at=_monitor_cumulative_day(req.taken_at), filename=req.filename)
                 try:
@@ -920,6 +1101,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             # Retrying the same admission keeps its exact ticket and fingerprint.
             fingerprint = {"operation": operation, "click": req.ticket or _secrets.token_hex(16),
                            "source_context": source_context, **payload}
+            if operation.startswith('disk-source-'):
+                import developaid_contract_disk_source as disk_source
+                fingerprint['contract_disk_schema'] = disk_source.SCHEMA
             if operation in {'view', 'documents'}:
                 import developaid_contract_control as contract_control
                 fingerprint['contract_calculation_revision'] = contract_control.CALCULATION_REVISION
@@ -1043,6 +1227,26 @@ def monitor_cumulative_remove(req: MonitorCumulativeSnapshotState) -> Response:
         raise HTTPException(409, "Привязка проекта изменилась. Обновите список снимков и проверьте состояние архива перед повторным действием.", headers=private) from None
     except Exception:
         raise HTTPException(503, "Не удалось изменить архив. Обновите список снимков перед повторным действием.", headers=private) from None
+
+
+@app.post('/monitor/contracts/disk/scan', include_in_schema=False)
+def monitor_contract_disk_scan(req: MonitorContractDiskScan) -> Response:
+    return _monitor_cumulative_job(req, family='contract-disk', operation='disk-source-scan')
+
+
+@app.post('/monitor/contracts/disk/stage', include_in_schema=False)
+def monitor_contract_disk_stage(req: MonitorContractDiskStage) -> Response:
+    return _monitor_cumulative_job(req, family='contract-disk', operation='disk-source-stage')
+
+
+@app.post('/monitor/contracts/disk/apply', include_in_schema=False)
+def monitor_contract_disk_apply(req: MonitorContractDiskApply) -> Response:
+    return _monitor_cumulative_job(req, family='contract-disk', operation='disk-source-apply')
+
+
+@app.post('/monitor/contracts/disk/result', include_in_schema=False)
+def monitor_contract_disk_result(req: MonitorCumulativeResult) -> Response:
+    return _monitor_cumulative_job(req, family='contract-disk')
 
 
 @app.post("/monitor/contracts/build", include_in_schema=False)

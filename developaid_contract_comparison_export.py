@@ -20,7 +20,7 @@ from openpyxl.utils import get_column_letter
 from developaid_contract_rds import LAYOUT, FIELDS
 from developaid_contract_fact import _money
 
-SCHEMA = "contract-rds-plan-fact-export-v4"
+SCHEMA = "contract-rds-plan-fact-export-v5"
 MAX_ROWS = 10_000
 MAX_XLSX_BYTES = 8 * 1024 * 1024
 FILTERS = {"all": "Все работы и поставки", "behind": "Отстают от плана", "ahead": "Опережают план",
@@ -279,6 +279,30 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
     sheet.page_setup.fitToWidth, sheet.page_setup.fitToHeight = 1, 0
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    statement=comparison.get('statement_summary') or {}
+    if statement:
+        excel_row+=2
+        raw=(statement.get('cash') or {}).get('source') or {}
+        put(excel_row,2,'Сверка исходной КС-6а — денежное закрытие, не оплата')
+        for key,label in (('work','Работы по исходной КС-6а'),('material','Материалы по исходной КС-6а'),('total','Всего по исходной КС-6а')):
+            excel_row+=1;put(excel_row,2,label)
+            put(excel_row,12,_number(raw.get(key)),statement.get('date_basis') or '').number_format='#,##0.00'
+        excel_row+=1;put(excel_row,2,'База той же ведомости')
+        put(excel_row,12,_number(statement.get('planned')),statement.get('ratio_basis') or '').number_format='#,##0.00'
+        put(excel_row,13,_number(statement.get('ratio')),statement.get('ratio_unknown_reason') or statement.get('ratio_basis') or '').number_format='0.00%'
+        historical=statement.get('historical') or {};current=statement.get('current') or {}
+        for label,value,reason in [('Оценка по редакциям периодов',historical.get('total'),historical.get('basis')),
+            ('Известная часть исторической оценки',historical.get('known_total'),historical.get('basis')),
+            ('Вклад текущей РДС в сопоставленной части',current.get('counted'),current.get('basis'))]:
+            excel_row+=1;put(excel_row,2,label);put(excel_row,12,_number(value),reason or '').number_format='#,##0.00'
+        excel_row+=1;put(excel_row,2,'База сопоставленной текущей РДС')
+        put(excel_row,12,_number(current.get('amount')),current.get('basis') or '').number_format='#,##0.00'
+        put(excel_row,13,_number(current.get('readiness')),'Готовность только сопоставленной части; не доля полной цены договора.').number_format='0.00%'
+        excel_row+=1
+        note='Данные ведомости: '+', '.join(statement.get('source_dates') or [])+'. '+(statement.get('notice') or '')
+        if statement.get('preliminary'):note+=' Даты части актов предварительные, получены из подписания.'
+        put(excel_row,2,note);sheet.merge_cells(start_row=excel_row,start_column=2,end_row=excel_row,end_column=16)
+        sheet.row_dimensions[excel_row].height=32
     sheet.print_area = f'A1:P{excel_row}'
     sheet.oddFooter.center.text = 'Страница &P из &N'
     output = io.BytesIO()

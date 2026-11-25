@@ -93,13 +93,182 @@ def guard(folders):
     return digest(inventory)
 
 
+SOURCE_CHOICE_SCHEMA = 'contract-gpr-source-choice-v1'
+MAX_CHOICE_SOURCES = 64
+MAX_CHOICE_HISTORY = 2048
+
+
+def _activation_ok(event):
+    return (event.get('action') == 'activate' and event.get('schema') == SCHEMA
+        and event.get('counterparty_signed') is True and event.get('origin') == 'manual_document_reference'
+        and isinstance(event.get('actor'), str) and bool(event['actor'])
+        and isinstance(event.get('note'), str) and 5 <= len(event['note']) <= 1000)
+
+
 def accepted(record, history):
     if not record.get('gpr_pending'):
-        return True  # Existing saved graphs retain their explicit unknown signing status.
-    return any(event.get('action') == 'activate' and event.get('schema') == SCHEMA
-        and event.get('source') == source_key(record) and event.get('counterparty_signed') is True
-        and event.get('origin') == 'manual_document_reference' and bool(event.get('actor'))
-        and isinstance(event.get('note'), str) and 5 <= len(event['note']) <= 1000 for event in history)
+        return True  # Existing recognised legacy graphs retain unknown signing status.
+    return any(_activation_ok(event) and event.get('source') == source_key(record) for event in history)
+
+
+def _usable(record):
+    # Preserve the existing saved legacy projection, including a graph whose
+    # header identity was not parsed. New activations have a stricter boundary.
+    from developaid_contract_files import awaits_confirmation
+    return bool(isinstance(record.get('sha256'), str) and re.fullmatch(r'[0-9a-f]{64}', record['sha256'])
+        and not record.get('removed_at') and not record.get('act')
+        and (record.get('schedule') or {}).get('lines') and not awaits_confirmation(record))
+
+
+def _admissible(record):
+    if not _usable(record):
+        return False
+    contract, agreement, scan = record.get('contract'), record.get('agreement'), record.get('scan')
+    confirmed = scan is None
+    if isinstance(scan, dict):
+        import developaid_contract_identity_store as namespace
+        try:
+            namespace._timestamp(scan.get('confirmed_at'))
+            confirmed = True
+        except (ValueError, TypeError):
+            confirmed = False
+    return bool(isinstance(contract, dict) and isinstance(contract.get('number'), str) and contract['number']
+        and day(contract.get('date'))
+        and (agreement is None or isinstance(agreement, dict) and isinstance(agreement.get('number'), str)
+             and agreement['number'] and day(agreement.get('date')))
+        and confirmed)
+
+
+def _legal_group(source):
+    # Ordering alone is not legal identity: e.g. two nonnumeric DS numbers
+    # on the same date must never be conflated by _edition's numeric fallback.
+    return digest({'contract': source.get('contract'), 'edition': source.get('edition')})
+
+
+def _source_schedule(record):
+    value = copy.deepcopy(record.get('schedule') or {})
+    for key in ('source_identity', 'anchor', 'calendar_state', 'unfit'):
+        value.pop(key, None)
+    if value.get('calendar_basis') == 'relative':
+        for line in value.get('lines') or []:
+            for key in ('segments', 'start', 'finish', 'bar', 'date_precision', 'dates_from'):
+                line.pop(key, None)
+        for column in value.get('columns') or []:
+            column.pop('start', None); column.pop('finish', None)
+        for resource in value.get('resources') or []:
+            for cell in resource.get('values') or []:
+                cell.pop('start', None); cell.pop('finish', None)
+    return value
+
+
+def _candidate(record):
+    return {'source': source_key(record), 'schedule_sha256': digest(_source_schedule(record)),
+            'scan_sha256': digest(record.get('scan')), 'signature_evidence_sha256': digest(record.get('signature_evidence')),
+            'pending': bool(record.get('gpr_pending'))}
+
+
+def _latest_candidates(records, cut):
+    from developaid_contract_files import _edition, _date
+    eligible = [record for record in records if _admissible(record) and _date(record) <= cut]
+    if not eligible:
+        return []
+    latest = max(map(_edition, eligible))
+    return sorted((record for record in eligible if _edition(record) == latest), key=lambda record: record['sha256'])
+
+
+def _history_witness(history):
+    from developaid_contract_files import ContractFilesProblem
+    identifiers = [event['event_id'] for event in history]
+    if len(identifiers) > MAX_CHOICE_HISTORY or len(set(identifiers)) != len(identifiers):
+        raise ContractFilesProblem('История выбора ГПР неоднозначна или превышает предел проверки.')
+    return sorted(identifiers), digest(sorted(history, key=lambda event: event['event_id']))
+
+
+def _valid_choice(event, records, history):
+    """Persistent choice of exact source components, never graph equivalence."""
+    from developaid_contract_files import _edition
+    try:
+        proof = event.get('source_choice')
+        if not _activation_ok(event) or not isinstance(proof, dict) or set(proof) != {
+                'schema', 'candidates', 'candidates_sha256', 'guard_before',
+                'history_event_ids_before', 'history_sha256_before'} or proof['schema'] != SOURCE_CHOICE_SCHEMA:
+            return None
+        candidates = proof['candidates']
+        if not isinstance(candidates, list) or not 1 <= len(candidates) <= MAX_CHOICE_SOURCES:
+            return None
+        if digest(candidates) != proof['candidates_sha256'] or not re.fullmatch(r'[0-9a-f]{64}', proof['guard_before']):
+            return None
+        source = event['source']; group = _legal_group(source)
+        wanted = [candidate['source']['sha256'] for candidate in candidates]
+        if len(set(wanted)) != len(wanted) or wanted != sorted(wanted) or source['sha256'] not in wanted:
+            return None
+        current = {record['sha256']: record for record in records if _admissible(record)}
+        if any(sha not in current or _candidate(current[sha]) != candidate
+               or _legal_group(candidate['source']) != group for sha, candidate in zip(wanted, candidates)):
+            return None
+        if _candidate(current[source['sha256']])['source'] != source:
+            return None
+        before = proof['history_event_ids_before']
+        by_id = {item['event_id']: item for item in history}
+        if (not isinstance(before, list) or len(before) > MAX_CHOICE_HISTORY or before != sorted(set(before))
+                or len(by_id) != len(history) or event['event_id'] in before or any(key not in by_id for key in before)
+                or event.get('previous') and event['previous'] not in before
+                or digest([by_id[key] for key in before]) != proof['history_sha256_before']):
+            return None
+        order = _edition(current[source['sha256']])
+        extras = [record for record in records if _admissible(record) and _edition(record) == order
+                  and record['sha256'] not in wanted]
+        # Passive discovery of a new unaccepted graph never displaces the
+        # selected source. The next explicit choice still guards the COMPLETE
+        # new candidate set. Recognised/activated extras require a new choice.
+        if any(not record.get('gpr_pending') or accepted(record, history) for record in extras):
+            return None
+        return {'event': event, 'source_sha256': source['sha256'], 'group': group,
+                'before': set(before), 'candidate_set_sha256': proof['candidates_sha256']}
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def _choices(records, history):
+    ever, valid, bound_sources = set(), {}, set()
+    for event in history:
+        if (event.get('action') == 'activate' and isinstance(event.get('source_choice'), dict)
+                and event['source_choice'].get('schema') == SOURCE_CHOICE_SCHEMA):
+            ever.add(_legal_group(event.get('source') or {}))
+            for candidate in event['source_choice'].get('candidates') or []:
+                if isinstance(candidate, dict) and isinstance(candidate.get('source'), dict):
+                    sha = candidate['source'].get('sha256')
+                    if isinstance(sha, str) and re.fullmatch(r'[0-9a-f]{64}', sha):
+                        bound_sources.add(sha)
+        choice = _valid_choice(event, records, history)
+        if choice:
+            valid.setdefault(choice['group'], []).append(choice)
+    selected = {}
+    for group, choices in valid.items():
+        maximal = [choice for choice in choices if not any(choice['event']['event_id'] in other['before']
+                   for other in choices if other is not choice)]
+        if len(maximal) == 1:
+            selected[group] = maximal[0]
+    return ever, selected, bound_sources
+
+
+def _verify_candidate_pdfs(folders, candidates):
+    from developaid_contract_files import ContractFilesProblem, MAX_BYTES
+    import developaid_contract_identity_store as namespace
+    total = 0
+    if len(candidates) > MAX_CHOICE_SOURCES:
+        raise ContractFilesProblem('Слишком много источников одной редакции ГПР для ограниченной проверки.')
+    for record in candidates:
+        sha = record['sha256']
+        found = [folder/(sha+'.pdf') for folder in folders if (folder/(sha+'.pdf')).exists()]
+        if len(found) != 1:
+            raise ContractFilesProblem('Точное происхождение PDF источника ГПР неоднозначно или файл отсутствует.')
+        raw = namespace.read_bytes(found[0], MAX_BYTES)
+        if raw is None or not raw.startswith(b'%PDF') or hashlib.sha256(raw).hexdigest() != sha:
+            raise ContractFilesProblem('PDF источника ГПР не соответствует сохранённому SHA256.')
+        total += len(raw)
+        if total > 64*1024*1024:
+            raise ContractFilesProblem('Объём источников одной редакции ГПР превышает предел проверки.')
 
 
 def project_records(records, history):
@@ -107,16 +276,26 @@ def project_records(records, history):
     from developaid_contract_files import _edition
     result = copy.deepcopy(records)
     anchors = {event['source']['sha256']: event for event in history if event['action'] == 'anchor'}
+    ever, selected, bound_sources = _choices(result, history)
     editions = {}
     for record in result:
-        if (record.get('schedule') or {}).get('lines') and not record.get('removed_at') and accepted(record, history):
+        if _usable(record) and accepted(record, history):
             editions.setdefault(_edition(record), []).append(record['sha256'])
     for record in result:
         schedule = record.get('schedule')
         if not schedule:
             continue
-        record['gpr_status'] = 'accepted' if accepted(record, history) else 'pending_signed_confirmation'
-        if len(editions.get(_edition(record), [])) > 1:
+        record['_gpr_candidate_witness'] = _candidate(record)
+        group = _legal_group(source_key(record))
+        choice = selected.get(group)
+        record['gpr_status'] = 'accepted' if _usable(record) and accepted(record, history) else 'pending_signed_confirmation'
+        if group in ever or record['sha256'] in bound_sources:
+            if choice and choice['source_sha256'] == record['sha256']:
+                record['gpr_status'] = 'accepted'
+                record['gpr_choice_event_id'] = choice['event']['event_id']
+            elif record['gpr_status'] == 'accepted' or not choice:
+                record['gpr_status'] = 'conflicting_edition'
+        elif len(editions.get(_edition(record), [])) > 1 and record['gpr_status'] == 'accepted':
             record['gpr_status'] = 'conflicting_edition'
         schedule['source_identity'] = source_key(record)
         schedule['anchor'] = anchors.get(record['sha256'])
@@ -159,6 +338,9 @@ def view(project, contract_id, records, folders, cut):
     eligible = counted(records)
     active = _schedule_identity(eligible, cut)
     selected = source_key(active) if active else None
+    candidates = _latest_candidates(records, cut)
+    legal = len({_legal_group(source_key(record)) for record in candidates}) == 1
+    activatable = {record['sha256'] for record in candidates} if legal else set()
     schedule = (active or {}).get('schedule')
     pending = [record for record in records if record.get('gpr_status') in
                {'pending_signed_confirmation', 'conflicting_edition'}]
@@ -190,11 +372,14 @@ def view(project, contract_id, records, folders, cut):
     return {'schema': SCHEMA, 'project': project, 'contract_id': contract_id, 'cut': cut,
             'guard': guard(folders), 'source': selected, 'schedule': schedule,
             'preview': preview,
+            'activation_candidate_set': [record.get('_gpr_candidate_witness') or _candidate(record) for record in candidates],
             'conditions': conditions,
             'signature_evidence': (active or {}).get('signature_evidence') or
                 {'state': 'unknown', 'cryptographically_validated': False},
-            'pending': [{'source': source_key(record), 'title': record.get('title'),
+            'pending': [{'source': source_key(record), 'title': record.get('title'), 'filename': record.get('filename'),
                          'signature_evidence': record.get('signature_evidence'), 'state': record['gpr_status'],
+                         'can_activate': record['sha256'] in activatable,
+                         'choice_required': len(candidates) > 1 or record['gpr_status'] == 'conflicting_edition',
                          'discovery': record.get('gpr_discovery')}
                         for record in pending],
             'history': [event for folder in folders for event in events(folder)]}
@@ -253,13 +438,14 @@ def save(project, row, cut, source_sha256, expected_guard, action, note, actor,
             if record['schedule'].get('calendar_basis') != 'relative':
                 raise ContractFilesProblem('Этот ГПР содержит календарные даты; дата передачи площадки его не сдвигает.')
         else:
-            candidates = [r for r in records if (r.get('schedule') or {}).get('lines') and not r.get('removed_at')
-                          and not awaits_confirmation(r) and _date(r) and _date(r) <= cut]
-            latest = max(map(_edition, candidates))
-            if _edition(record) != latest or sum(_edition(r) == latest for r in candidates) != 1:
-                raise ContractFilesProblem('Действующая редакция ГПР неоднозначна. Проверьте документы этой редакции.')
+            candidates = _latest_candidates(records, cut)
+            if record not in candidates:
+                raise ContractFilesProblem('Выберите источник последней допустимой редакции ГПР на дату среза.')
+            if len({_legal_group(source_key(candidate)) for candidate in candidates}) != 1:
+                raise ContractFilesProblem('Последние источники имеют разные реквизиты договора или редакции. Сначала проверьте их принадлежность.')
             if counterparty_signed is not True:
                 raise ContractFilesProblem('Подтвердите подпись контрагента по документу и укажите её основание.')
+            _verify_candidate_pdfs(folders, candidates)
         stored = events(folders[0])
         event = {'sequence': len(stored)+1, 'previous': stored[-1]['event_id'] if stored else '',
                  'schema': SCHEMA, 'project': project, 'contract_id': row['id'], 'source': source_key(record),
@@ -270,6 +456,14 @@ def save(project, row, cut, source_sha256, expected_guard, action, note, actor,
                  'counterparty_signed': counterparty_signed if action == 'activate' else None,
                  'counterparty': row.get('contractor') or '', 'cryptographically_validated': False,
                  'signature_evidence': record.get('signature_evidence') if action == 'activate' else None}
+        if action == 'activate':
+            before_ids, before_hash = _history_witness(history)
+            candidate_set = [_candidate(candidate) for candidate in candidates]
+            event['source_choice'] = {'schema': SOURCE_CHOICE_SCHEMA, 'candidates': candidate_set,
+                'candidates_sha256': digest(candidate_set), 'guard_before': expected_guard,
+                'history_event_ids_before': before_ids, 'history_sha256_before': before_hash}
+        if guard(folders) != expected_guard:
+            raise ContractFilesProblem('Источники или история ГПР изменились во время проверки. Обновите карточку.')
         event['event_id'] = digest(event)
         _json(folders[0]/EVENTS, [*stored, event])
         return listing(project, row['id'], cut, acts)

@@ -178,6 +178,7 @@ def build(listed: dict) -> dict:
             'remaining_start': current.get('start'),
             'remaining_source': (current.get('start_source') or {}).get('title'),
             'fact_assumption': fact.get('assumption') or '',
+            'statement_summary': listed.get('control',{}).get('statement_summary'),
             'confirmation': fact.get('confirmation') or {}, 'act_evidence': fact.get('act_evidence') or {},
             'data_gaps': listed.get('control', {}).get('data_gaps') or [],
             'legal_deadline': (listed.get('terms') or {}).get('deadline'),

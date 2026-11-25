@@ -16,7 +16,7 @@ import developaid_contract_gpr as gpr
 import developaid_contract_comparison_export as rds_export
 from developaid_contract_rds import LAYOUT
 
-SCHEMA = 'contract-gpr-performance-xlsx-v1'
+SCHEMA = 'contract-gpr-performance-xlsx-v2'
 COLORS = {'plan': '9DC3E6', 'fact': '70AD47', 'lag': 'E06666', 'unknown': 'D9D9D9'}
 LEGEND = ('Синий — исходный план; зелёный — подтверждённая физическая доля на дату среза; '
           'красный — невыполненная часть плана к срезу и срок после окончания незавершённой работы; '

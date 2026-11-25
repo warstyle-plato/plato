@@ -173,6 +173,10 @@ def edition(estimates: list[dict], schedule: dict | None, start: dt.date | None)
               "overdue": bool(start and _day(dated[code]["finish"]) < start)}
              for code, amount in sorted(money.items(), key=lambda kv: list(dated).index(kv[0]))]
     for line in lines:
+        line['material_parts']=[{**part,
+            'quantity':part['quantity']*part['share'] if part.get('quantity') is not None else None,
+            'amount':part['material_amount']*part['share'] if part.get('material_amount') is not None else None}
+            for part in source_operations.get(line['code']) or [] if part.get('material_amount') != 0]
         operations = _operations(source_operations.get(line['code']) or [], dated[line['code']])
         if operations:
             line['operations'] = operations
@@ -214,6 +218,9 @@ def build(editions: list[dict], cut: str) -> dict:
         # The plan on the cut belongs to the edition in force: an older one would answer with a superseded plan.
         for line in entry["lines"]:
             line["planned"] = line["amount"] * done(line, day, start) if entry["in_force"] else None
+            for part in line.get('material_parts') or []:
+                part['source'].update(title=item.get('estimate_title') or item['title'],
+                    sha256=item.get('estimate_sha256'),edition_date=item.get('date'))
             if line.get('operations'):
                 line['operations']['group']['source'] = {
                     'source_kind': 'contract_estimate', 'title': item.get('estimate_title') or item['title'],

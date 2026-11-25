@@ -1179,6 +1179,12 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                             'amount_basis': pamount_basis, 'date_start': start, 'date_end': end,
                             'source': _source(filename, sheet, ri,
                                               quantity_cell=_cell(col+(2 if split else 1), ri),
+                                              work_quantity_cell=_cell(col+2,ri) if split else None,
+                                              material_quantity_cell=_cell(col+1,ri) if split else None,
+                                              work_amount_cell=(_cell(_money_pair_columns(qhead,col+2)['work']+1,ri)
+                                                if split and _money_pair_columns(qhead,col+2) else None),
+                                              material_amount_cell=(_cell(_money_pair_columns(qhead,col+2)['material']+1,ri)
+                                                if split and _money_pair_columns(qhead,col+2) else None),
                                               amount_cell=(_cell(col+3, ri)+' + '+_cell(col+4, ri)
                                                            if split else _cell(col+2, ri)))})
         completed_work = completed_material = None
@@ -1590,6 +1596,10 @@ def _root(project: str, *, create: bool = False) -> Path:
 
 @contextlib.contextmanager
 def _lock(root: Path):
+    import developaid_contract_identity_store as identity_store
+    if str(root / '.lock') in identity_store._HELD_NATIVE_LOCKS.get():
+        yield
+        return
     try:
         import fcntl
     except ImportError:
@@ -1818,7 +1828,7 @@ def change_snapshot_activity(project: str, snapshot_id: str, expected_revision: 
             return dict(snapshot_inventory(project), changed_snapshot_id=snapshot_id, restored=restore)
 
 
-def store_archive(project: str, data: bytes, taken_at: Any, filename: str = '') -> dict:
+def store_archive(project: str, data: bytes, taken_at: Any, filename: str = '', *, source_policy: dict | None = None) -> dict:
     day = _iso(taken_at)
     digest = hashlib.sha256(data).hexdigest()
     stem = f'{day}-{digest}'
@@ -1826,6 +1836,37 @@ def store_archive(project: str, data: bytes, taken_at: Any, filename: str = '') 
     parsed = parse_archive(data, filename)
     root = _root(project, create=True)
     with _lock(root):
+        if source_policy is not None:
+            import developaid_contract_identity_store as identity_store
+            if (not isinstance(source_policy, dict) or set(source_policy) != {'archive_revision'}
+                    or not re.fullmatch(r'[0-9a-f]{64}', str(source_policy.get('archive_revision') or ''))):
+                raise LedgerConflict('Проверка состояния накопительных не подтверждена.')
+            identity_store.assert_namespace(project)
+            if snapshot_inventory(project)['revision'] != source_policy['archive_revision']:
+                raise LedgerConflict('Состав снимков изменился. Повторите проверку Диска перед применением.')
+            # The native archive lock covers this last-state check and commit.
+            # In particular a source removed after preflight cannot reappear in
+            # a newly named archive or under a different snapshot date.
+            manifests = [path for path in root.glob('*.json') if re.fullmatch(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{64}',path.stem)]
+            if len(manifests) > 128:
+                raise LedgerConflict('История снимков требует отдельной сверки.')
+            seen, budget = set(), 0
+            for manifest_path in manifests:
+                raw = identity_store.read_bytes(manifest_path, MAX_PARSED_BYTES)
+                if raw is None:
+                    raise LedgerConflict('История исходных ведомостей не подтверждена.')
+                budget += len(raw)
+                if budget > 64*1024*1024:
+                    raise LedgerConflict('История снимков превышает предел проверки.')
+                for source in json.loads(raw).get('files') or []:
+                    sha = source.get('sha256')
+                    if source.get('status') != 'ignored' and PurePosixPath(source.get('filename') or '').suffix.lower() in SUPPORTED:
+                        if not isinstance(sha,str) or not re.fullmatch(r'[0-9a-f]{64}',sha):
+                            raise LedgerConflict('История исходных ведомостей не подтверждена.')
+                        seen.add(sha)
+            incoming = {source.get('sha256') for source in parsed['files'] if source.get('sha256')}
+            if incoming & seen:
+                raise LedgerConflict('Одна из ведомостей уже сохранена, в том числе среди исключённых снимков. Повторите проверку; автоматического восстановления нет.')
         existing = list(root.glob(f'{day}-*.json'))
         path = _snapshot_path(root, stem)
         if path in existing:

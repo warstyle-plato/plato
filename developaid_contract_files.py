@@ -162,7 +162,14 @@ def _record(sha: str, filename: str, content: bytes, uploaded_at: str) -> dict:
             "reader": documents.READER_VERSION, **read}
 
 
-def store(project: str, row: dict, filename: str, content: bytes) -> dict:
+def store(project: str, row: dict, filename: str, content: bytes, *, source_policy: dict | None = None) -> dict:
+    """Keep a PDF; optional automatic intake preserves existing source lifecycles."""
+    if source_policy is not None:
+        return _store_preserving_sources(project, row, filename, content, source_policy)
+    return _store_core(project, row, filename, content)
+
+
+def _store_core(project: str, row: dict, filename: str, content: bytes, *, allow_restore=True, before_write=None) -> dict:
     """Read and keep one PDF of the contract `row`; the same file twice is one file."""
     folder = _directory(project, row.get("id"))
     if not content or len(content) > MAX_BYTES:
@@ -176,6 +183,10 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
     with _locked(folder):
         existing = folder / f"{sha}.json"
         if existing.exists() and (folder / f"{sha}.pdf").exists():
+            if not allow_restore:
+                record = _preserved_record(folder, sha)
+                return {**_summary(record), "already": True, "restored": False,
+                        "preserved_removed": bool(record.get('removed_at'))}
             record = _current(folder, sha)
             restored = bool(record.pop("removed_at", None))
             if restored:
@@ -195,9 +206,94 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
             # Existing saved graphs retain their provenance. A newly uploaded
             # replacement needs explicit evidence of the signed current edition.
             record['gpr_pending'] = True
+        if before_write is not None:
+            before_write(record)
         _write(folder / f"{sha}.pdf", content)
         _json(existing, record)
         return {**_summary(record), "already": False, "restored": False}
+
+
+def source_family(project: str, row: dict) -> list[str]:
+    folders = _folders(project, row['id'], row)
+    identifiers = [folder.name for folder in folders]
+    if not 1 <= len(identifiers) <= 8:
+        raise ContractFilesProblem('Состав исходных карточек требует отдельной сверки.')
+    return identifiers
+
+
+def source_preservation_guard(project: str, row: dict) -> dict:
+    import developaid_contract_identity as identity
+    import developaid_monitor_ledgers as ledgers
+    family = source_family(project, row)
+    return {'family': family,
+            'bindings_sha256': identity_store_digest(identity.metadata_inventory(project, family, correction=True)),
+            'archive_revision': ledgers.snapshot_inventory(project)['revision'],
+            'decision_head': namespace_decision_head(project)}
+
+
+def namespace_decision_head(project):
+    import developaid_contract_identity_store as namespace
+    return namespace.load(project)['head']
+
+
+def identity_store_digest(value):
+    import developaid_contract_identity_store as namespace
+    return namespace.digest(value)
+
+
+def _preserved_record(folder: Path, sha: str) -> dict:
+    import developaid_contract_identity_store as namespace
+    raw = namespace.read_bytes(folder/(sha+'.pdf'), MAX_BYTES)
+    metadata = namespace.read_bytes(folder/(sha+'.json'), 16*1024*1024)
+    if not raw or hashlib.sha256(raw).hexdigest() != sha or not metadata:
+        raise ContractFilesProblem('Сохранённый исходник не совпал с отпечатком; автоматический приём остановлен.')
+    record = namespace.strict_json(metadata)
+    if not isinstance(record, dict) or record.get('sha256') != sha:
+        raise ContractFilesProblem('Сохранённая карточка исходника не подтверждена.')
+    return record
+
+
+def _store_preserving_sources(project, row, filename, content, expected):
+    import developaid_contract_identity as identity
+    import developaid_contract_identity_store as namespace
+    if namespace._NAMESPACE.get() is None:
+        raise ContractFilesProblem('Для автоматического приёма пространство проекта должно быть закреплено.')
+    family = source_family(project, row)
+    if (not isinstance(expected, dict) or set(expected) != {'family','bindings_sha256','archive_revision','decision_head'}
+            or expected.get('family') != family
+            or any(not re.fullmatch(r'[0-9a-f]{64}', str(expected.get(key) or '')) for key in ('bindings_sha256','archive_revision','decision_head'))):
+        raise ContractFilesProblem('Проверка исходников относится к другому составу карточек.')
+    if not content or len(content) > MAX_BYTES or not content.startswith(b'%PDF'):
+        raise ContractFilesProblem('Выберите непустой PDF размером не больше 20 МБ.')
+    sha = hashlib.sha256(content).hexdigest()
+    # Identity/project lock is held by the caller. Acquire the complete family
+    # in native global order before choosing a storage target or pinning state.
+    import contextlib
+    wanted = {str(path) for path in identity.binding_lock_paths(project, family, correction=True)}
+    held = namespace._HELD_NATIVE_LOCKS.get()
+    if held and not wanted.issubset(held):
+        raise ContractFilesProblem('Неполная блокировка источников. Повторите приём через текущую карточку.')
+    lock = contextlib.nullcontext() if wanted.issubset(held) else identity._binding_locks(project, family, correction=True)
+    with lock:
+        folder = _document_folder(project, row['id'], sha, row)
+        if (folder/(sha+'.json')).exists() or (folder/(sha+'.pdf')).exists():
+            record = _preserved_record(folder, sha)
+            return {**_summary(record), 'already': True, 'restored': False,
+                    'preserved_removed': bool(record.get('removed_at')),
+                    'source_policy_guard': source_preservation_guard(project, row)}
+        if source_preservation_guard(project, row) != expected:
+            raise ContractFilesProblem('Состояние исходников изменилось. Повторите проверку перед применением.')
+        def before_write(record):
+            namespace.assert_namespace(project)
+            if source_preservation_guard(project, row) != expected:
+                raise ContractFilesProblem('Источники изменились во время разбора. Автоматический приём остановлен.')
+            header = record.get('contract')
+            if (not isinstance(header, dict) or not isinstance(header.get('number'), str)
+                    or not header['number'].strip() or namespace.day(header.get('date')) is None
+                    or _same_contract(header, row)):
+                raise ContractFilesProblem('В исходном PDF не подтверждены номер и дата этого договора.')
+        result = _store_core(project, row, filename, content, allow_restore=False, before_write=before_write)
+        return {**result, 'source_policy_guard': source_preservation_guard(project, row)}
 
 
 def _stored(path: Path) -> dict:
@@ -792,6 +888,8 @@ def _with_control(listed, acts, cut):
     # reach the register too: no rejected KS period does not mean all works
     # of the contract were matched to the estimate and its current scope.
     listed['control']['coverage'] = dict(listed['comparison']['coverage'])
+    if listed['control'].get('statement_summary'):
+        listed['control']['statement_summary']['current']['coverage']=dict(listed['comparison']['coverage'])
     if listed['control'].get('total') is not None:
         listed['control']['total']['incomplete'] = bool(
             listed['control']['total'].get('incomplete') or listed['comparison']['coverage']['partial'])
@@ -858,6 +956,7 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
             "source": found.get("source"), "preliminary": bool(found.get("preliminary")),
             "confirmation": found.get("confirmation"),
             'act_evidence': found.get('act_evidence'),
+            'statement_summary': found.get('statement_summary'),
             "left_out": found["left_out"],
             "coverage": found.get("coverage"),
             "components": found.get("components") or {},

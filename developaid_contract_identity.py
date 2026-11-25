@@ -330,21 +330,20 @@ def _validate_members(project, members, canonical_number, anchor_id):
     return ids
 
 
-@contextlib.contextmanager
-def _binding_locks(project, raw_ids, *, correction=False):
-    """Use the existing native writers' locks, without migrating any data.
-
-    The identity lock is always outermost. No legacy writer takes that lock,
-    so native single-file writes cannot form a reverse lock order.
-    """
-    import fcntl
+def binding_lock_paths(project, raw_ids, *, correction=False):
+    """The complete native lock set in one global order, before reader pins."""
     paths = [('cumulative', '.lock'), ('cumulative_header_dates.lock',),
              ('cumulative_terms.lock',), ('.contract_links.lock',)]
     paths += [('contract_documents', value, '.lock') for value in (correction_ids(raw_ids) if correction else _ids(raw_ids))]
+    return [_safe_path(project, *parts) for parts in paths]
+
+
+@contextlib.contextmanager
+def _binding_path_locks(paths):
+    import fcntl
     with contextlib.ExitStack() as stack:
         held_paths = set(store._HELD_NATIVE_LOCKS.get())
-        for parts in paths:
-            path = _safe_path(project, *parts)
+        for path in paths:
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             handle = stack.enter_context(os.fdopen(fd, 'a+b'))
@@ -359,6 +358,25 @@ def _binding_locks(project, raw_ids, *, correction=False):
             yield
         finally:
             store._HELD_NATIVE_LOCKS.reset(token)
+
+
+@contextlib.contextmanager
+def _binding_locks(project, raw_ids, *, correction=False):
+    """Identity lock is outermost; acquire the entire native family before pins."""
+    with _binding_path_locks(binding_lock_paths(project, raw_ids, correction=correction)):
+        yield
+
+
+@contextlib.contextmanager
+def _binding_group_locks(project, groups):
+    """A bounded source batch acquires its union once, never expands held locks."""
+    groups = list(groups)
+    if not 1 <= len(groups) <= 20:
+        raise IdentityProblem('Проверка источников содержит слишком много групп.', 400)
+    all_paths = [binding_lock_paths(project, group, correction=True) for group in groups]
+    paths = all_paths[0][:4] + sorted({path for group in all_paths for path in group[4:]}, key=str)
+    with _binding_path_locks(paths):
+        yield
 
 
 @store.in_namespace
