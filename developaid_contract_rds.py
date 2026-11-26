@@ -108,6 +108,13 @@ def build(listed: dict) -> dict:
                 if row['fact_quantity'] == 0:
                     comments['fact_quantity'] = 'Нулевой объём выполненной работы подтверждён отдельной записью КС-6а; поставка не подтверждает монтаж.'
                     comments['fact'] = 'Полная стоимость работ и поставки не подтверждена. '+unread[identity]['reason']
+            from developaid_contract_physical_audit import position_audit
+            row['physical_audit'] = position_audit(position, identity,
+                {**current, 'estimates':document['estimates']}, fact, observed, binding, cut)
+            if row['physical_audit']['state'] == 'accounted_zero_physical_unknown':
+                row['accounted_work_quantity'] = row['fact_quantity']
+                row['fact_quantity'] = None
+                comments['fact_quantity'] = row['physical_audit']['reason']
             for output, actual, planned in (('quantity_deviation', 'fact_quantity', 'plan_quantity'),
                                            ('deviation', 'fact', 'planned')):
                 if row[actual] is not None and row[planned] is not None:
@@ -169,6 +176,8 @@ def build(listed: dict) -> dict:
             else:
                 reason = 'Нет отдельного физического прогноза для этой позиции с единственной полной связью ГПР и подтверждённым объёмом выполнения.'
                 comments['forecast_finish'] = comments['forecast_delay_days'] = reason
+            if row['fact_quantity'] is None:
+                comments['fact_quantity'] = row['physical_audit']['reason']
             rows.append(row)
     return {'layout': LAYOUT, 'available': True, 'cut': cut, 'rows': rows, 'headings': headings,
             'estimate_title': document.get('title') or '', 'estimate_sha256': document['sha256'],

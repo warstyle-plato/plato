@@ -24,8 +24,8 @@ def test_quantities_never_generate_any_past_or_future_production_interval(fracti
                'contract_quantity': 100, 'unit': 'м2', 'lag_days': 4}
     shown = export.presentation({'lines': [line]}, {'4.4.1': overlay}, '2026-11-24')
     row, = shown['rows']
-    assert {bar['state'] for bar in row['bars']} == {'plan'}
-    assert set(export.cell_states(line, shown['ticks'], overlay, '2026-11-24').values()) == {'plan'}
+    assert all(bar['state']=='plan' if bar['start']>shown['cut_offset'] else bar['state']=='unknown' for bar in row['bars'])
+    assert all(state=='plan' if shown['ticks'][i]['start']>'2026-11-24' else state=='unknown' for i,state in export.cell_states(line,shown['ticks'],overlay,'2026-11-24').items())
     assert row['progress']['fraction'] == fraction
     assert row['progress']['fact_quantity'] == fraction*100
     assert row['progress']['cut'] == '2026-11-24'
@@ -48,7 +48,7 @@ def test_relative_source_gaps_remain_plan_only_for_zero_and_complete_quantities(
         overlay = {'fact_fraction':fraction,'planned_fraction':.8,'fact_quantity':fraction*100,
                    'contract_quantity':100,'unit':'м3','lag_days':4}
         shown = export.presentation(schedule, {'R':overlay}, '2026-11-24')
-        assert [(bar['start'],bar['end'],bar['state']) for bar in shown['rows'][0]['bars']] == [(0,7,'plan'),(14,21,'plan')]
+        assert [(bar['start'],bar['end'],bar['state']) for bar in shown['rows'][0]['bars']] == [(0,7,'unknown' if anchored else 'plan'),(14,21,'unknown' if anchored else 'plan')]
         assert shown['rows'][0]['progress']['fraction'] == fraction
         assert (shown['start'] is not None) is anchored
 
@@ -72,7 +72,7 @@ def test_future_relative_anchor_keeps_real_cut_before_source_day_one():
     shown = export.presentation(schedule,{},'2026-11-24')
     assert shown['start'] == '2026-11-24' and shown['cut_offset'] == 0
     assert [(bar['start'],bar['end']) for bar in shown['rows'][0]['bars']] == [(7,14)]
-    assert all(state == 'unknown' for state in export.cell_states(schedule['lines'][0],shown['ticks'],None).values())
+    assert all(state == 'plan' for state in export.cell_states(schedule['lines'][0],shown['ticks'],None).values())
 
 
 def test_excel_quantity_scale_and_dynamic_today_are_outside_calendar_cells(card):

@@ -190,7 +190,7 @@ def test_sole_discovered_graph_has_readonly_preview_until_explicit_activation(ca
     assert state['source'] is None and state['schedule'] is None
     assert state['preview']['source']['sha256'] == sha
     assert state['preview']['presentation']['rows'][0]['bars']
-    assert all(bar['state'] == 'unknown' for bar in state['preview']['presentation']['rows'][0]['bars'])
+    assert all(bar['state'] in {'unknown','plan'} for bar in state['preview']['presentation']['rows'][0]['bars'])
     assert state['pending'][0]['source']['sha256'] == sha
     with pytest.raises(files.ContractFilesProblem, match='прежняя редакция'):
         gpr.save(PROJECT, ROW, CUT, sha, state['guard'], 'anchor',
@@ -275,7 +275,7 @@ def test_proven_physical_quantity_is_separate_from_source_calendar_and_its_gap()
                      {'start': '2026-02-15', 'finish': '2026-02-21'}]}]}
     shown = export.presentation(schedule, overlays, '2026-02-25')
     bars = shown['rows'][0]['bars']
-    assert {bar['state'] for bar in bars} == {'plan'}
+    assert {bar['state'] for bar in bars} == {'unknown'}
     assert all(bar['end'] <= 7 or bar['start'] >= 14 for bar in bars), 'The source gap cannot become physical work.'
     assert not any(bar.get('overdue') for bar in bars)
     assert shown['rows'][0]['progress']['fraction'] == .4
@@ -306,7 +306,7 @@ def test_two_sheet_export_preserves_current_source_and_disjoint_bars(card):
     result['gpr_export'] = meta
     selected = export.select_snapshot(result, PROJECT, CUT, ROW['id'], meta['revision'])
     book = load_workbook(io.BytesIO(export.workbook(selected, result)))
-    assert book.sheetnames == ['ГПР', 'Выполнение']
+    assert book.sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']
     text = '\n'.join(str(cell.value) for row in book['ГПР'] for cell in row if cell.value is not None)
     provenance = book['ГПР']['A1'].comment.text
     assert listed['gpr']['source']['sha256'] in provenance and listed['gpr']['schedule']['anchor']['event_id'] in provenance
@@ -315,7 +315,7 @@ def test_two_sheet_export_preserves_current_source_and_disjoint_bars(card):
     assert all(sheet.freeze_panes is None for sheet in book), 'The source/name columns must not lock the phone viewport.'
     row = next(row for row in book['ГПР'] if row[1].value == 'Учебная работа')
     colored = [cell.fill.fgColor.rgb for cell in row[6:27]]
-    assert colored[:7] == ['00D9D9D9']*7 and colored[7:14] == ['00000000']*7 and colored[14:] == ['00D9D9D9']*7
+    assert colored[:7] == ['00E4DFEC']*7 and colored[7:14] == ['00000000']*7 and colored[14:] == ['00D9D9D9']*7
     assert book['Выполнение'].max_column == 16
 
 
@@ -497,7 +497,7 @@ def test_native_admin_route_current_export_and_stale_ticket(card, monkeypatch):
     old = client.post('/monitor/contracts/gpr.xlsx', json={**base, 'ticket': opened['ticket'], 'revision': opened['gpr_export']['revision']})
     assert old.status_code == 409
     fresh = client.post('/monitor/contracts/gpr.xlsx', json={**base, 'ticket': updated['ticket'], 'revision': updated['gpr_export']['revision']})
-    assert fresh.status_code == 200 and load_workbook(io.BytesIO(fresh.content)).sheetnames == ['ГПР', 'Выполнение']
+    assert fresh.status_code == 200 and load_workbook(io.BytesIO(fresh.content)).sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']
     assert "filename*=UTF-8''" in fresh.headers['content-disposition']
     assert ROW['contract'] in updated['gpr_export']['filename'] and PROJECT in updated['gpr_export']['filename']
 
@@ -554,7 +554,7 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         target = tmp_path/f'gpr-performance-{width}.xlsx'
         assert ROW['contract'] in transfer.value.suggested_filename and PROJECT in transfer.value.suggested_filename
         transfer.value.save_as(target)
-        assert load_workbook(target).sheetnames == ['ГПР', 'Выполнение']
+        assert load_workbook(target).sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert page.locator('#contractGpr').evaluate('(element)=>element.getBoundingClientRect().right<=innerWidth')
         page.screenshot(path=str(tmp_path/f'gpr-popup-{width}.png'), full_page=True)
@@ -574,7 +574,7 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         assert page.locator('.contract-gpr-equivalent-track').count() == 0
         assert page.locator('[data-report-state]').count() == 0
         expect(page.locator('.contract-gpr-report-note').first).to_contain_text('не восстановлены')
-        assert page.locator('.contract-gpr-track rect[fill="#D9D9D9"]').count() == 2
+        assert page.locator('.contract-gpr-track rect[fill="#D9D9D9"]').count()+page.locator('.contract-gpr-track rect[fill="#E4DFEC"]').count() == 2
         expect(page.locator('#contractGprBody')).to_contain_text('не подтверждает даты производства')
         page.screenshot(path=str(tmp_path/f'gpr-physical-projection-{width}.png'), full_page=True)
         child_listed, child_rds, child_schedule = operation_projection_case()
@@ -611,7 +611,7 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         expect(page.locator('[data-gpr-activate]')).to_be_visible()
         assert page.locator('.contract-gpr-track rect[fill="#70AD47"]').count() == 0
         assert page.locator('.contract-gpr-track rect[fill="#E06666"]').count() == 0
-        assert page.locator('.contract-gpr-track rect[fill="#D9D9D9"]').count() == 2
+        assert page.locator('.contract-gpr-track rect[fill="#D9D9D9"]').count()+page.locator('.contract-gpr-track rect[fill="#E4DFEC"]').count() == 2
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=str(tmp_path/f'gpr-pending-preview-{width}.png'), full_page=True)
         page.locator('#contractDialogClose').click()

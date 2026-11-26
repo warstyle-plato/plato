@@ -1,9 +1,8 @@
-"""Reporting checkpoints over the source plan, never inferred production dates.
+"""Last known physical quantity against each day's source plan.
 
-Only the selected canonical fact producer supplies physical increments. Older
-cached cards have a current total but no period quantities: their previous
-periods stay grey. A checkpoint compares cumulative volume to the same-date
-uniform active-interval plan; its colour describes the report, not work dates.
+Observation checkpoints retain their dates and outcomes. Forward-held state is
+an analytical comparison, never a production interval or a new observation.
+No history is backfilled before the first confirmation; source gaps stay empty.
 """
 from __future__ import annotations
 
@@ -14,19 +13,18 @@ import math
 
 import developaid_contract_plan as plan
 
-SCHEMA = 'contract-physical-reporting-v1'
-COLORS = {'plan': 'D9D9D9', 'unknown': 'D9D9D9', 'fact': '70AD47',
+SCHEMA = 'contract-physical-state-v2'
+COLORS = {'plan': 'D9D9D9', 'unknown': 'E4DFEC', 'closure_unconfirmed': 'E4DFEC', 'fact': '70AD47',
           'warning': 'FFD966', 'overdue': 'E06666', 'lag': 'FFD966'}
-LEGEND = ('Серый — будущий план или период без сопоставимого физического отчёта. '
-          'Зелёный — накопленный физический план выполнен на дату отчёта; '
-          'жёлтый — недобор до плана, пока срок работы не прошёл. '
-          'Красный — по учтённым объёмам работа не завершена после срока ГПР. '
-          'Цвет периода показывает результат сравнения на его отчётную дату, а не даты производства работ. '
-          'Накопленный объём не подтверждает даты производства работ. '
-          'Будущая часть плана остаётся серой; опережение указано числом. '
-          'Прежние периоды без данных не восстанавливаются из последнего общего объёма. '
-          'План физического объёма распределён равномерно по активным интервалам ГПР, без разрывов. '
-          'Чёрная линия — дата среза; оранжевая — сегодня. Деньги не заменяют физический объём.')
+LEGEND = ('Серый — будущий план; сиреневый — нет подтверждённых данных или завершение после срока не подтверждено. '
+          'Зелёный — известный физический объём покрывает план на этот день; жёлтый — отставание до срока; '
+          'красный — незавершённость подтверждена источником после срока ГПР. '
+          'Последний известный объём сохраняется до следующего наблюдения и среза; план сравнивается с ним на каждый день. '
+          'Накопленный объём не подтверждает даты производства; перенос не означает новые работы. '
+          'До первого наблюдения факт неизвестен; реальные разрывы исходного ГПР сохранены. '
+          'Будущее остаётся серым. План равномерный по активным интервалам ГПР, если профиль объёмов не указан. '
+          'Дата последнего подтверждения и возраст данных показаны отдельно. '
+          'Чёрная линия — срез; оранжевая — сегодня. Денежное закрытие не является оплатой или физической готовностью.')
 
 
 def day(value):
@@ -53,9 +51,9 @@ def project(line, progress, parts, origin, cut):
     the cut or a source gap. The red extension is separately identified as time
     after the deadline, not a fictitious extension of the original plan.
     """
-    result = {'schema': SCHEMA, 'basis': 'physical_report_checkpoints', 'cut': cut,
+    result = {'schema': SCHEMA, 'basis': 'last_known_quantity_daily_plan', 'cut': cut,
               'history_available': False, 'checkpoints': [], 'bars': [],
-              'current': None, 'note': 'Нет сопоставимого физического объёма: прошлые периоды остаются серыми.'}
+              'current': None, 'note': 'Нет подтверждённого физического объёма. Это не нулевое выполнение.'}
     date, first, finish = day(cut), day(origin), day(line.get('finish'))
     if (not date or not first or not finish or not day(line.get('start')) or not progress or not parts
             or progress.get('planned_fraction') is None):
@@ -115,12 +113,6 @@ def project(line, progress, parts, origin, cut):
                 'date_basis': 'reported_period' if interval_start else 'document_observation',
                 'range_kind': 'report_interval' if begin < report_date else 'checkpoint'}
             result['checkpoints'].append(checkpoint)
-            b, e = (begin-first).days, (report_date-first).days+1
-            for left, right in parts:
-                lo, hi = max(left, b), min(right, e, cut_offset+1)
-                if hi > lo:
-                    result['bars'].append({'start': lo, 'end': hi, 'state': checkpoint['state'],
-                        'report_date': end, 'range_kind': checkpoint['range_kind']})
             previous = report_date
         result['history_available'] = True
     current = {'date': cut, 'fact_quantity': progress['fact_quantity'],
@@ -135,36 +127,69 @@ def project(line, progress, parts, origin, cut):
     last_report = day(result['checkpoints'][-1]['date']) if result['checkpoints'] else None
     # The UI cut is an analysis date, not a new physical report. Only a dated
     # source snapshot can add an observation after the last accepted act.
-    if observed and (not last_report or observed >= last_report):
+    if observed and (not last_report or observed > last_report):
         planned = plan.done(line, observed, plan_start)
         snapshot = {**current, 'date': observed.isoformat(), 'start': observed.isoformat(),
             'planned_fraction': planned, 'delta_pp': (progress['fraction']-planned)*100,
             'state': _state(progress['fraction'], planned, observed, finish),
             'range_kind': 'source_snapshot', 'date_basis': 'dated_source_snapshot'}
         result['checkpoints'].append(snapshot)
-        offset = (observed-first).days
-        for left, right in parts:
-            lo, hi = max(left, offset), min(right, offset+1)
-            if hi > lo:
-                result['bars'].append({'start':lo,'end':hi,'state':snapshot['state'],
-                    'report_date':snapshot['date'],'range_kind':'source_snapshot'})
         last_report = observed
-    last_checkpoint = result['checkpoints'][-1] if result['checkpoints'] else None
-    if last_checkpoint and last_checkpoint['state'] == 'overdue':
-        lo, hi = (finish-first).days+1, (last_report-first).days+1
-        if hi > lo:
-            result['bars'].append({'start': lo, 'end': hi, 'state': 'overdue',
-                'report_date':last_checkpoint['date'], 'range_kind': 'overdue_extension'})
-    if current['state'] == 'overdue' and not (last_checkpoint and last_checkpoint['state'] == 'overdue'):
+    # An observation becomes known on its own date, never at the beginning of
+    # a reported production period. Carry only its quantity forward, comparing
+    # it with each day's plan. Later catch-up cannot repaint an earlier day.
+    checkpoints = result['checkpoints']
+    for index, point in enumerate(checkpoints):
+        begin = day(point['date'])
+        until = day(checkpoints[index+1]['date'])-dt.timedelta(days=1) if index+1 < len(checkpoints) else date
+        for left, right in parts:
+            lo, hi = max(left, (begin-first).days), min(right, (until-first).days+1, cut_offset+1)
+            for offset in range(lo, hi):
+                at = first+dt.timedelta(days=offset)
+                planned = plan.done(line, at, plan_start)
+                state = _state(point['fact_fraction'], planned, at, finish)
+                if state == 'overdue' and begin <= finish:
+                    state = 'closure_unconfirmed'
+                _append(result['bars'], offset, state, point, 'known_state', at, planned)
+        # The extension is not part of the source plan. It starts only on a
+        # post-deadline confirmation; no retroactive red from a later document.
+        if begin > finish and point['fact_fraction'] < 1-1e-9:
+            lo, hi = max((finish-first).days+1, (begin-first).days), min((until-first).days+1, cut_offset+1)
+            for offset in range(lo, hi):
+                at = first+dt.timedelta(days=offset)
+                _append(result['bars'], offset, 'overdue', point, 'overdue_extension', at, 1.0)
+    last_checkpoint = checkpoints[-1] if checkpoints else None
+    if current['state'] == 'overdue' and not (last_checkpoint and day(last_checkpoint['date']) > finish):
         current['state'] = 'closure_unconfirmed'
-    result['note'] = ('Периоды сравниваются по принятым физическим объёмам на их отчётные даты. '
-        'Пересчёт выполнен по действующей редакции ГПР; это не история ранее опубликованных вердиктов.'
-        if valid else 'Прежние физические объёмы по периодам не сохранены. Показана только датированная отметка источника, если его дата подтверждена; прежние периоды не восстановлены.')
+    result['last_confirmed_at'] = last_checkpoint['date'] if last_checkpoint else None
+    result['age_days'] = (date-day(last_checkpoint['date'])).days if last_checkpoint else None
+    result['note'] = ('Последний подтверждённый объём: '+format(last_checkpoint['fact_quantity'], '.15g')+
+        ' '+progress['unit']+' на '+last_checkpoint['date']+'; возраст данных на срез: '+str(result['age_days'])+
+        ' дн. Объём перенесён до среза без новых наблюдений; цвет сравнивает его с планом каждого дня. '
+        'Отчётные результаты сохранены по действующей редакции ГПР; это не история опубликованных вердиктов.'
+        if last_checkpoint else 'Нет датированного подтверждения объёма. Прежние периоды не восстановлены.')
+
     return result
 
 
+
+def _append(bars, offset, state, point, kind, at, planned):
+    previous = bars[-1] if bars else None
+    if previous and previous['end'] == offset and (previous['state'], previous['report_date'], previous['range_kind']) == (state, point['date'], kind):
+        previous['end'] = offset+1
+        previous['state_finish'] = at.isoformat()
+        previous['planned_fraction_finish'] = planned
+    else:
+        bars.append({'start': offset, 'end': offset+1, 'state': state,
+                     'report_date': point['date'], 'range_kind': kind,
+                     'state_start':at.isoformat(), 'state_finish':at.isoformat(),
+                     'planned_fraction_start':planned, 'planned_fraction_finish':planned,
+                     'fact_quantity': point['fact_quantity'], 'fact_fraction': point['fact_fraction'],
+                     'carried_forward': True, 'not_actual_dates': True})
+
+
 def cell_states(model, ticks):
-    """Choose report colours only for ticks wholly within the observed cut."""
+    """Never colour a mixed future/gap cell as though it were wholly observed."""
     if not model or not ticks:
         return {}
     first = day(ticks[0].get('start'))
@@ -176,10 +201,7 @@ def cell_states(model, ticks):
         if not start or not end or tick['finish'] > model['cut']:
             continue
         lo, hi = (start-first).days, (end-first).days+1
-        bars = [bar for bar in model['bars'] if bar['start'] < hi and bar['end'] > lo]
+        bars = [bar for bar in model['bars'] if bar['start'] <= lo and bar['end'] >= hi]
         if bars:
-            # Preserve visible late status and short point checkpoints when
-            # long schedules have multi-day display columns.
-            result[i] = max(bars, key=lambda bar: (bar['range_kind'] == 'overdue_extension',
-                bar['report_date'], bar['state'] == 'warning'))
+            result[i] = bars[-1]
     return result

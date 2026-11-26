@@ -240,10 +240,8 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
             if heading.get('quantity') is not None and heading.get('unit'):
                 heading_comment = 'Объём по заголовку РДС: '+format(_number(heading['quantity']), 'g').replace('.', ',')+' '+heading['unit']+'. Объёмы отдельных операций в него не складываются.'
             put(excel_row, 2, heading.get('name') or '', heading_comment)
-            for cell in sheet[excel_row]:
-                cell.fill = PatternFill('solid', fgColor='E8EFF7')
-                cell.font = Font(name='Calibri', size=10, bold=True)
-            sheet.row_dimensions[excel_row].height = 28
+            from developaid_contract_hierarchy import style_row
+            style_row(sheet, excel_row, heading.get('number'), corpus=not heading.get('number'))
         excel_row += 1
         for column, field in enumerate(FIELDS, 1):
             value = source.get(field)
@@ -267,6 +265,8 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
                 cell.number_format = '[Red]+0;-0;0'
             elif field == 'forecast_delay_days':
                 cell.number_format = '[Red]+0;-0;0'
+        from developaid_contract_hierarchy import style_row
+        style_row(sheet, excel_row, source.get('number'))
         sheet.row_dimensions[excel_row].height = min(78, max(30, 14*(len(str(source.get('name') or ''))//48+1)))
     widths = (9, 58, 11, 13, 13, 14, 13, 14, 13, 15, 17, 17, 17, 14, 18, 16)
     for column, width in enumerate(widths, 1):

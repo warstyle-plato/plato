@@ -604,6 +604,10 @@ def position_projections(listed, rds, schedule):
         observation = observations.get(identity) or {}
         line['reporting_events'] = copy.deepcopy(observation.get('reporting_events') or [])
         line['reporting_plan_start'] = current.get('start')
+        dates = [(item.get('source') or {}).get('source_date') if rds.get('source') == 'ks6a' else item.get('end')
+                 for item in observation.get('sources') or []]
+        line['source_dates'] = sorted({value for value in dates if value and value <= rds['cut']})
+        line['physical_audit'] = copy.deepcopy(row.get('physical_audit'))
         if (known and parent and row.get('unit') and numeric(row.get('day_deviation')) and identities[identity] == 1 and
                 day(row.get('start')) and day(row.get('finish')) and
                 (row['start'], row['finish']) == (parent.get('start'), parent.get('finish'))):

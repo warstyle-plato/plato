@@ -131,6 +131,11 @@ def acts(row: dict | None) -> dict | None:
     return {"acts": found, "unread": unread, "works": len(works), "items": works, "period_amounts": sums,
             'document_source_ids': row.get('document_source_ids') or [],
             'physical_groups': groups, 'source_positions':source_positions,
+            'physical_source_rows': [{key:item[key] for key in (
+                'position','name','unit','plan_quantity','source','snapshot_date',
+                'reported_completed_quantity','completed_quantity','reported_material_quantity','material_quantity',
+                'periods','undated_periods') if key in item} for item in row.get('physical_items') or []
+                if not item.get('is_group') and not item.get('is_duplicate')],
             'statement_sources':[{k:x[k] for k in ('source','source_date','period_year','completed',
                 'completed_materials','completed_works','financial_complete','period_dates_known',
                 'planned','planned_materials','planned_works','monetary_comparable','parts_monetary_comparable',
@@ -490,7 +495,8 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
               "materials": [], 'rds_positions': [], 'rds_unread': [],
               "component_gaps": [], 'material_statement': statement_materials(found, cut),
               'physical_groups': (found or {}).get('physical_groups') or [],
-              'act_evidence': (performed or {}).get('evidence')}
+              'act_evidence': (performed or {}).get('evidence'),
+              'physical_source_rows': (found or {}).get('physical_source_rows') or []}
     result['reconciliation'] = reconcile(performed, None if (found or {}).get('problem') else found, cut)
     result['confirmation'] = confirmation(performed, found, cut, result['reconciliation'])
     act_rows = from_acts(performed)
