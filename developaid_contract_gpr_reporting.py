@@ -17,6 +17,11 @@ import developaid_contract_plan as plan
 SCHEMA = 'contract-physical-state-v6'
 COLORS = {'plan': 'D9D9D9', 'unknown': 'E4DFEC', 'closure_unconfirmed': 'E4DFEC', 'fact': '70AD47',
           'warning': 'FFD966', 'overdue': 'E06666', 'forecast':'9DC3E6', 'overdue_unclosed':'E06666', 'lag': 'FFD966'}
+SHORT_LEGEND = ('Серый — будущий план; сиреневый — физический факт неизвестен. '
+                'Зелёный — известный объём покрывает план; жёлтый — отставание до срока; '
+                'сплошной красный — подтверждённая незавершённость после срока. '
+                'Красная штриховка — срок истёк, физический факт не подтверждён. '
+                'Ретроспективная оценка до даты документа не подтверждает ежедневный ход работ.')
 LEGEND = ('Серый — будущий план; сиреневый — исторический факт неизвестен. '
           'Зелёный — известный физический объём покрывает план на этот день; жёлтый — отставание до срока; '
           'Сплошной красный — известный незавершённый объём после срока ГПР. Красная штриховка — срок истёк, физфакт не подтверждён: календарный риск незакрытия КС, а не нулевой факт. '
@@ -45,25 +50,7 @@ def _state(fraction, planned, date, finish):
     return 'warning' if fraction+1e-9 < planned else 'fact'
 
 
-def project(line, progress, parts, origin, cut):
-    """A single plan track plus evidenced report intervals/checkpoint markers.
-
-    `parts` are half-open source-plan offsets. Checkpoint intervals never cross
-    the cut or a source gap. The red extension is separately identified as time
-    after the deadline, not a fictitious extension of the original plan.
-    """
-    result = {'schema': SCHEMA, 'basis': 'last_known_quantity_daily_plan', 'cut': cut,
-              'history_available': False, 'checkpoints': [], 'bars': [],
-              'current': None, 'forecast':None, 'note': 'Нет подтверждённого физического объёма. Это не нулевое выполнение.'}
-    date, first, finish = day(cut), day(origin), day(line.get('finish'))
-    if (not date or not first or not finish or not day(line.get('start')) or not progress or not parts
-            or progress.get('planned_fraction') is None):
-        if date and first and finish and date>finish and not (progress and progress.get('fraction',0)>=1):
-            _overdue_unclosed(result,first,finish,date)
-        return result
-    cut_offset = (date-first).days
-    total = progress['contract_quantity']
-    plan_start = day(line.get('reporting_plan_start'))
+def _accepted_events(line, progress, date):
     events, seen, valid = [], {}, True
     for item in line.get('reporting_events') or []:
         end = day(item.get('end'))
@@ -85,11 +72,74 @@ def project(line, progress, parts, origin, cut):
             continue
         seen[item['id']] = item
         events.append(item)
+    return events, (valid and bool(events) and math.isclose(
+        sum(item['work_quantity'] for item in events), progress['fact_quantity'], abs_tol=1e-6))
+
+
+def _quantity_without_plan(result, line, progress, date):
+    """Preserve accepted quantities/dates without inventing a calendar or plan."""
+    result['basis'] = 'known_quantity_without_comparable_plan'
+    result['current'] = {'date':date.isoformat(),'fact_quantity':progress['fact_quantity'],
+        'fact_fraction':progress['fraction'],'planned_fraction':None,'delta_pp':None,
+        'state':'plan_unknown','range_kind':'known_quantity_at_cut'}
+    events,valid = _accepted_events(line,progress,date)
+    if valid:
+        groups = {}
+        for event in events:groups.setdefault(event['end'],[]).append(event)
+        accumulated = 0.0
+        for end,group in sorted(groups.items()):
+            accumulated += sum(event['work_quantity'] for event in group)
+            if all(event['work_quantity']==0 and 'нулевой суммой' in
+                   str(event.get('physical_quantity_basis') or '').lower() for event in group):continue
+            starts=[day(event.get('start')) for event in group]
+            begin=min(starts) if starts and all(starts) and all(
+                event.get('date_basis')=='reported_period' and not event.get('preliminary') for event in group) else None
+            result['checkpoints'].append({'date':end,'start':begin.isoformat() if begin else end,'fact_quantity':accumulated,
+                'fact_fraction':accumulated/progress['contract_quantity'],'planned_fraction':None,
+                'delta_pp':None,'state':'plan_unknown','source_event_ids':[event['id'] for event in group],
+                'sources':[event['source'] for event in group], 'date_basis':'reported_period' if begin else 'document_observation',
+                'range_kind':'checkpoint'})
+        result['history_available'] = True
+    sources = sorted({value for value in progress.get('source_dates') or [] if day(value) and day(value)<=date})
+    latest = result['checkpoints'][-1]['date'] if result['checkpoints'] else None
+    if sources and (not latest or sources[-1]>latest):
+        result['checkpoints'].append({**result['current'],'date':sources[-1],'start':sources[-1],
+            'date_basis':'dated_source_snapshot','range_kind':'source_snapshot'})
+    latest = result['checkpoints'][-1]['date'] if result['checkpoints'] else None
+    result['last_confirmed_at'] = latest
+    result['age_days'] = (date-day(latest)).days if latest else None
+    result['note'] = ('Известный физический объём: '+format(progress['fact_quantity'],'.15g')+' '+progress['unit']+
+        ('. Последнее подтверждение: '+latest+'; возраст данных '+str(result['age_days'])+' дн.' if latest
+         else '. Дата подтверждения объёма не установлена.')+
+        ' Плановый срок или сопоставление с ГПР не подтверждены. Календарная полоса и прогноз не восстановлены.')
+    return result
+
+
+def project(line, progress, parts, origin, cut):
+    """A single plan track plus evidenced report intervals/checkpoint markers.
+
+    `parts` are half-open source-plan offsets. Checkpoint intervals never cross
+    the cut or a source gap. The red extension is separately identified as time
+    after the deadline, not a fictitious extension of the original plan.
+    """
+    result = {'schema': SCHEMA, 'basis': 'last_known_quantity_daily_plan', 'cut': cut,
+              'history_available': False, 'checkpoints': [], 'bars': [],
+              'current': None, 'forecast':None, 'note': 'Нет подтверждённого физического объёма. Это не нулевое выполнение.'}
+    date, first, finish = day(cut), day(origin), day(line.get('finish'))
+    if (not date or not first or not finish or not day(line.get('start')) or not progress or not parts
+            or progress.get('planned_fraction') is None):
+        if date and progress:
+            _quantity_without_plan(result,line,progress,date)
+        if date and first and finish and date>finish and not (progress and progress.get('fraction',0)>=1):
+            _overdue_unclosed(result,first,finish,date)
+        return result
+    cut_offset = (date-first).days
+    total = progress['contract_quantity']
+    plan_start = day(line.get('reporting_plan_start'))
+    events, valid = _accepted_events(line,progress,date)
     # A partial event stream cannot establish earlier cumulative values. In
     # particular, missing events and unknown volumes are not zero baselines.
-    valid = (valid and bool(events) and math.isclose(sum(item['work_quantity'] for item in events),
-        progress['fact_quantity'], abs_tol=1e-6)
-        and math.isclose(plan.done(line, date, plan_start), progress['planned_fraction'], abs_tol=1e-9))
+    valid = valid and math.isclose(plan.done(line, date, plan_start), progress['planned_fraction'], abs_tol=1e-9)
     if valid:
         groups = {}
         for item in events:

@@ -95,7 +95,7 @@ def fraction_formula(spec, excel_row):
 
 def cache_builder_formulas(payload, book):
     """Compute only trusted builder formulas; keep caches visible on mobile."""
-    names=[name for name in ('Физфакт строителей','Выполнение','РДС — план и факт') if name in book]
+    names=[name for name in ('Физфакт строителей','Выполнение','РДС — план и факт','Численность','Численность подрядчика') if name in book]
     evaluator=BuilderEvaluator(book)
     values={name:{c.coordinate:evaluator.cell(name,c.coordinate) for row in book[name] for c in row if c.data_type=='f'} for name in names}
     main='{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'

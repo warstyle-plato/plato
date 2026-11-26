@@ -37,6 +37,17 @@ def test_explicit_contract_is_a_real_source_binding_without_new_manual_gate():
     assert any('более поздней' in reason for reason in r['reasons'])
 
 
+def test_unread_report_source_is_distinct_from_a_loaded_empty_source():
+    values=list(inputs());values[3]=None
+    unread=view(values)
+    assert unread['report_input_status']=='not_loaded' and unread['report_sources_revision'] is None
+    assert unread['rows'][0]['workers_plan']==10 and unread['rows'][0]['workers_fact'] is None
+    assert workforce.REPORTS_NOT_LOADED in unread['rows'][0]['reasons']
+    values[3]=[];empty=view(values)
+    assert empty['report_input_status']=='loaded' and empty['report_sources_revision']
+    assert any('нет подходящей строки' in r for r in empty['rows'][0]['reasons'])
+
+
 def test_one_party_with_two_contracts_is_not_a_distribution_even_if_count_equal():
     values=inputs();row,_,_,reports,register=values
     reports[0]['text']='ООО «Исполнитель» ИТР 1, рабочие 8'
@@ -143,15 +154,19 @@ def test_excluded_or_wrong_contract_source_never_becomes_a_comparison():
     assert not view(values)['available']
 
 
-def test_writer_has_compact_native_numbers_no_formula_or_freeze_and_preserves_provenance():
+def test_writer_has_trusted_deviation_formulas_no_freeze_and_preserves_provenance():
     got=view();wb=Workbook();wb.active.title='ГПР'
     sheet=workforce.write_sheet(wb,got)
     assert sheet.freeze_panes is None and sheet.max_column==8
-    assert [c.value for c in sheet[6]][:7]==[dt.date(2026,1,20),10,8,-2,2,1,-1]
+    assert [sheet.cell(6,c).value for c in (1,2,3,5,6)]==[dt.date(2026,1,20),10,8,2,1]
+    assert {c.coordinate for r in sheet for c in r if c.data_type=='f'}=={'D6','G6'}
     assert 'более поздней' in sheet['H6'].value and 'text_sha256' in sheet['H6'].comment.text
-    assert not any(c.data_type in {'e','f'} for r in sheet for c in r)
+    assert not any(c.data_type=='e' for r in sheet for c in r)
     buf=io.BytesIO();wb.save(buf);buf.seek(0)
     assert load_workbook(buf)['Численность'].freeze_panes is None
+    from developaid_contract_builder_plan import cache_builder_formulas
+    cached=load_workbook(io.BytesIO(cache_builder_formulas(buf.getvalue(),wb)),data_only=True)
+    assert [cached[sheet.title].cell(6,c).value for c in range(2,8)]==[10,8,-2,2,1,-1]
 
 
 def test_report_counts_in_work_prose_and_missing_party_are_not_silent_facts():
@@ -248,7 +263,7 @@ def test_source_text_is_always_excel_text_even_if_it_starts_with_formula():
     got=view();got['rows'][0]['reasons']=['=HYPERLINK("bad")']
     sheet=workforce.write_sheet(Workbook(),got)
     assert sheet['H6'].data_type=='s' and sheet['H6'].value.startswith('=')
-    assert not any(c.data_type=='f' for row in sheet for c in row)
+    assert {c.coordinate for row in sheet for c in row if c.data_type=='f'}=={'D6','G6'}
 
 
 @pytest.mark.parametrize('caption',[
@@ -432,3 +447,19 @@ def test_rss_inventory_can_change_register_subject_and_is_also_pinned(monkeypatc
     estimate=root/'estimate';estimate.mkdir()
     (estimate/'2026-01-01.xlsx').write_bytes(b'native-workbook-not-read')
     assert not workforce.require_current(got,'test')
+
+
+def test_summary_observations_keep_two_disciplines_without_allocating_a_contract_crew():
+    values=list(inputs());row,_,_,_,register=values
+    register['rows'].append(dict(row,id='c'*64,contract='A-456',scope=['Кладка']))
+    values[3]=[{'date':'2026-01-20','parsed':{'contractors':[
+        {'name':'Исполнитель (кровля)','workers':8,'itr':1},
+        {'name':'Исполнитель (кладка)','workers':15,'itr':1}]},
+        'source':{'kind':'monitor_daily_summary','contract_scope_confirmed':False}}]
+    result=view(values)
+    assert len(result['company_observations'])==2
+    assert [p['candidate']['workers'] for p in result['company_observations']]==[8,15]
+    assert result['report_dates']==['2026-01-20']
+    assert result['available']  # Source plan remains available.
+    assert all(r['workers_fact'] is r['itr_fact'] is r['workers_delta'] is None for r in result['rows'])
+    assert any('полный состав' in reason for r in result['rows'] for reason in r['reasons'])

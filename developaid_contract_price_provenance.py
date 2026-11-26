@@ -15,10 +15,10 @@ import developaid_contract_documents as documents
 
 FIELD = 'price_reader_provenance'
 SCHEMA = 'contract-price-reader-provenance-v1'
-LEGACY_READERS = (11, 12, 13, 14, 15)
+LEGACY_READERS = (11, 12, 13, 14, 15, 16)
 # Deliberately reviewed text-reader generations. A future reader upgrade must
 # re-establish semantic continuity; a larger version number is not evidence.
-REFRESH_READERS = (15, 16)
+REFRESH_READERS = (15, 16, 17)
 MAX_WITNESS_BYTES = 1024 * 1024
 _FIELDS = {'schema', 'origin', 'event_id', 'raw_id', 'source_pdf_sha256', 'from_reader', 'to_reader',
            'approved_bindings', 'approved_bindings_sha256', 'approved_document_evidence',
@@ -105,9 +105,9 @@ def build(old, fresh, sha, raw_id, raw_pdf, old_metadata_sha256, event, before):
     if component(old) is None or component(old) != component(fresh):
         return None
     if FIELD in old:
-        # A previously verified 11..14 -> 15 witness already seals the complete
-        # human event and original bindings. Validate it against the OLD
-        # reader, current component and exact PDF before advancing to 16.
+        # A previously verified witness already seals the complete human event
+        # and original bindings. Validate it against the OLD reviewed reader,
+        # current component and exact PDF before advancing to another reviewed reader.
         # Unrelated deadline/work-link edits cannot become new price approval.
         projection = _project(old, previous, raw_id, lambda: raw_pdf, old['reader'])
         if not accepts(projection, event, payload['selected_values']['price']):
