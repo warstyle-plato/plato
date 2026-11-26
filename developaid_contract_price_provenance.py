@@ -15,7 +15,10 @@ import developaid_contract_documents as documents
 
 FIELD = 'price_reader_provenance'
 SCHEMA = 'contract-price-reader-provenance-v1'
-LEGACY_READERS = (11, 12, 13, 14)
+LEGACY_READERS = (11, 12, 13, 14, 15)
+# Deliberately reviewed text-reader generations. A future reader upgrade must
+# re-establish semantic continuity; a larger version number is not evidence.
+REFRESH_READERS = (15, 16)
 MAX_WITNESS_BYTES = 1024 * 1024
 _FIELDS = {'schema', 'origin', 'event_id', 'raw_id', 'source_pdf_sha256', 'from_reader', 'to_reader',
            'approved_bindings', 'approved_bindings_sha256', 'approved_document_evidence',
@@ -74,14 +77,18 @@ def _unconfirmed_source(document):
         and document.get('scan_confirmation_sha256') == store.digest(None))
 
 
+def _refresh_pair(previous, current):
+    return (type(previous) is int and previous in LEGACY_READERS
+            and type(current) is int and current in REFRESH_READERS and previous < current)
+
+
 def build(old, fresh, sha, raw_id, raw_pdf, old_metadata_sha256, event, before):
     """Called only before binding capture, under the complete native card locks."""
     import developaid_contract_correction as correction
     import developaid_contract_identity as identity
     if (not isinstance(event, dict) or event.get('action') != 'correct_sources'
-            or not _hash(event.get('event_id')) or type(old.get('reader')) is not int
-            or old['reader'] not in LEGACY_READERS or fresh.get('reader') != documents.READER_VERSION
-            or documents.READER_VERSION != 15 or FIELD in old
+            or not _hash(event.get('event_id')) or not _refresh_pair(old.get('reader'), fresh.get('reader'))
+            or fresh.get('reader') != documents.READER_VERSION
             or old.get('sha256') != sha or fresh.get('sha256') != sha
             or hashlib.sha256(raw_pdf).hexdigest() != sha):
         return None
@@ -89,14 +96,27 @@ def build(old, fresh, sha, raw_id, raw_pdf, old_metadata_sha256, event, before):
     correction.validate_payload(payload)
     evidence = payload['price_document_evidence']
     if (not evidence or payload['roles']['price_raw_id'] != raw_id
-            or evidence['document_sha256'] != sha or store.digest(before) != payload['bindings_sha256']):
+            or evidence['document_sha256'] != sha):
         return None
     previous = _document(before, raw_id, sha)
     if (not _unconfirmed_source(previous) or (previous.get('metadata') or {}).get('sha256') != old_metadata_sha256
-            or previous.get('reader_version_sha256') != store.digest(old['reader'])
-            or identity.document_evidence(old, sha) != evidence):
+            or previous.get('reader_version_sha256') != store.digest(old['reader'])):
         return None
     if component(old) is None or component(old) != component(fresh):
+        return None
+    if FIELD in old:
+        # A previously verified 11..14 -> 15 witness already seals the complete
+        # human event and original bindings. Validate it against the OLD
+        # reader, current component and exact PDF before advancing to 16.
+        # Unrelated deadline/work-link edits cannot become new price approval.
+        projection = _project(old, previous, raw_id, lambda: raw_pdf, old['reader'])
+        if not accepts(projection, event, payload['selected_values']['price']):
+            return None
+        marker = copy.deepcopy(old[FIELD])
+        marker['to_reader'] = fresh['reader']
+        return marker
+    if (store.digest(before) != payload['bindings_sha256']
+            or identity.document_evidence(old, sha) != evidence):
         return None
     marker = {'schema': SCHEMA, 'origin': 'verified_reader_refresh', 'event_id': event['event_id'],
         'raw_id': raw_id, 'source_pdf_sha256': sha, 'from_reader': old['reader'], 'to_reader': fresh['reader'],
@@ -115,6 +135,10 @@ def project(record, document, raw_id, read_pdf):
     with respect to the journal avoids changing a metadata binding merely by
     appending a legitimate new human decision.
     """
+    return _project(record, document, raw_id, read_pdf, documents.READER_VERSION)
+
+
+def _project(record, document, raw_id, read_pdf, current_reader):
     import developaid_contract_correction as correction
     marker = record.get(FIELD)
     invalid = {'schema': SCHEMA, 'state': 'invalid', 'reason': 'unsupported_reader_price_evidence'}
@@ -128,9 +152,8 @@ def project(record, document, raw_id, read_pdf):
             or any(not _hash(marker[key]) for key in hashes)
             or marker['raw_id'] != raw_id or marker['source_pdf_sha256'] != document['document_sha256']
             or record.get('sha256') != marker['source_pdf_sha256']
-            or type(marker['from_reader']) is not int or marker['from_reader'] not in LEGACY_READERS
-            or marker['to_reader'] != documents.READER_VERSION or record.get('reader') != documents.READER_VERSION
-            or documents.READER_VERSION != 15):
+            or not _refresh_pair(marker['from_reader'], marker['to_reader'])
+            or marker['to_reader'] != current_reader or record.get('reader') != current_reader):
         return invalid
     evidence = marker['approved_document_evidence']
     if (not isinstance(evidence, dict) or set(evidence) != set(correction.DOCUMENT_EVIDENCE_FIELDS)
