@@ -281,19 +281,20 @@ def test_current_reader_native_approval_needs_no_derived_witness(pair, monkeypat
     assert (folder/(sha+'.pdf')).read_bytes() == raw
 
 
-@pytest.mark.parametrize('origin', [11, 12, 13, 14])
+@pytest.mark.parametrize(('origin', 'intermediate'),
+    [(origin, target) for target in (15, 16) for origin in range(11, target)])
 @pytest.mark.parametrize('change', [None, 'deadline', 'links'])
-def test_verified_reader15_witness_advances_without_new_human_approval(pair, monkeypatch, change, origin):
+def test_verified_reviewed_witness_advances_without_new_human_approval(pair, monkeypatch, change, origin, intermediate):
     current = documents.READER_VERSION
-    monkeypatch.setattr(documents, 'READER_VERSION', 15)
+    monkeypatch.setattr(documents, 'READER_VERSION', intermediate)
     folder, sha, raw, old, event, state = approved_price(pair, monkeypatch, origin)
     assert current_row()['source_correction']['fresh']
     previous = copy.deepcopy(files._stored(folder/(sha+'.json'))[provenance.FIELD])
-    assert previous['from_reader'] == origin and previous['to_reader'] == 15
+    assert previous['from_reader'] == origin and previous['to_reader'] == intermediate
     if change == 'deadline':
         files._json(pair['root']/'cumulative_terms.json', {pair['new']: {'deadline': '2027-01-01'}})
     elif change == 'links':
-        files._json(folder/'links.json', {'choices': {}, 'note': 'Unrelated work mapping after verified15'})
+        files._json(folder/'links.json', {'choices': {}, 'note': 'Unrelated work mapping after verified reader'})
     monkeypatch.setattr(documents, 'READER_VERSION', current)
     for _ in range(2):
         row = current_row()
@@ -309,9 +310,10 @@ def test_verified_reader15_witness_advances_without_new_human_approval(pair, mon
 
 @pytest.mark.parametrize('change', ['price', 'terms', 'contract', 'agreement', 'confirmation',
                                    'withdrawal', 'pdf', 'marker', 'saved_price', 'event'])
-def test_mutated_reader15_witness_cannot_be_promoted_to16(pair, monkeypatch, change):
-    current = documents.READER_VERSION
-    monkeypatch.setattr(documents, 'READER_VERSION', 15)
+@pytest.mark.parametrize('intermediate', [15, 16])
+def test_mutated_reviewed_witness_cannot_be_promoted(pair, monkeypatch, change, intermediate):
+    current = 17
+    monkeypatch.setattr(documents, 'READER_VERSION', intermediate)
     folder, sha, raw, _, event, state = approved_price(pair, monkeypatch, 14)
     assert current_row()['source_correction']['fresh']
     path = folder/(sha+'.json')
@@ -358,7 +360,7 @@ def test_mutated_reader15_witness_cannot_be_promoted_to16(pair, monkeypatch, cha
 def test_unreviewed_future_reader_does_not_inherit_price_witness(pair, monkeypatch):
     folder, sha, _, _, _, state = approved_price(pair, monkeypatch, 15)
     assert current_row()['source_correction']['fresh']
-    monkeypatch.setattr(documents, 'READER_VERSION', 17)
+    monkeypatch.setattr(documents, 'READER_VERSION', 18)
     assert not current_row()['source_correction']['fresh']
     assert provenance.FIELD not in files._stored(folder/(sha+'.json'))
     assert journal.load(PROJECT) == state
@@ -379,3 +381,20 @@ def test_second_read_source_validation_remains_no_follow_and_bounded(pair, monke
         monkeypatch.setattr(files, 'MAX_PARSE_REFRESH_BYTES', len(raw)-1)
         with pytest.raises((ownership.OwnershipProblem, contracts.ContractProblem), match='объём|Объём'):
             current_row()
+
+
+@pytest.mark.parametrize('origin', [11, 12, 13, 14, 15, 16])
+def test_reviewed_reader17_preserves_exact_approved_component(pair, monkeypatch, origin):
+    # Controlled native event fixture; actual PDF component parity is admitted separately.
+    monkeypatch.setattr(documents, 'READER_VERSION', 17)
+    folder, sha, raw, old, event, state = approved_price(pair, monkeypatch, origin)
+    for _ in range(2):
+        row = current_row()
+        assert row['source_correction']['fresh'] and row['amount'] == 2000
+    refreshed = files._stored(folder/(sha+'.json'))
+    marker = refreshed[provenance.FIELD]
+    assert refreshed['reader'] == 17 and marker['to_reader'] == 17
+    assert marker['from_reader'] == origin and marker['event_id'] == event['event_id']
+    assert provenance.component(refreshed) == provenance.component(old)
+    assert journal.load(PROJECT) == state
+    assert (folder/(sha+'.pdf')).read_bytes() == raw
