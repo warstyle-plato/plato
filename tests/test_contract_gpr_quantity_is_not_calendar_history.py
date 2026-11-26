@@ -132,7 +132,8 @@ def test_native_page_today_uses_local_calendar_without_changing_data_cut(card, m
             assert page.locator('.contract-gpr-date-marker[data-date-kind="today"][data-date="'+today+'"]').count() > 0
             assert page.locator('.contract-gpr-date-marker[data-date-kind="cut"][data-date="2026-11-24"]').count() > 0
         assert not page.locator('.contract-gpr-track rect[fill="#70AD47"]').count()
-        assert not page.locator('.contract-gpr-track rect[fill="#E06666"]').count()
+        assert not page.locator('.contract-gpr-track [data-report-state="overdue"]').count()
+        assert page.locator('.contract-gpr-track [data-report-state="overdue_unclosed"]').count()>0
         assert not errors
 
 

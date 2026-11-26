@@ -540,6 +540,8 @@ def physical_overlays(listed, rds):
             continue
         code = targets[0]['code']
         collected.setdefault(code, []).append(row)
+    observations={(item.get('estimate'),item.get('index')):item for item in (listed.get('fact') or {}).get('rds_positions') or []
+                  if item.get('estimate_sha256')==rds.get('estimate_sha256')}
     result = {}
     for code, rows in collected.items():
         row = rows[0]
@@ -555,6 +557,11 @@ def physical_overlays(listed, rds):
                         'planned_fraction': min(max(planned, 0), 1) if isinstance(planned, (int, float)) else None,
                         'fact_quantity': row['fact_quantity'], 'contract_quantity': row['contract_quantity'],
                         'unit': row['unit'], 'lag_days': max(row['day_deviation'], 0),
+                        'reporting_events':copy.deepcopy((observations.get((row.get('estimate'),row.get('index'))) or {}).get('reporting_events') or []),
+                        'reporting_plan_start':current.get('start'),
+                        'source_dates':sorted({value for entry in (observations.get((row.get('estimate'),row.get('index'))) or {}).get('sources') or []
+                            for value in [((entry.get('source') or {}).get('source_date') if rds.get('source')=='ks6a' else entry.get('end'))]
+                            if value and value<=rds['cut']}),
                         'source': rds.get('source'), 'basis': 'cumulative_quantity_at_cut',
                         'note': 'Накопленный физический объём на дату среза. '
                                 'Он не подтверждает даты или непрерывность производства работ.'}

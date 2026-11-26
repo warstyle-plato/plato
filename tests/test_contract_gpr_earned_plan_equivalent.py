@@ -64,11 +64,13 @@ def test_overdue_is_red_only_after_dated_postdeadline_evidence():
     row=view(40,[event(40,'2026-11-15','2026-11-01')],finish='2026-11-10')
     red=[bar for bar in row['reporting']['bars'] if bar['state']=='overdue']
     assert red and max(bar['end'] for bar in red)==24
-    assert min(bar['start'] for bar in red)==14
+    assert min(bar['start'] for bar in red)==10
+    assert {day for bar in red for day in range(bar['start'],bar['end'])}==set(range(10,24))
+    assert any(bar['range_kind']=='retrospective_overdue_assessment' for bar in red)
     assert red[-1]['range_kind']=='overdue_extension'
     stale=view(40,finish='2026-11-20',source_dates=['2026-11-18'])
-    assert stale['deadline_status']['state']=='deadline_passed_unconfirmed'
-    assert stale['reporting']['current']['state']=='closure_unconfirmed'
+    assert stale['deadline_status']['state']=='overdue_incomplete'
+    assert stale['reporting']['current']['state']=='overdue'
     assert not any(bar['state']=='overdue' for bar in stale['reporting']['bars'])
     fresh=view(40,finish='2026-11-20',source_dates=['2026-11-23'])
     assert fresh['deadline_status']['state']=='overdue_incomplete'
@@ -113,7 +115,7 @@ def test_known_zero_is_yellow_but_missing_quantity_is_grey():
     zero=view(0,[event(0,'2026-11-10','2026-11-01')])['reporting']
     assert zero['history_available'] and zero['checkpoints'][0]['state']=='warning'
     missing=reporting.project({'finish':'2026-11-10'},None,[(0,10)],'2026-11-01','2026-11-24')
-    assert not missing['bars'] and missing['current'] is None
+    assert missing['bars'][0]['state']=='overdue_unclosed' and missing['current'] is None
 
 
 def test_duplicates_not_double_counted_and_conflicting_id_is_not_history():

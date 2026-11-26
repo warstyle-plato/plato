@@ -371,7 +371,8 @@ def test_operation_chart_refuses_unattributable_or_money_only_facts(defect):
     shown = export.presentation(schedule, {}, '2026-02-25', positions)
     refused = next(row for row in shown['positions'] if row['position_key'] == [0, 0])
     assert not any(bar['state'] in {'fact', 'lag'} for bar in refused['bars'])
-    assert not refused['reporting']['bars']
+    assert all(bar['state']=='overdue_unclosed' for bar in refused['reporting']['bars'])
+    assert refused['reporting']['checkpoints']==[] and refused['reporting']['forecast'] is None
     if defect == 'unproved_days':
         assert refused['quantity']['fact_quantity'] == 40, 'An unavailable time projection does not remove a known quantity.'
 
@@ -430,7 +431,8 @@ def test_workbook_keeps_operation_facts_mobile_header_and_source_identity(card):
     assert operation[4].value == .4 and operation[4].number_format == '0.0%'
     assert '40 / 100 м2' in operation[1].value
     assert any(rule.type == 'dataBar' for rules in book['ГПР'].conditional_formatting._cf_rules.values() for rule in rules)
-    assert not any(c.fill.fgColor.rgb in {'0070AD47', '00E06666'} for c in operation[6:])
+    assert not any(c.fill.fgColor.rgb=='0070AD47' for c in operation[6:])
+    assert all(json.loads(c.comment.text.splitlines()[-1])['track']=='overdue_without_ks_closure' for c in operation[6:] if c.fill.fgColor.rgb=='00E06666')
     assert all(c.fill.fgColor.rgb == '00000000' for c in operation[13:20]), 'The original gap stays unpainted.'
     zero = next(row for row in book['ГПР'] if str(row[1].value or '').startswith('Остекление'))
     assert zero[4].value == 0 and zero[4].number_format == '0.0%'
@@ -590,7 +592,8 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         assert page.locator('.contract-gpr-position[data-rds-position="0:1"] .contract-gpr-meter').get_attribute('aria-valuenow') == '0'
         assert page.locator('.contract-gpr-position[data-rds-position="0:1"] .contract-gpr-progress-gap').count() == 1
         assert page.locator('.contract-gpr-position .contract-gpr-track rect[fill="#70AD47"]').count() == 0
-        assert page.locator('.contract-gpr-position .contract-gpr-track rect[fill="#E06666"]').count() == 0
+        assert page.locator('.contract-gpr-position .contract-gpr-track [data-report-state="overdue"]').count() == 0
+        assert page.locator('.contract-gpr-position .contract-gpr-track [data-report-state="overdue_unclosed"]').count() == 2
         assert page.locator('.contract-gpr-source-chart rect[fill="#70AD47"]').count() == 0
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=str(tmp_path/f'gpr-operation-facts-{width}.png'), full_page=True)
