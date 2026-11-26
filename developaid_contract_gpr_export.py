@@ -380,7 +380,7 @@ def write_company_workforce(book,projection):
         reason = item['reason']
         if annotations:
             reason += ' В ГПР на эту дату: '+', '.join(dict.fromkeys(a['literal'] for a in annotations))+'. Это подписи отдельных операций; рабочие и ИТР не разделены, бригады не суммируются.'
-        elif projection.get('plan_annotations'):
+        elif projection.get('plan_annotations') and gpr.day(item.get('date')):
             reason += ' На эту дату в исходном ГПР нет подписи численности; прежние диапазоны не перенесены.'
         edition = (projection.get('plan_source') or {}).get('edition') or {}
         if edition.get('date') and gpr.day(item.get('date')) and item['date'] < edition['date']:
