@@ -15,7 +15,8 @@ import re
 import stat
 from contextlib import nullcontext
 
-SCHEMA = 'contract-workforce-v2'
+SCHEMA = 'contract-workforce-v3'
+REPORTS_NOT_LOADED = 'Сводки бота не загружены; наличие отчёта и фактическая численность не проверены.'
 CATEGORIES = ('workers', 'itr')
 HEADERS = ('Дата', 'Рабочие: план', 'Рабочие: факт', 'Отклонение, чел.',
            'ИТР: план', 'ИТР: факт', 'Отклонение, чел.', 'Источники и пояснение')
@@ -174,7 +175,7 @@ def reports_revision(reports, cut):
     pinned = [{'date': r.get('date'), 'text': r.get('text'),
                'parsed': r.get('parsed'), 'contractors': r.get('contractors'),
                'source': r.get('source'), 'stored_at': r.get('stored_at')}
-              for r in reports if _day(r.get('date')) and r['date'] <= cut]
+              for r in reports if cut and _day(r.get('date')) and _day(r['date']) <= cut]
     return digest(sorted({digest(r) for r in pinned}))
 
 
@@ -390,6 +391,8 @@ def _binding(person, category, row, source, plans, peers, bindings, schedule):
         if owners == {row['id']}:
             return True, 'Сохранённая связь полного состава с договором и редакцией ГПР.', valid[0]['source']
         return False, 'Одна бригада или ИТР относятся к нескольким договорам; распределение не подтверждено.', None
+    if person['source'].get('contract_scope_confirmed') is False:
+        return False, 'Источник содержит численность подрядчика по направлению; полный состав по договору не подтверждён.', None
     if ids != {row['id']}:
         return False, 'Численность сообщения не распределена однозначно между договорами подрядчика.', None
     resources = plans.get(category) or [dict(r, label=r.get('name'))
@@ -423,11 +426,16 @@ def _binding(person, category, row, source, plans, peers, bindings, schedule):
 def project(schedule, reports, row, register, cut, *, source=None, existing_bindings=()):
     """Pure snapshot projection. No project-wide total or daily interpolation."""
     cut = _day(cut)
+    reports_loaded = reports is not None
+    reports = reports or ()
     source = source or (schedule or {}).get('source_identity') or {}
     result = {'schema': SCHEMA, 'cut': cut, 'contract_id': row.get('id'),
         'contract': row.get('contract'), 'contractor': row.get('contractor'),
         'plan_source': source, 'rows': [], 'note': NOTE, 'available': False,
-        'report_sources_revision': reports_revision(reports, cut),
+        'report_input_status': 'loaded' if reports_loaded else 'not_loaded',
+        'report_status_note': '' if reports_loaded else REPORTS_NOT_LOADED,
+        'report_sources_revision': reports_revision(reports, cut) if reports_loaded else None,
+        'company_observations': [], 'report_dates': sorted({_day(r.get('date')) for r in reports if cut and _day(r.get('date')) and _day(r['date']) <= cut}),
         'bindings_revision': digest(existing_bindings),
         'coverage': {'dates': 0, 'workers_pairs': 0, 'itr_pairs': 0, 'project_total': False}}
     if not cut or not _plan_bound(row, source):
@@ -489,7 +497,8 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
             item['combined_plan'] = plans['workers_and_itr']
             item['reasons'].append('В ГПР рабочие и ИТР объединены; раздельный план не выдуман.')
         if not by_date.get(date):
-            item['reasons'].append('На эту дату нет подходящей строки численности в сохранённых отчётах.')
+            item['reasons'].append('На эту дату нет подходящей строки численности в сохранённых отчётах.'
+                                   if reports_loaded else REPORTS_NOT_LOADED)
         if not plans:
             item['reasons'].append('На эту дату в ГПР нет подтверждённого календарного показателя численности; даты не интерполированы.')
         edition_date = (source.get('edition') or {}).get('date')
@@ -501,7 +510,8 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
     result['available'] = any(any(r.get(category + '_plan_sources') or r.get(category + '_fact') is not None
                                  for category in CATEGORIES) or r.get('combined_plan') for r in result['rows'])
     if not result['available']:
-        result['reason'] = ('В ГПР нет календарных строк численности; записи подрядчика в отчётах есть, '
+        result['reason'] = (REPORTS_NOT_LOADED if not reports_loaded else
+            'В ГПР нет календарных строк численности; записи подрядчика в отчётах есть, '
             'но состав по этому договору не распределён.' if by_date else
             'В ГПР нет календарных строк численности и в сохранённых отчётах нет применимого состава этого договора.')
         if result['company_observations']:
@@ -514,10 +524,12 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
 
 
 def company_rows(projection):
-    """Supplemental source observations, never a contract allocation or total."""
-    if projection.get('available'):
-        return []
-    found, single, by_date = [], False, {}
+    """One source observation per row, shared by the PAGE and workbook.
+
+    A contract resource plan does not suppress unallocated company reports.
+    Different source records remain separate even when their counts agree.
+    """
+    found, by_date = [], {}
     for item in projection.get('rows') or []:
         if (not _day(item.get('date')) or
                 projection.get('cut') and item['date'] > projection['cut']):
@@ -530,27 +542,23 @@ def company_rows(projection):
             if candidate.get('personnel_key'):
                 by_date.setdefault(item['date'],[]).append(candidate)
     for date, values in sorted(by_date.items()):
-        # Only identical source records are duplicates. Different source keys
-        # or conflicting values stay separate even when their counts match.
         candidates = list({digest(candidate):candidate for candidate in values}.values())
-        if not candidates:
-            continue
-        row = {'date':date,'workers':None,'itr':None,'candidates':candidates,
-               'reason':'Несколько строк подрядчика на дату; численность не суммируется.'}
-        if len(candidates) == 1:
-            candidate = candidates[0]
+        for candidate in candidates:
+            row = {'date':date,'workers':None,'itr':None,'candidates':[candidate]}
             reasons = []
             for key,label in (('workers','Рабочие'),('itr','ИТР')):
                 value = candidate.get(key)
                 if (candidate.get(key+'_present') is True and type(value) in (int,float)
                         and math.isfinite(value) and value >= 0 and not (candidate.get('ambiguities') or {}).get(key)):
                     row[key] = value
-                    single = True
                 else:
                     reasons.append(label+': категория не подтверждена.')
-            row['reason'] = 'Одна запись подрядчика на дату. По договорам повторно не суммировать. План не сопоставлен.'+(' '+' '.join(reasons) if reasons else '')
-        found.append(row)
-    return found if single else []
+            row['reason'] = (str(candidate.get('party') or 'Подрядчик')+
+                '. Отдельная запись источника; с другими строками не суммируется. '
+                'По договорам повторно не суммировать. План не сопоставлен.'+
+                (' '+' '.join(reasons) if reasons else ''))
+            found.append(row)
+    return found
 
 
 def from_cached(project_name, row, register, cut, gpr_state, *, existing_bindings=()):
@@ -621,13 +629,15 @@ def write_sheet(workbook, projection):
             *[item.get(category+'_'+field) for category in CATEGORIES for field in ('plan','fact','delta')],
             '\n'.join(dict.fromkeys(notes))])
         row=sheet.max_row;sheet.cell(row,1).number_format='dd.mm.yyyy'
+        for target,planned,actual in (('D','B','C'),('G','E','F')):
+            sheet[target+str(row)]='=IF(COUNT('+planned+str(row)+':'+actual+str(row)+')=2,'+actual+str(row)+'-'+planned+str(row)+',"")'
         sources={'plan':projection.get('plan_source'),'date':item.get('date'),'sources':item.get('sources'),
                  'candidates':item.get('candidates')}
         sheet.cell(row,8).comment=Comment(json.dumps(sources,ensure_ascii=False,sort_keys=True),'DevelopAid')
         sheet.row_dimensions[row].height=min(180,max(44,14*(1+len(sheet.cell(row,8).value)//65+sheet.cell(row,8).value.count('\n'))))
     for cells in sheet:
         for cell in cells:
-            if isinstance(cell.value, str):
+            if isinstance(cell.value, str) and not (cell.row > 5 and cell.column in (4,7) and cell.data_type == 'f'):
                 cell.data_type = 's'
             cell.alignment=Alignment(wrap_text=True,vertical='top')
             if cell.row != 5:cell.font=Font(name='Calibri',size=10)
