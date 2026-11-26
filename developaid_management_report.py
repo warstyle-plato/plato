@@ -4083,11 +4083,15 @@ def _works_html(block: dict[str, Any], kind: str) -> str:
 
 
 def _photos_html(block: dict[str, Any], kind: str) -> str:
-    """Фото со стройки, отмеченные на странице сводки. Не отмечено — блока нет."""
+    """Compressed daily selection; unreadable chosen photos have visible reasons."""
     esc = html.escape
     items = block.get("items") or []
-    if not items:
+    skipped = block.get('skipped') or []
+    if not items and not skipped:
         return ""
+    notice = '<p class="note">'+esc(block['notice'])+'</p>' if block.get('notice') else ''
+    problems = ('<ul class="photo-problems">'+''.join('<li>'+esc(_day(item.get('day')))+': '+esc(item['reason'])+'</li>'
+                 for item in skipped)+'</ul>') if skipped else ''
     cells = []
     for item in items:
         note = " · ".join(part for part in (_date(item["day"]).strftime("%d.%m.%Y"),
@@ -4095,7 +4099,7 @@ def _photos_html(block: dict[str, Any], kind: str) -> str:
         caption = (f"{esc(item['caption'])}<br>" if item.get("caption") else "")
         cells.append(f"<figure class='photo'><img src='{item['src']}' alt='{esc(item.get('caption') or 'фото со стройки')}'>"
                      f"<figcaption>{caption}<span class='note'>{esc(note)}</span></figcaption></figure>")
-    return (f"<h3>Фото со стройки за {PERIODS[kind]}</h3><div class='photos'>"
+    return (f"<h3>Фото со стройки за {PERIODS[kind]}</h3>"+notice+problems+"<div class='photos'>"
             + "".join(cells) + "</div>")
 
 
