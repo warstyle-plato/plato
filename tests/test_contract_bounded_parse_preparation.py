@@ -103,6 +103,10 @@ def test_one_pdf_operation_still_fails_closed_on_source_and_budget(pair, monkeyp
         files._json(path, {**record, 'reader': documents.READER_VERSION+1})
         with pytest.raises(files.ContractFilesProblem, match='Версия'):
             preparation.prepare(PROJECT, CUT)
+        before = path.read_bytes()
+        with pytest.raises((files.ContractFilesProblem, contracts.ContractProblem), match='Версия'):
+            contracts.build(PROJECT, CUT, include_history=False)
+        assert path.read_bytes() == before, 'The initial register cannot silently downgrade a future reader.'
         assert files._stored(path)['reader'] == documents.READER_VERSION+1
         return
     plan = preparation.prepare(PROJECT, CUT)
@@ -139,8 +143,14 @@ def test_native_api_exposes_preparation_only_as_authenticated_bounded_job(pair, 
     assert route.endpoint.__name__ == 'monitor_contract_parse_refresh'
     monkeypatch.setattr(main.core, '_require_admin_key', lambda *args: None)
     monkeypatch.setattr(main.core, '_env_str', lambda key, default='': 'synthetic-admin' if key == 'DEVELOPAID_ADMIN_KEY' else default)
-    response = client.post('/monitor/contracts/parse-refresh', json={'key': 'synthetic-admin',
-        'session': 'synthetic-session', 'project': PROJECT, 'cut': CUT, 'expected_guard': ''})
+    body = {'key': 'synthetic-admin', 'session': 'synthetic-session', 'project': PROJECT,
+            'cut': CUT, 'expected_guard': '', 'ticket': 'e'*32}
+    calls, native = [], preparation.prepare
+    def observed(*args, **kwargs):
+        calls.append(True)
+        return native(*args, **kwargs)
+    monkeypatch.setattr(preparation, 'prepare', observed)
+    response = client.post('/monitor/contracts/parse-refresh', json=body)
     assert response.status_code in {200, 202}, response.text
     value = response.json()
     assert isinstance(value['ticket'], str)
@@ -152,3 +162,81 @@ def test_native_api_exposes_preparation_only_as_authenticated_bounded_job(pair, 
         value = client.post('/monitor/contracts/result', json={'key': 'synthetic-admin',
             'session': 'synthetic-session', 'ticket': value['ticket']}).json()
     assert value.get('ok') is True and value['parse_refresh']['remaining'] == 2, value
+    repeated = client.post('/monitor/contracts/parse-refresh', json=body)
+    assert repeated.json()['parse_refresh'] == value['parse_refresh'] and len(calls) == 1
+    denied = client.post('/monitor/contracts/result', json={'key': 'synthetic-admin',
+        'session': 'different-owner', 'ticket': body['ticket']})
+    assert denied.status_code == 404
+    invalid = client.post('/monitor/contracts/parse-refresh', json={**body, 'force': True})
+    assert invalid.status_code == 422
+
+
+def test_default_budget_prepares_forty_documents_and_preserves_approved_price(pair, monkeypatch):
+    import main
+    folder, price_sha, state = source_set(pair, monkeypatch, 40)
+    assert files.MAX_PARSE_REFRESH_FILES == 64
+    before = {p.name: p.read_bytes() for p in folder.glob('*.json')}
+    with pytest.raises(files.ParseRefreshRequired):
+        contracts.build(PROJECT, CUT, include_history=False)
+    failed = main.core._monitor_cumulative_execute('view', {'project': PROJECT, 'cut': CUT})
+    assert failed.get('ok') is False and failed.get('parse_refresh_required') is True
+    assert {p.name: p.read_bytes() for p in folder.glob('*.json')} == before
+    plan = preparation.prepare(PROJECT, CUT)
+    assert plan['remaining'] == 40
+    for remaining in range(39, -1, -1):
+        plan = preparation.prepare(PROJECT, CUT, plan['guard'])
+        assert plan['remaining'] == remaining and plan['processed'] == 1
+    assert plan['done'] and journal.load(PROJECT) == state
+    row, = contracts.build(PROJECT, CUT, include_history=False)['rows']
+    assert row['amount'] == 2000 and row['source_correction']['fresh']
+    assert files._stored(folder/(price_sha+'.json'))['reader'] == documents.READER_VERSION
+
+
+def test_added_archive_with_same_contract_roster_invalidates_finite_plan(pair, monkeypatch):
+    import datetime as dt
+    import developaid_monitor_ledgers as ledgers
+    from tests.test_contract_logical_ownership import changed_book
+    from tests.test_closing_summary_contracts import closing_book
+    from tests.test_monitor_cumulative_ledgers import archive
+    folder, _, state = source_set(pair, monkeypatch, 2)
+    plan = preparation.prepare(PROJECT, CUT)
+    before = {p.name: p.read_bytes() for p in folder.glob('*.json')}
+    previous_namespace = ledgers.snapshot_job_context(PROJECT)
+    same_identity = changed_book(closing_book(reference='Дог. № SOURCE-B от 01.01.26'),
+        {'D7': 3, 'E7': dt.date(2026,5,31), 'F7': 81}, {'C8': 1501, 'F8': 381})
+    ledgers.store_archive(PROJECT, archive([('Earlier-summary.xlsx', same_identity)]),
+                          '2026-11-10', 'new-source.zip')
+    assert ledgers.snapshot_job_context(PROJECT) == previous_namespace
+    with pytest.raises(preparation.PreparationChanged):
+        preparation.prepare(PROJECT, CUT, plan['guard'])
+    assert {p.name: p.read_bytes() for p in folder.glob('*.json')} == before
+    assert journal.load(PROJECT) == state
+
+
+def test_preparation_api_bounds_and_strictly_parses_declared_and_streamed_json(pair, monkeypatch):
+    import asyncio
+    import json
+    import httpx2 as httpx
+    import main
+    source_set(pair, monkeypatch, 2)
+    monkeypatch.setattr(main.core, '_env_str', lambda key, default='':
+        'synthetic-admin' if key == 'DEVELOPAID_ADMIN_KEY' else default)
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url='http://test.invalid') as client:
+            body = {'key': 'synthetic-admin', 'session': 'synthetic-session', 'project': PROJECT,
+                    'cut': CUT, 'expected_guard': '', 'ticket': 'c'*32}
+            duplicate = json.dumps(body)[:-1]+',"expected_guard":""}'
+            response = await client.post('/monitor/contracts/parse-refresh', content=duplicate,
+                                          headers={'content-type': 'application/json'})
+            assert response.status_code == 422
+            raw = json.dumps({**body, 'ticket': 'd'*(70*1024)}).encode()
+            response = await client.post('/monitor/contracts/parse-refresh', content=raw,
+                                          headers={'content-type': 'application/json'})
+            assert response.status_code == 413
+            async def chunks():
+                for index in range(0, len(raw), 4096):
+                    yield raw[index:index+4096]
+            response = await client.post('/monitor/contracts/parse-refresh', content=chunks(),
+                                          headers={'content-type': 'application/json'})
+            assert response.status_code == 413
+    asyncio.run(run())
