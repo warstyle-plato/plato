@@ -84,6 +84,17 @@ _ENDPOINT_PAYLOADS = {
     ("POST", "/monitor/contracts/comparison.xlsx"): {
         "cut": "2036-08-19", "ticket": "1" * 32, "contract_id": "a" * 64,
         "revision": "b" * 64, "selected_tokens": []},
+    ("POST", "/monitor/contracts/gpr-change"): {
+        "cut": "2036-08-19", "contract_id": "a" * 64, "source_sha256": "b" * 64,
+        "expected_guard": "c" * 64, "action": "anchor", "note": "Synthetic guarded GPR date fixture."},
+    ("POST", "/monitor/contracts/gpr.xlsx"): {
+        "cut": "2036-08-19", "ticket": "1" * 32, "contract_id": "a" * 64, "revision": "b" * 64},
+    ("POST", "/monitor/contracts/disk/scan"): {
+        "cut": "2036-08-19", "source": "https://disk.yandex.ru/d/synthetic-auth-fixture"},
+    ("POST", "/monitor/contracts/disk/stage"): {
+        "cut": "2036-08-19", "revision": "a" * 64, "item_ids": ["b" * 64]},
+    ("POST", "/monitor/contracts/disk/apply"): {
+        "cut": "2036-08-19", "stage_token": "c" * 64, "taken_at": "2036-08-19"},
     ("POST", "/monitor/contracts/document-upload"): {"contract_id": "a" * 64},
     ("POST", "/monitor/contracts/pdf-intake/preview"): _PDF_INTAKE_PAYLOAD,
     ("POST", "/monitor/contracts/pdf-intake/commit"): {

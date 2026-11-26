@@ -150,8 +150,18 @@ def test_a_fixed_numbering_brings_the_choice_back_to_the_owner(card):
     files.save_links(PROJECT, CONTRACT, card, 0, [{"index": 0, "lines": ["1.1, повтор"]}], cut="2026-02-04")
     fixed = tuple(("2" if code == "1" and "Ограждения" in name else "2.1" if "ОГ-1" in name else code,
                    name, start, finish, bar) for code, name, start, finish, bar in LINES)
-    files.store(PROJECT, ROW, "ГПР исправленный.pdf", schedule_pdf(lines=fixed))
-    fence = _positions(files.listing(PROJECT, CONTRACT, "2026-02-04"))["1.1"]
+    replacement = files.store(PROJECT, ROW, "ГПР исправленный.pdf", schedule_pdf(lines=fixed,
+        title=("к Договору подряда № 12-ТСТ от 01.09.2025",)))
+    pending = files.listing(PROJECT, CONTRACT, "2026-02-04")
+    # The owner's old line choice remains valid under the old active graph
+    # until the corrected exact-source graph is explicitly accepted.
+    assert _positions(pending)["1.1"]["status"] == "confirmed"
+    import developaid_contract_gpr as gpr
+    selected = gpr.save(PROJECT, ROW, "2026-02-04", replacement["sha256"], pending["gpr"]["guard"],
+        "activate", "Synthetic corrected-source signature reference, page 1", "synthetic-owner",
+        counterparty_signed=True)
+    assert selected["gpr"]["source"]["sha256"] == replacement["sha256"]
+    fence = _positions(selected)["1.1"]
     assert fence["status"] != "confirmed" and fence["carry"].startswith(
         "Подтверждённая ранее связь не перенесена: в действующем графике нет строки 1.1, повтор «(ОГ-1) Ограждение "
         "балконов»")

@@ -189,7 +189,8 @@ def test_native_page_keeps_work_and_delivery_rows_and_unknowns_visible(source_ca
 @pytest.mark.parametrize('operation',['view','documents'])
 @pytest.mark.parametrize('prior_revision',[None,'contract-full-value-v1','contract-full-value-ks-source-fallback-v1',
                                           'contract-full-value-ks-source-fallback-v2',
-                                          'contract-full-value-ks-source-fallback-v3','contract-rds-plan-fact-v1','contract-rds-plan-fact-v2'])
+                                          'contract-full-value-ks-source-fallback-v3','contract-rds-plan-fact-v1','contract-rds-plan-fact-v2',
+                                          'contract-rds-plan-fact-v3','contract-gpr-calendar-rds-plan-fact-v4'])
 def test_old_method_ticket_is_immutable_but_cannot_readmit_or_replace_fresh_calculation(api,monkeypatch,operation,prior_revision):
     import developaid_management_report_jobs as jobs
     from tests.test_monitor_cumulative_api import post,poll,core,KEY

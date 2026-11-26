@@ -93,11 +93,34 @@ def _first(read, *names):
 
 
 def _days(line):
+    segments = dated_segments(line)
+    if segments:
+        return sum((finish-start).days+1 for start, finish in segments)
     try:
         start, finish = dt.date.fromisoformat(line["start"]), dt.date.fromisoformat(line["finish"])
     except (KeyError, TypeError, ValueError):
         return 0
     return max(0, (finish - start).days + 1)
+
+
+def dated_segments(line):
+    """Union of occupied source days, preserving real gaps between bars."""
+    result = []
+    for segment in line.get('segments') or []:
+        try:
+            begin, end = dt.date.fromisoformat(segment['start']), dt.date.fromisoformat(segment['finish'])
+        except (KeyError, TypeError, ValueError):
+            return []
+        if end < begin:
+            return []
+        result.append((begin, end))
+    merged = []
+    for begin, end in sorted(result):
+        if merged and begin <= merged[-1][1]+dt.timedelta(days=1):
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((begin, end))
+    return merged
 
 
 def duration_shares(lines):

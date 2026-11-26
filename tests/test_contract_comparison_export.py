@@ -59,7 +59,7 @@ def test_native_known_values_zero_units_and_dates_survive_roundtrip():
     assert sheet.cell(6,14).value == 'Отставание на дату среза, дни'
     assert sheet.cell(header+1,14).number_format.startswith('[Red]+0')
     assert 'плюс — отставание' in sheet['N6'].comment.text
-    assert sheet.freeze_panes == 'D7' and sheet.auto_filter.ref.startswith('A6:P')
+    assert sheet.freeze_panes is None and sheet.auto_filter.ref.startswith('A6:P')
     assert sheet.page_setup.orientation == 'landscape' and str(sheet.page_setup.paperSize) == sheet.PAPERSIZE_A3
     assert all(cell.data_type not in ('f','e') for row in sheet for cell in row)
     assert cached == before
@@ -345,3 +345,11 @@ def test_sync_export_writer_is_offloaded_and_does_not_block_the_event_loop(route
         status, body = await running
         assert status == 200 and body.startswith(b"PK")
     asyncio.run(exercise())
+
+
+def test_previous_export_v4_schema_cannot_be_reused_as_current_snapshot():
+    cached=native_card();binding=cached['comparison_export']
+    assert binding['schema']==export.SCHEMA and export.SCHEMA!='contract-rds-plan-fact-export-v4'
+    cached['comparison_export']={**binding,'schema':'contract-rds-plan-fact-export-v4'}
+    with pytest.raises(export.ExportProblem,match='Версия таблицы изменилась'):
+        export.select_snapshot(cached,PROJECT,binding['cut'],CONTRACT,binding['revision'],binding['row_tokens'])

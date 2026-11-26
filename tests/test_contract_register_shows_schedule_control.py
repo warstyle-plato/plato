@@ -34,12 +34,17 @@ def _register():
 
 def assert_behind_with_scope(observed):
     assert {key: observed[key] for key in BEHIND} == BEHIND
-    assert set(observed) == set(BEHIND) | {'coverage', 'forecast_scope', 'whole_contract_finish', 'data_gaps', 'confirmation', 'components', 'act_evidence'}
+    assert set(observed) == set(BEHIND) | {'coverage', 'forecast_scope', 'whole_contract_finish', 'data_gaps', 'confirmation', 'components', 'act_evidence', 'gpr_binding', 'statement_summary'}
+    native_gpr = files.listing(PROJECT, CONTRACT, CUT, fact.acts(REGISTER_ROW))["gpr"]
+    assert observed['gpr_binding'] == {key: native_gpr[key] for key in
+        ('project', 'contract_id', 'guard', 'document_source_ids', 'source')}
     # В карточке нет КС-2: прочитанный подытог 0 не становится итогом документов.
     assert observed['act_evidence'] == {'acts': [], 'count': 0, 'total': None,
                                         'known_total': 0.0, 'unread_count': 0}
     assert observed['components']['work']['readiness'] == observed['readiness']
     assert observed['components']['material']['amount'] == 0
+    # No typed source-file/period cash proof is present in this fixture.
+    assert observed['statement_summary'] is None
     assert observed['confirmation']['upload_required'] is True
     coverage = observed['coverage']
     assert (coverage['calculated'], coverage['source_works'], coverage['source_rows'], coverage['unknown']) == (3, 4, 6, 1)

@@ -69,6 +69,7 @@ def build(listed: dict, cut: str, source_sha256: str | None = None) -> dict:
               'data_gaps': canonical.get('data_gaps') or [],
               'confirmation': canonical.get('confirmation'),
               'act_evidence': canonical.get('act_evidence'),
+              'statement_summary': canonical.get('statement_summary'),
               'left_out': canonical.get('left_out'), 'preliminary': canonical.get('preliminary',False),
               'schedule_source': canonical.get('schedule_source'),
               'assumption': canonical.get('assumption') or '', 'weights': canonical.get('weights') or '',

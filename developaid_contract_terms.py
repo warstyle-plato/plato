@@ -26,6 +26,24 @@ def read(texts: list[str]) -> dict:
     for page, raw in enumerate(texts, 1):
         text = _space(raw)
         parsed_starts = set()
+        duration = re.compile(_END + r'\s*[–—:\-]?\s*(?:не\s+позднее\s+|в\s+течение\s+|через\s+)?'
+                              r'(\d{1,4})\s*(?:\([^)]{1,100}\))?\s*'
+                              r'(?:(календарн\w*|рабоч\w*)\s+)?дн(?:ей|я|ь)\s+с\s+дат[ыа]\s+начала\s+работ', re.I)
+        for match in duration.finditer(text):
+            start = re.search(r'срок\s+начала\s+работ\s*[–—:\-]\s*([^.;]{1,500})', text, re.I)
+            quote = (start[0]+'. ' if start else '') + match[0]
+            triggers = []
+            if start and re.search(r'оплат\w*\s+аванс', start[1], re.I):
+                triggers.append('paid_advance')
+            if start and re.search(r'акт\w*\s+передач\w*\s+строительн\w*\s+площадк', start[1], re.I):
+                triggers.append('signed_site_handover')
+            kind = 'working' if match[2] and match[2].lower().startswith('рабоч') else 'calendar' if match[2] else 'unspecified'
+            candidates.append({'value': None, 'page': page, 'clause': '', 'quote': quote,
+                               'conditional': True, 'duration_days': int(match[1]), 'days_kind': kind,
+                               'start_conditions': triggers, 'start_quote': start[0] if start else ''})
+            parsed_starts.add(match.start())
+            warnings.append(f'Стр. {page}: срок задан как {match[1]} дней от начала работ. '
+                            'Календарный юридический срок не подтверждён без всех условий начала.')
         for match, date_text in ([(m, m[1]) for m in exact.finditer(text)] +
                                  [(m, m[2]) for m in moved.finditer(text)]):
             parsed_starts.add(match.start())
@@ -45,6 +63,8 @@ def read(texts: list[str]) -> dict:
                                r'в\s+соответствии|по)\b[^.;]{0,90}график\w*\s+производства\s+работ', re.I)
         references = [m for m in reference.finditer(text)
                       if not re.search(r'кажд\w*|корпус\w*|отдельн\w*|этап\w*', m[0], re.I)]
+        references.extend(re.finditer(r'сроки\s+выполнения\s+работ\s+(?:установлены|определены)\s+в\s+'
+                                     r'графике\s+производства\s+работ(?:\s*\([^)]{0,150}\))?', text, re.I))
         for match in references:
             candidates.append({'value': None, 'page': page, 'clause': '',
                                'quote': text[match.start():min(len(text), match.end()+100)],
@@ -99,7 +119,8 @@ def _source(record, value):
     return {'kind': 'contract_document', 'label': label, 'sha256': record['sha256'],
             'page': value['page'], 'clause': value['clause'], 'quote': value['quote'],
             'conditional': value['conditional'], 'edition_date': _edition(record)[1],
-            'agreement': record.get('agreement')}
+            'agreement': record.get('agreement'),
+            **{key: value[key] for key in ('duration_days', 'days_kind', 'start_conditions', 'start_quote') if key in value}}
 
 
 def _referenced_schedule(records, cut):
