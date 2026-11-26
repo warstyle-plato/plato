@@ -371,7 +371,7 @@ def test_operation_chart_refuses_unattributable_or_money_only_facts(defect):
     shown = export.presentation(schedule, {}, '2026-02-25', positions)
     refused = next(row for row in shown['positions'] if row['position_key'] == [0, 0])
     assert not any(bar['state'] in {'fact', 'lag'} for bar in refused['bars'])
-    assert refused['earned_equivalent'] is None
+    assert not refused['reporting']['bars']
     if defect == 'unproved_days':
         assert refused['quantity']['fact_quantity'] == 40, 'An unavailable time projection does not remove a known quantity.'
 
@@ -569,10 +569,12 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         assert page.locator('.contract-gpr-track rect[fill="#E06666"]').count() == 0
         assert page.locator('.contract-gpr-progress-fill').count() == 1
         assert page.locator('.contract-gpr-progress-gap').count() == 1
-        assert page.locator('.contract-gpr-equivalent-track[data-track="earned-plan-equivalent"] rect[data-model-state="earned_volume"]').count() > 0
-        assert page.locator('.contract-gpr-equivalent-track rect[data-model-state="quantity_shortfall"]').count() > 0
-        expect(page.locator('.contract-gpr-equivalent-note')).to_contain_text('не фактические даты')
-        assert page.locator('.contract-gpr-track rect[fill="#9DC3E6"]').count() == 2
+        # Owner refinement: one report-state plan track replaces the old
+        # earned-duration model. Missing period quantities cannot paint history.
+        assert page.locator('.contract-gpr-equivalent-track').count() == 0
+        assert page.locator('[data-report-state]').count() == 0
+        expect(page.locator('.contract-gpr-report-note').first).to_contain_text('не восстановлены')
+        assert page.locator('.contract-gpr-track rect[fill="#D9D9D9"]').count() == 2
         expect(page.locator('#contractGprBody')).to_contain_text('не подтверждает даты производства')
         page.screenshot(path=str(tmp_path/f'gpr-physical-projection-{width}.png'), full_page=True)
         child_listed, child_rds, child_schedule = operation_projection_case()

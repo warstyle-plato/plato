@@ -17,19 +17,13 @@ from openpyxl.utils import get_column_letter
 import developaid_contract_gpr as gpr
 import developaid_contract_comparison_export as rds_export
 import developaid_contract_workforce as workforce
+import developaid_contract_gpr_reporting as reporting
 from developaid_contract_rds import LAYOUT
 
 SCHEMA = 'contract-gpr-performance-xlsx-v5'
-PRESENTATION_SCHEMA = 'contract-gpr-earned-plan-equivalent-v3'
-COLORS = {'plan': '9DC3E6', 'fact': '70AD47', 'lag': 'E06666', 'unknown': 'D9D9D9'}
-LEGEND = ('Синие и серые полосы календаря — исходный план и его разрывы. '
-          'Зелёная шкала 0–100% показывает накопленный физический объём отдельно от календаря; '
-          'Отдельная полоса «Выполненный объём в шкале плана» — модель равномерного выполнения по активным '
-          'интервалам ГПР: зелёный — эквивалент накопленного объёма, красный — недобор до расчётного плана на срез. '
-          'Зелёный после среза означает опережение этого равномерного плана, а не будущие фактические работы. '
-          'Остаток плана после среза не окрашивается красным. '
-          'Накопленный объём не подтверждает даты или непрерывность производства работ. '
-          'Чёрная линия — дата среза данных; оранжевая — сегодня. Деньги не заменяют физический объём.')
+PRESENTATION_SCHEMA = 'contract-gpr-report-periods-v4'
+COLORS = reporting.COLORS
+LEGEND = reporting.LEGEND
 
 
 def filename(project, contract, cut):
@@ -208,6 +202,12 @@ def deadline_status(line, progress, cut):
     if not progress:
         return {'state':'overdue_unknown', 'days_after_planned_finish':days,
                 'text':'Срок прошёл; выполнение не подтверждено. После планового срока: '+str(days)+' дн.'}
+    observed_dates = [gpr.day(value) for value in progress.get('source_dates') or []]
+    observed_dates = [value for value in observed_dates if value and value <= date]
+    if not observed_dates or max(observed_dates) <= finish:
+        return {'state':'deadline_passed_unconfirmed','days_after_planned_finish':days,
+                'text':'Срок прошёл; завершение не подтверждено свежим отчётом. Последний источник: '+
+                       (max(observed_dates).isoformat() if observed_dates else 'дата не подтверждена')+'.'}
     if progress['planned_fraction'] is None:
         return {'state':'deadline_comparison_unconfirmed','days_after_planned_finish':days,
                 'text':'Плановый срок прошёл; сопоставление известного объёма с этим сроком не подтверждено.'}
@@ -217,58 +217,6 @@ def deadline_status(line, progress, cut):
             'remaining_quantity':remaining,'remaining_fraction':fraction,'unit':progress['unit'],
             'text':'Не завершено к плановому сроку: остаток '+format(remaining,'.15g')+' '+progress['unit']+
                    ' ('+format(fraction*100,'.1f')+'%); после планового срока '+str(days)+' дн.'}
-
-
-def earned_plan_equivalent(parts, progress, overlay, cut_offset):
-    """Uniform-plan volume equivalence, explicitly not production-date history."""
-    if (not progress or not overlay or progress['planned_fraction'] is None
-            or cut_offset is None or not parts):
-        return None
-    total = sum(end-begin for begin,end in parts)
-    if total <= 0:
-        return None
-    earned = total*min(progress['fraction'],1)
-    due = total*progress['planned_fraction'] if progress['planned_fraction'] is not None else None
-    bars, consumed = [], 0
-    for begin,end in parts:
-        amount = min(end-begin,max(earned-consumed,0))
-        if amount > 0:
-            bars.append({'start':begin,'end':begin+amount,'state':'earned_volume'})
-        if due is not None:
-            left, right = max(earned-consumed,0), min(end-begin,due-consumed)
-            # The model shortfall is due at this data cut, never the future
-            # remainder. This boundary is independent of today's clock.
-            right = min(right,cut_offset+1-begin)
-            if right > left:
-                bars.append({'start':begin+left,'end':begin+right,'state':'quantity_shortfall'})
-        consumed += end-begin
-    return {'basis':'earned_plan_equivalent','label':'Выполненный объём в шкале плана',
-            'assumption':'Равномерно по активным интервалам ГПР; разрывы исключены. Это не фактические даты работ.',
-            'production_history_available':False,'cut':progress['cut'],'bars':bars,
-            'fact_fraction':progress['fraction'],'planned_fraction':progress['planned_fraction'],
-            'delta_pp':progress['delta_pp']}
-
-
-def equivalent_cell_states(model,ticks):
-    """Midpoint samples of the separately labelled model, never source-plan fills."""
-    if not model or model.get('basis') != 'earned_plan_equivalent' or not ticks:
-        return {}
-    origin = gpr.day(ticks[0].get('start'))
-    if not origin:
-        return {}
-    result = {}
-    for index,tick in enumerate(ticks):
-        begin,end = gpr.day(tick.get('start')),gpr.day(tick.get('finish'))
-        if not begin or not end:
-            continue
-        middle = ((begin-origin).days+(end-origin).days+1)/2
-        for bar in model['bars']:
-            if bar['start'] <= middle < bar['end']:
-                if bar['state'] == 'quantity_shortfall' and tick['finish'] > model['cut']:
-                    continue
-                result[index] = bar['state']
-                break
-    return result
 
 
 def ordered_positions(positions, cut=''):
@@ -354,8 +302,7 @@ def presentation(schedule, overlays, cut, positions=(), *, statement=None, sourc
                      'duration_printed': line.get('duration_printed'), 'relative_unit': line.get('relative_unit'),
                      'page': line.get('page'), 'bars': bars, 'physical': overlay,
                      'progress': progress, 'deadline_status': deadline_status(line,progress,cut),
-                     'earned_equivalent': earned_plan_equivalent(parts,progress,overlay,
-                         (gpr.day(cut)-first).days if first and gpr.day(cut) else None),
+                     'reporting': reporting.project(line,progress,parts,first.isoformat() if first else None,cut),
                      **{key: line[key] for key in ('number', 'section', 'position_key', 'gpr_code', 'quantity', 'note') if key in line}})
     projected = (presentation({**schedule, 'lines': positions}, position_overlays, cut, source_dates=source_dates, _ticks=ticks)['rows']
                  if positions else [])
@@ -494,7 +441,7 @@ def workbook(meta, cached):
     text_rows = ['ГПР · '+(label.get('contract') or 'Договор')+' · '+(label.get('contractor') or ''),
         'Проект: '+meta['project']+' · Редакция ГПР: '+_edition_label(source),
         'Срез: '+gpr.day(meta['cut']).strftime('%d.%m.%Y')+' · Источник выполнения: '+_fact_source_label(comparison),
-        '«Исходный план» — календарь. «Выполненный объём в шкале плана» — отдельная модель объёма, не даты выполнения.']
+        'Серый — план; зелёный — план выполнен на отчётную дату; жёлтый — отставание; красный — работа не завершена после срока ГПР.']
     statement = statement_projection(comparison)
     if statement:
         text_rows[3:3] = ['\n'.join(statement_text(statement))]
@@ -560,27 +507,26 @@ def workbook(meta, cached):
             text = 'Срок ещё не прошёл.'
         cell.value = str(cell.value or '')+'\n'+text
         if status['state'] == 'overdue_incomplete':
-            sheet.cell(row,2).font = Font(name='Calibri',size=10,bold=True,color=COLORS['lag'])
-        elif status['state'] in {'overdue_unknown','deadline_comparison_unconfirmed'}:
+            sheet.cell(row,2).font = Font(name='Calibri',size=10,bold=True,color=COLORS['overdue'])
+        elif status['state'] in {'overdue_unknown','deadline_comparison_unconfirmed','deadline_passed_unconfirmed'}:
             sheet.cell(row,2).font = Font(name='Calibri',size=10,color='9C6500')
-    def write_equivalent(row,line):
+    def write_reporting(row,line):
         view = views[line['code']]
-        model = view.get('earned_equivalent')
+        model = view.get('reporting')
         if not model:
-            return row
-        put(row,2,'Выполненный объём в шкале плана · модель, не даты выполнения')
-        put(row,6,model['assumption'])
-        sheet.cell(row,2).comment = Comment(json.dumps({**identity(line,'earned_plan_equivalent'),
-            'basis':model['basis'],'production_history_available':False,'cut':model['cut']},ensure_ascii=False),'DevelopAid')
-        for column in range(7,end_column+1):
-            sheet.cell(row,column).border = Border(bottom=Side(style='thin',color='DCE6F1'))
-        for index,state_name in equivalent_cell_states(model,ticks).items():
+            return
+        sheet.cell(row,2).comment.text += '\n'+json.dumps({'reporting':model},ensure_ascii=False)
+        for index,bar in reporting.cell_states(model,ticks).items():
             cell = put(row,index+7,'')
-            cell.fill = PatternFill('solid',fgColor=COLORS['fact' if state_name=='earned_volume' else 'lag'])
-            cell.comment = Comment(json.dumps({**identity(line,'earned_plan_equivalent'),'state':state_name,
-                'cut':model['cut'],'not_actual_dates':True,'uniform_active_plan_segments':True},ensure_ascii=False),'DevelopAid')
-        sheet.row_dimensions[row].height = 42
-        return row+1
+            cell.fill = PatternFill('solid',fgColor=COLORS[bar['state']])
+            checkpoint = next((item for item in model['checkpoints'] if item['date']==bar['report_date']),model['current'])
+            title = {'fact':'План выполнен на дату отчёта','warning':'Отставание на дату отчёта',
+                     'overdue':'Не завершено после срока ГПР'}[bar['state']]
+            cell.comment = Comment(title+' · '+bar['report_date']+'\n'+json.dumps({
+                **identity(line,'report_state'),**bar,'checkpoint':checkpoint,'not_actual_dates':True},ensure_ascii=False),'DevelopAid')
+            if bar['range_kind'] in {'checkpoint','source_snapshot'}:
+                cell.value = '●'
+                cell.alignment = Alignment(horizontal='center',vertical='center')
     def write_positions(row):
         put(row, 2, 'Физический факт по позициям РДС — отдельно от общего процента конструкции')
         sheet.row_dimensions[row].height = 34
@@ -607,8 +553,8 @@ def workbook(meta, cached):
             for index, state_name in cell_states(line, ticks, line.get('physical'), meta['cut']).items():
                 put(row, index+7, '').fill = PatternFill('solid', fgColor=COLORS[state_name])
             sheet.row_dimensions[row].height = 78
+            write_reporting(row,line)
             row += 1
-            row = write_equivalent(row,line)
         return row
     row = write_positions(header+1) if positions else header+1
     if positions:
@@ -637,8 +583,8 @@ def workbook(meta, cached):
             ('\n'+progress_text(progress) if progress else '\nПригодного отдельного физического показателя нет.')), 'DevelopAid')
         sheet.cell(row,2).comment.text += '\n'+json.dumps(identity(line,'source_plan'),ensure_ascii=False)
         status_note(row,views[line['code']].get('deadline_status'))
+        write_reporting(row,line)
         row += 1
-        row = write_equivalent(row,line)
     row += 2
     for resource in schedule.get('resources') or []:
         put(row, 2, resource['name'])

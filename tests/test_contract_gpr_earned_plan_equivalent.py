@@ -1,5 +1,12 @@
-"""Earned volume is a labelled plan model, never dated production history."""
+"""Owner superseded earned-duration colouring with dated report-state colouring.
+
+The old tests intentionally allowed future green in a separate model track.
+The new contract keeps all future source-plan cells grey, with earned quantity
+reported numerically and independent warnings/expired-deadline states.
+"""
 import copy
+import datetime as dt
+import hashlib
 import io
 import json
 
@@ -8,137 +15,151 @@ from openpyxl import load_workbook
 
 import developaid_contract_gpr as gpr
 import developaid_contract_gpr_export as export
+import developaid_contract_gpr_reporting as reporting
 import developaid_contract_files as files
 from tests.test_contract_relative_gpr_calendar import card, change, ROW, PROJECT, CUT, operation_projection_case
 
 
-def view(fraction, planned=.5, *, start='2026-08-01', finish='2027-02-28', cut='2026-11-24', segments=None):
-    line = {'code':'G','name':'Учебный объём','start':start,'finish':finish}
-    if segments:
-        line['segments'] = segments
-    overlay = {'fact_fraction':min(fraction,1),'planned_fraction':planned,
-        'fact_quantity':fraction*100,'contract_quantity':100,'unit':'м2','lag_days':4}
-    return export.presentation({'lines':[line]},{'G':overlay},cut)['rows'][0]
+def event(quantity, end, start=None, *, label='КС-2 № 1', source=None):
+    witness = {'source':source or {'file_sha256':'a'*64,'row':1,'quantity_cell':'M1'},
+               'label':label,'start':start,'end':end}
+    return {**witness,'id':hashlib.sha256(json.dumps(witness,sort_keys=True,
+        ensure_ascii=False,separators=(',',':')).encode()).hexdigest(),
+        'quantity_kind':'increment','work_quantity':quantity,
+        'date_basis':'reported_period' if start else 'document_observation','preliminary':not bool(start)}
 
 
-def test_green_after_cut_is_closed_typed_volume_equivalence_not_calendar_fact():
-    row = view(.8155644465364399,116/212)
-    assert row['bars'] == [{'start':0,'end':212,'state':'plan'}]
-    model = row['earned_equivalent']
-    assert model['basis'] == 'earned_plan_equivalent' and model['production_history_available'] is False
-    assert 'не фактические даты' in model['assumption'] and 'активным интервалам' in model['assumption']
-    assert model['bars'][0]['end'] == pytest.approx(172.89966266572526)
-    assert model['bars'][0]['end'] > 116 and model['bars'][0]['state'] == 'earned_volume'
-    assert not any(bar['state']=='quantity_shortfall' for bar in model['bars'])
-    assert row['deadline_status']['state'] == 'not_due'
-    assert row['progress']['delta_pp'] == pytest.approx(26.83946352156852)
+def view(quantity=40, events=(), cut='2026-11-24', finish='2026-11-30', source_dates=(), segments=None):
+    line={'code':'G','name':'Физическая работа','start':'2026-11-01','finish':finish,
+          'reporting_events':list(events)}
+    if segments:line['segments']=segments
+    from developaid_contract_plan import done
+    planned=done(line,dt.date.fromisoformat(cut))
+    overlay={'fact_quantity':quantity,'contract_quantity':100,'unit':'м2',
+             'fact_fraction':quantity/100,'planned_fraction':planned,'lag_days':4}
+    return export.presentation({'lines':[line]},{'G':overlay},cut,source_dates=source_dates)['rows'][0]
 
 
-@pytest.mark.parametrize('fraction',[0,.25])
-def test_red_is_only_the_quantity_shortfall_to_data_cut_not_future_remainder(fraction):
-    row = view(fraction,116/212)
-    red = [bar for bar in row['earned_equivalent']['bars'] if bar['state']=='quantity_shortfall']
-    assert red == [{'start':fraction*212,'end':116,'state':'quantity_shortfall'}]
-    assert all(bar['end'] <= 116 for bar in red)
-    assert all(bar['state']=='plan' for bar in row['bars'])
+def test_initial_source_plan_is_grey_without_physical_report():
+    row=export.presentation({'lines':[{'code':'G','name':'Работа','start':'2026-11-01',
+        'finish':'2026-12-31'}]},{},'2026-11-24')['rows'][0]
+    assert row['bars']==[{'start':0,'end':61,'state':'unknown'}]
+    assert row['reporting']['bars']==[]
+    assert export.COLORS['plan']==export.COLORS['unknown']=='D9D9D9'
 
 
-def test_source_gaps_are_excluded_from_uniform_earned_and_shortfall_lengths():
-    row = view(.7,.75,finish='2026-09-10',cut='2026-09-05',segments=[
-        {'start':'2026-08-01','finish':'2026-08-10'},
-        {'start':'2026-09-01','finish':'2026-09-10'}])
-    assert row['earned_equivalent']['bars'] == [
-        {'start':0,'end':10,'state':'earned_volume'},
-        {'start':31,'end':35,'state':'earned_volume'},
-        {'start':35,'end':36,'state':'quantity_shortfall'}]
-    assert all(bar['end']<=10 or bar['start']>=31 for bar in row['earned_equivalent']['bars'])
+def test_yellow_old_period_survives_green_catchup_and_future_never_green():
+    before=[event(10,'2026-11-10','2026-11-01')]
+    first=view(10,before,cut='2026-11-10')['reporting']
+    latest=view(80,before+[event(70,'2026-11-20','2026-11-11',label='КС-2 № 2')])['reporting']
+    assert first['history_available'] and latest['history_available']
+    assert latest['checkpoints'][0]==first['checkpoints'][0]
+    assert [p['state'] for p in latest['checkpoints']]==['warning','fact']
+    assert [(bar['start'],bar['end'],bar['state']) for bar in latest['bars']]==[(0,10,'warning'),(10,20,'fact')]
+    assert all(bar['end']<=24 for bar in latest['bars'])
+    assert latest['current']['delta_pp']==pytest.approx(0)
 
 
-@pytest.mark.parametrize('fraction',[1,1.4])
-def test_known_full_or_excess_volume_never_claims_actual_completion_date_or_on_time(fraction):
-    row = view(fraction,0,start='2026-12-01')
-    model = row['earned_equivalent']
-    assert row['progress']['fraction'] == fraction and model['fact_fraction'] == fraction
-    assert sum(bar['end']-bar['start'] for bar in model['bars'] if bar['state']=='earned_volume') == 90
-    assert not any(bar['state']=='quantity_shortfall' for bar in model['bars'])
-    assert row['deadline_status']['state'] == 'quantity_complete_date_unknown'
-    assert row['deadline_status']['actual_finish'] is None and 'on_time' not in row['deadline_status']
+def test_overdue_is_red_only_after_dated_postdeadline_evidence():
+    row=view(40,[event(40,'2026-11-15','2026-11-01')],finish='2026-11-10')
+    red=[bar for bar in row['reporting']['bars'] if bar['state']=='overdue']
+    assert red and max(bar['end'] for bar in red)==15
+    assert red[-1]['range_kind']=='overdue_extension'
+    stale=view(40,finish='2026-11-20',source_dates=['2026-11-18'])
+    assert stale['deadline_status']['state']=='deadline_passed_unconfirmed'
+    assert stale['reporting']['current']['state']=='closure_unconfirmed'
+    assert not any(bar['state']=='overdue' for bar in stale['reporting']['bars'])
+    fresh=view(40,finish='2026-11-20',source_dates=['2026-11-23'])
+    assert fresh['deadline_status']['state']=='overdue_incomplete'
+    assert max(bar['end'] for bar in fresh['reporting']['bars'])==23
+    assert fresh['deadline_status']['days_after_planned_finish']==4
 
 
-def test_past_deadline_known_incomplete_has_remaining_quantity_and_elapsed_days():
-    row = view(.4,1,start='2026-10-01',finish='2026-10-31')
-    status = row['deadline_status']
-    assert status['state'] == 'overdue_incomplete'
-    assert (status['remaining_quantity'],status['remaining_fraction'],status['days_after_planned_finish']) == (60,.6,24)
-    assert all(bar['end']<=31 for bar in row['earned_equivalent']['bars'])
-    assert not any(bar['state'] in {'fact','lag'} for bar in row['bars'])
-    assert view(.4,1,finish='2026-11-24')['deadline_status']['state'] == 'not_due'
+def test_equal_deadline_is_yellow_and_complete_has_no_on_time_claim():
+    at=view(40,[event(40,'2026-11-10','2026-11-01')],cut='2026-11-10',finish='2026-11-10')
+    assert at['reporting']['checkpoints'][0]['state']=='warning'
+    complete=view(100,[event(100,'2026-11-15')],finish='2026-11-10')
+    assert complete['deadline_status']['state']=='quantity_complete_date_unknown'
+    assert complete['deadline_status']['actual_finish'] is None
+    assert all(p['state']=='fact' for p in complete['reporting']['checkpoints'])
+    assert 'actual_finish' not in complete['reporting'] and 'on_time' not in complete['reporting']
 
 
-def test_unknown_is_not_zero_or_proven_deficit_and_unattributable_quantity_has_no_date_model():
-    line = {'code':'G','name':'Неизвестный факт','start':'2026-10-01','finish':'2026-10-31'}
-    unknown = export.presentation({'lines':[line]},{},'2026-11-24')['rows'][0]
-    assert unknown['progress'] is unknown['earned_equivalent'] is None
-    assert unknown['deadline_status']['state'] == 'overdue_unknown'
-    assert 'remaining_quantity' not in unknown['deadline_status']
-    line.update(quantity={'fact_quantity':40,'contract_quantity':100,'unit':'м2','fraction':.4})
-    unbound = export.presentation({'lines':[line]},{},'2026-11-24')['rows'][0]
-    assert unbound['progress']['fraction'] == .4 and unbound['earned_equivalent'] is None
-    assert unbound['deadline_status']['state'] == 'deadline_comparison_unconfirmed'
-    assert 'remaining_quantity' not in unbound['deadline_status']
-    missing_plan=view(.4,None)
-    assert missing_plan['progress']['fraction']==.4 and missing_plan['earned_equivalent'] is None
+def test_document_date_without_report_start_is_only_one_point_not_smeared_interval():
+    row=view(80,[event(10,'2026-11-10'),event(70,'2026-11-20',label='КС-2 № 2')])
+    assert [(bar['start'],bar['end']) for bar in row['reporting']['bars']]==[(9,10),(19,20)]
+    assert all(p['date_basis']=='document_observation' for p in row['reporting']['checkpoints'])
 
 
-def test_relative_without_anchor_does_not_gain_calendar_equivalence():
-    line={'code':'G','name':'Относительный план','relative_segments':[{'start_day':1,'finish_day':7,'start_offset':0,'end_offset':7}]}
-    overlay={'fact_fraction':.5,'planned_fraction':None,'fact_quantity':50,'contract_quantity':100,'unit':'м2'}
-    row=export.presentation({'calendar_basis':'relative','columns':[{'period':1,'start_day':1,'finish_day':7}],
-        'lines':[line]},{'G':overlay},'2026-11-24')['rows'][0]
-    assert row['progress']['fraction']==.5 and row['earned_equivalent'] is None
+def test_latest_total_without_increments_cannot_reconstruct_previous_reports():
+    row=view(81.5,source_dates=['2026-11-18'])
+    model=row['reporting']
+    assert not model['history_available']
+    assert [(b['start'],b['end'],b['range_kind']) for b in model['bars']]==[(17,18,'source_snapshot')]
+    assert model['checkpoints'][0]['planned_fraction']==.6
+    assert model['current']['planned_fraction']==.8
+    assert model['checkpoints'][0]['date']=='2026-11-18'
+    no_dates=view(81.5)['reporting']
+    assert not no_dates['bars'] and not no_dates['checkpoints']
 
 
-def test_past_plan_clock_headroom_contains_current_timezone_days_without_extending_source():
-    schedule={'lines':[{'code':'G','name':'Прошлый план','start':'2026-08-17','finish':'2026-10-31'}]}
-    old=copy.deepcopy(schedule)
-    shown=export.presentation(schedule,{},'2026-11-24',_include_day='2026-11-25',_headroom_days=14)
-    assert shown['ticks'][-1]['finish']=='2026-12-09'
-    assert shown['start']=='2026-08-17' and schedule==old
-    row,=shown['rows']
-    assert row['bars']==[{'start':0,'end':76,'state':'unknown'}]
-    assert any(tick['start']<='2026-11-26'<=tick['finish'] for tick in shown['ticks'])
-    assert all(shown['ticks'][index]['finish']<='2026-10-31'
-        for index in export.cell_states(schedule['lines'][0],shown['ticks'],None))
+def test_known_zero_is_yellow_but_missing_quantity_is_grey():
+    zero=view(0,[event(0,'2026-11-10','2026-11-01')])['reporting']
+    assert zero['history_available'] and zero['checkpoints'][0]['state']=='warning'
+    missing=reporting.project({'finish':'2026-11-10'},None,[(0,10)],'2026-11-01','2026-11-24')
+    assert not missing['bars'] and missing['current'] is None
 
 
-def test_display_prioritises_overdue_but_does_not_reorder_original_rds():
-    listed,rds,schedule=operation_projection_case()
-    rds['rows'][0].update(start='2026-12-01',finish='2026-12-31')
-    positions=gpr.position_projections(listed,rds,schedule)
-    # Keep the accepted past source dates for the second (known-zero) row.
-    ordered=export.ordered_positions(positions,'2026-02-25')
-    assert ordered[0]['number']=='1.2'
-    assert [row['number'] for row in rds['rows']]==['1.1','1.2']
+def test_duplicates_not_double_counted_and_conflicting_id_is_not_history():
+    one=event(40,'2026-11-10','2026-11-01')
+    a=view(40,[one,copy.deepcopy(one)])['reporting']
+    assert a['history_available'] and a['checkpoints'][0]['fact_quantity']==40
+    b=view(40,[one,{**one,'work_quantity':90}])['reporting']
+    assert not b['history_available'] and not b['bars']
 
 
-def test_excel_source_plan_and_equivalent_are_distinct_rows_with_closed_provenance(card):
+@pytest.mark.parametrize('bad',[True,float('nan'),-1,None])
+def test_bad_increment_cannot_create_history(bad):
+    model=view(40,[event(bad,'2026-11-10')])['reporting']
+    assert not model['history_available'] and not model['bars']
+
+
+def test_future_and_cumulative_inputs_never_become_increments():
+    future=event(80,'2026-12-01')
+    current=event(40,'2026-11-10')
+    model=view(40,[future,current])['reporting']
+    assert model['history_available'] and [p['date'] for p in model['checkpoints']]==['2026-11-10']
+    bad=view(40,[{**current,'quantity_kind':'cumulative'}])['reporting']
+    assert not bad['history_available'] and not bad['bars']
+
+
+def test_gaps_remain_uncoloured_and_out_of_order_events_sort_by_report():
+    parts=[{'start':'2026-11-01','finish':'2026-11-10'}, {'start':'2026-11-21','finish':'2026-11-30'}]
+    events=[event(40,'2026-11-24','2026-11-21',label='КС-2 № 2'),event(10,'2026-11-10','2026-11-01')]
+    model=view(50,events,segments=parts)['reporting']
+    assert model['history_available']
+    assert [p['date'] for p in model['checkpoints']]==['2026-11-10','2026-11-24']
+    assert all(bar['end']<=10 or bar['start']>=20 for bar in model['bars'])
+
+
+def test_excel_has_one_main_plan_track_grey_future_and_report_comments(card):
     listed=change(files.listing(PROJECT,ROW['id'],CUT))
-    binding,rds,schedule=operation_projection_case();listed['plan']['editions']=binding['plan']['editions']
-    from developaid_contract_rds import FIELDS
-    rds.update(layout=export.LAYOUT,cut='2026-02-25')
-    rds['rows']=[{**{key:None for key in FIELDS},**row} for row in rds['rows']]
-    listed.update(rds_comparison=rds);listed['gpr'].update(schedule=schedule,overlays={})
-    meta=export.bind_snapshot(PROJECT,rds['cut'],ROW['id'],listed,ROW)
+    listed['gpr'].update(schedule={'lines':[{'code':'G','name':'Учебная работа',
+        'start':'2026-11-01','finish':'2026-11-30',
+        'reporting_events':[event(10,'2026-11-10','2026-11-01'),event(70,'2026-11-20','2026-11-11',label='КС-2 № 2')]}]},
+        overlays={'G':{'fact_quantity':80,'contract_quantity':100,'unit':'м2','fact_fraction':.8,
+            'planned_fraction':.8,'lag_days':0}})
+    listed['rds_comparison']={'available':False}
+    meta=export.bind_snapshot(PROJECT,'2026-11-24',ROW['id'],listed,ROW)
+    before=copy.deepcopy(listed)
     book=load_workbook(io.BytesIO(export.workbook(meta,listed)));sheet=book['ГПР']
-    source=next(row for row in sheet if str(row[1].value or '').startswith('Монтаж каркаса'))
-    model=list(sheet)[source[0].row]
-    source_pin=json.loads(source[1].comment.text);model_pin=json.loads(model[1].comment.text)
-    assert source_pin['track']=='source_plan' and model_pin['track']=='earned_plan_equivalent'
-    assert source_pin['position_key']==model_pin['position_key']==[0,0]
-    assert 'модель, не даты выполнения' in model[1].value
-    assert source[4].value==.4 and model[4].value is None
-    assert not any(cell.fill.fgColor.rgb in {'0070AD47','00E06666'} for cell in source[6:])
-    colored=[cell for cell in model[6:] if cell.fill.fgColor.rgb in {'0070AD47','00E06666'}]
-    assert colored and all(json.loads(cell.comment.text)['not_actual_dates'] is True for cell in colored)
-    assert source[5].font.color is None or source[5].font.color.type!='rgb' or source[5].font.color.rgb!='00E06666'
-    assert 'вне диапазона календаря; обновите выгрузку' in next(cell.value for row in sheet for cell in row if cell.data_type=='f')
+    assert listed==before
+    row=next(row for row in sheet if row[1].value=='Учебная работа')
+    assert 'reporting' in row[1].comment.text
+    colors={c.fill.fgColor.rgb for c in row[6:]}
+    assert {'00D9D9D9','0070AD47','00FFD966'}<=colors
+    assert '00E06666' not in colors
+    assert all(c.fill.fgColor.rgb=='00D9D9D9' for c in row[6+24:6+30])
+    assert all(s.freeze_panes is None for s in book)
+    assert not any('Выполненный объём в шкале плана' in str(c.value) for r in sheet for c in r)
+    assert all(json.loads(c.comment.text.split('\n',1)[1])['not_actual_dates'] for c in row[6:] if c.comment)

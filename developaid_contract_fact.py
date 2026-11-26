@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import calendar
 import datetime as dt
+import hashlib
+import json
 import re
 
 import developaid_contract_schedule_links as links
@@ -335,6 +337,20 @@ def _rds_observation(records, current, act, components, edition):
         record[component] = _add_money(record[component], components[component])
     _accumulate_money(record, components['total'], known_value=components['known_total'])
     record['periods'] += 1
+    # Retain typed physical increments before aggregation. Source selections,
+    # duplicate removal and component attribution above remain authoritative;
+    # an accumulated total must never be reused as each period's increment.
+    if act.get('basis') != 'material':
+        witness = {'source': act.get('source') or {}, 'label': act.get('label') or '',
+                   'start': act.get('start'), 'end': act.get('end')}
+        event_id = hashlib.sha256(json.dumps(witness, sort_keys=True,
+            ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+        event = {**witness, 'id': event_id, 'quantity_kind': 'increment',
+                 'work_quantity': components['work_quantity'],
+                 'date_basis': 'document_observation' if act.get('preliminary') or not act.get('start')
+                               else 'reported_period',
+                 'preliminary': bool(act.get('preliminary'))}
+        record.setdefault('reporting_events', []).append(event)
     evidence = {'source': act.get('source') or {}, 'label': act.get('label') or '',
                 'start': act.get('start'), 'end': act.get('end'),
                 'material_basis': components['material_basis']}

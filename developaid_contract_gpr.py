@@ -580,6 +580,9 @@ def position_projections(listed, rds, schedule):
     identities = Counter((r.get('estimate'), r.get('index')) for r in rds.get('rows') or [])
     headings = {h['before_position']: h['name'] for h in rds.get('headings') or [] if not h.get('number')}
     result, section = [], ''
+    observations = {(item.get('estimate'), item.get('index')): item
+                    for item in (listed.get('fact') or {}).get('rds_positions') or []
+                    if item.get('estimate_sha256') == rds.get('estimate_sha256')}
     for index, row in enumerate(rds.get('rows') or []):
         section = headings.get(index, section)
         identity = (row.get('estimate'), row.get('index'))
@@ -598,6 +601,9 @@ def position_projections(listed, rds, schedule):
         line['quantity'] = {'fact_quantity': quantity, 'contract_quantity': total,
                             'unit': row.get('unit') or '', 'fraction': ready} if known else None
         line['physical'] = None
+        observation = observations.get(identity) or {}
+        line['reporting_events'] = copy.deepcopy(observation.get('reporting_events') or [])
+        line['reporting_plan_start'] = current.get('start')
         if (known and parent and row.get('unit') and numeric(row.get('day_deviation')) and identities[identity] == 1 and
                 day(row.get('start')) and day(row.get('finish')) and
                 (row['start'], row['finish']) == (parent.get('start'), parent.get('finish'))):
