@@ -94,6 +94,7 @@ def acts(row: dict | None) -> dict | None:
                            "plan_quantity": item.get("plan_quantity"),
                            "reported_quantity": item.get("reported_completed_quantity"),
                            "periods": [{"label": p.get("label") or "", "quantity": p.get("quantity"),
+                                        "physical_quantity_basis":p.get("quantity_basis") or "explicit_quantity",
                                         "material_quantity": p.get('material_quantity'),
                                         "amount_split": p.get('amount_split') is True,
                                         "work_amount": p.get('work_amount'), "material_amount": p.get('material_amount'),
@@ -112,6 +113,7 @@ def acts(row: dict | None) -> dict | None:
             observation = {"number": item.get("position") or "", "name": item.get("name") or "",
                           "unit": item.get("unit") or "", "quantity": quantity,
                           "basis": period_basis,
+                          'physical_quantity_basis':period.get('quantity_basis') or 'explicit_quantity',
                           "quantity_material": period.get('material_quantity'),
                           "amount_components": {'work': period.get('work_amount'),
                                                 'material': period.get('material_amount'), 'total': period.get('amount')},
@@ -352,6 +354,7 @@ def _rds_observation(records, current, act, components, edition):
             ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
         event = {**witness, 'id': event_id, 'quantity_kind': 'increment',
                  'work_quantity': components['work_quantity'],
+                 'physical_quantity_basis':act.get('physical_quantity_basis') or 'explicit_quantity',
                  'date_basis': 'document_observation' if act.get('preliminary') or not act.get('start')
                                else 'reported_period',
                  'preliminary': bool(act.get('preliminary'))}

@@ -149,6 +149,7 @@ def resolve(found: dict | None, records: list[dict], cut: str = '') -> dict | No
                                 "unit": work["unit"], "plan_quantity": work.get("plan_quantity")})
         result["acts"].extend({"number": work["number"], "name": work["name"], "unit": work["unit"],
                                "quantity": period.get("quantity"), "act_amount": period.get("amount"),
+                               "physical_quantity_basis":period.get("physical_quantity_basis") or "explicit_quantity",
                                "quantity_material": period.get('material_quantity'),
                                "basis": period.get('basis') or work.get('basis') or 'work',
                                "amount_components": {'work': period.get('work_amount'),

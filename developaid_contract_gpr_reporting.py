@@ -95,6 +95,11 @@ def project(line, progress, parts, origin, cut):
         for end, group in sorted(groups.items()):
             report_date = day(end)
             accumulated += sum(item['work_quantity'] for item in group)
+            # A material-only/cost-derived zero increment is retained in the
+            # source stream, but cannot establish a physical baseline or refresh it.
+            if all(item['work_quantity'] == 0 and 'нулевой суммой' in
+                   str(item.get('physical_quantity_basis') or '').lower() for item in group):
+                continue
             planned = plan.done(line, report_date, plan_start)
             fraction = accumulated/total
             starts = [day(item.get('start')) for item in group]

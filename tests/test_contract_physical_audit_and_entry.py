@@ -78,3 +78,13 @@ def test_hierarchy_visibly_separates_corpus_and_number_depth():
     assert len({sheet.cell(i,2).fill.fgColor.rgb for i in range(1,5)})==4
     assert [sheet.cell(i,2).alignment.indent for i in range(2,5)]==[0,1,2]
     assert sheet['B1'].font.color.rgb[-6:]=='FFFFFF'
+
+
+def test_material_only_zero_increment_cannot_backfill_a_physical_baseline():
+    material={**event(0,'2026-11-03'), 'physical_quantity_basis':'Нулевой объём подтверждён нулевой суммой при положительной цене компонента.'}
+    positive=event(60,'2026-11-10',label='physical')
+    result=view(60,[material,positive])['reporting']
+    assert result['history_available']
+    assert result['checkpoints'][0]['date']=='2026-11-10'
+    assert min(b['start'] for b in result['bars'])==9
+    assert all(b['report_date']!='2026-11-03' for b in result['bars'])
