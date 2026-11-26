@@ -1723,7 +1723,11 @@ def _monitor_report_job(req, *, start: bool) -> Response:
                     MonitorReportRequest(**payload), hide_legal=profile == "demo"))
                 _job_ledgers.validate_snapshot_job_context(source_context)
                 return value
-            result = store.start(owner, profile, payload, build, req.ticket, context=source_context)
+            # Reports retain the complete source projections and selected
+            # photos in both JSON and HTML. Use the existing bounded full-view
+            # budget for this family only; legacy tickets keep their budget.
+            result = store.start(owner, profile, payload, build, req.ticket,
+                                 result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES, context=source_context)
         else:
             result = store.poll(req.ticket, owner, profile)
         return JSONResponse(status_code=202 if result["pending"] else 200,
@@ -1732,7 +1736,12 @@ def _monitor_report_job(req, *, start: bool) -> Response:
         exc.headers = {**(exc.headers or {}), **private}
         raise
     except jobs.JobProblem as exc:
-        raise HTTPException(exc.status, jobs.SOURCE_CHANGED_DETAIL if exc.code == "source_changed" else exc.detail, headers=private) from None
+        if exc.code:
+            private["X-Monitor-Job-Error"] = exc.code
+        detail = (jobs.SOURCE_CHANGED_DETAIL if exc.code == "source_changed" else
+                  "Сводка превышает допустимый размер. Обратитесь к администратору."
+                  if exc.code == "result_too_large" else exc.detail)
+        raise HTTPException(exc.status, detail, headers=private) from None
     except (OSError, ValueError):
         raise HTTPException(503, "Сборка сводки сейчас недоступна. Повторите запрос.",
                             headers=private) from None
