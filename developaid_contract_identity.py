@@ -205,9 +205,9 @@ def document_evidence(record, sha):
             'reader_version_sha256': store.digest(record.get('reader'))}
 
 
-def metadata_inventory(project, raw_ids, *, correction=False):
+def metadata_inventory(project, raw_ids, *, correction=False, _read=None):
     ids = correction_ids(raw_ids) if correction else _ids(raw_ids)
-    read = _Metadata()
+    read = _read if _read is not None else _Metadata()
     terms, terms_pin = read.entry(_safe_path(project, 'cumulative_terms.json'))
     if terms is not None and not isinstance(terms, dict):
         raise IdentityProblem('Формат сохранённых ручных сроков не подтверждён.', 503)
