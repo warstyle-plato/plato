@@ -81,7 +81,9 @@ class Client:
             self.calls += 1
             need(self.calls <= 400 and time.monotonic() < self.deadline, 'Папка слишком велика для одной проверки.')
             p = urllib.parse.urlsplit(url)
-            allowed = (p.netloc == 'downloader.disk.yandex.ru' or re.fullmatch(r'[a-z0-9-]+\.(?:[a-z0-9-]+\.)?disk\.yandex\.net', p.netloc)) if download else p.netloc == 'cloud-api.yandex.net'
+            # The public download API redirects to this exact storage host;
+            # no wildcard storage/Yandex origins or API redirects are admitted.
+            allowed = (p.netloc in {'downloader.disk.yandex.ru', 'mds.storage.yandex.net'} or re.fullmatch(r'[a-z0-9-]+\.(?:[a-z0-9-]+\.)?disk\.yandex\.net', p.netloc)) if download else p.netloc == 'cloud-api.yandex.net'
             need(p.scheme == 'https' and allowed and not p.username and not p.password, 'Диск вернул неподдерживаемый адрес файла.')
             request = urllib.request.Request(url, headers={'Accept': 'application/octet-stream' if download else 'application/json', 'User-Agent': 'DevelopAid-Manual-Source-Intake/1'})
             try:
