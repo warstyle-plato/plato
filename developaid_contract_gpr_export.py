@@ -215,8 +215,11 @@ def deadline_status(line, progress, cut):
     fraction = max(1-progress['fraction'],0)
     return {'state':'overdue_incomplete','days_after_planned_finish':days,
             'remaining_quantity':remaining,'remaining_fraction':fraction,'unit':progress['unit'],
-            'text':'Не завершено к плановому сроку: остаток '+format(remaining,'.15g')+' '+progress['unit']+
-                   ' ('+format(fraction*100,'.1f')+'%); после планового срока '+str(days)+' дн.'}
+            'observed_at':max(observed_dates).isoformat(),
+            'text':'На '+max(observed_dates).isoformat()+' работа не завершена: остаток '+
+                   format(remaining,'.15g')+' '+progress['unit']+' ('+format(fraction*100,'.1f')+
+                   '%). На дату среза срок ГПР прошёл '+str(days)+' дн. назад; '
+                   'нового подтверждения выполнения после этой даты источника нет.'}
 
 
 def ordered_positions(positions, cut=''):
@@ -498,7 +501,7 @@ def workbook(meta, cached):
         cell = sheet.cell(row,6)
         text = status['text']
         if status['state'] == 'overdue_incomplete':
-            text = 'Просрочено '+str(status['days_after_planned_finish'])+' дн. · остаток '+format(status['remaining_quantity'],'.15g')+' '+status['unit']+' ('+format(status['remaining_fraction']*100,'.1f')+'%)'
+            text = 'Срок прошёл '+str(status['days_after_planned_finish'])+' дн. назад; не завершено на '+status['observed_at']+' · остаток '+format(status['remaining_quantity'],'.15g')+' '+status['unit']+' ('+format(status['remaining_fraction']*100,'.1f')+'%)'
         elif status['state'] == 'overdue_unknown':
             text = 'Срок прошёл '+str(status['days_after_planned_finish'])+' дн. назад; факт не подтверждён.'
         elif status['state'] == 'deadline_comparison_unconfirmed':
