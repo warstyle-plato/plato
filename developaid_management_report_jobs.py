@@ -324,6 +324,9 @@ class Store:
                 meta["state"] = "done"
                 self._save(meta)
         except Exception as exc:
+            if (isinstance(exc, JobProblem) and isinstance(exc.code, str)
+                    and exc.code in FAILURE_CODES):
+                failure_code = exc.code
             # Exceptions can contain source paths, client names or financial data.
             logging.getLogger(__name__).error("Management report job failed (%s)",
                                              failure_code if extended else type(exc).__name__)

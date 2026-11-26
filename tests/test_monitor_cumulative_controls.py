@@ -212,7 +212,10 @@ def test_contracts_render_exact_money_unknowns_and_separate_physics(width):
         expect(row).to_contain_text('1\u00a0000\u00a0000 ₽')
         expect(row.locator('.term')).to_contain_text('Указать срок договора')
         from contract_rows import opened
-        expect(page.locator(f'tr[data-contract-id="{OTHER}"]')).to_contain_text('выполнено 0 ₽')
+        other_money = page.locator(f'tr[data-contract-id="{OTHER}"] .contract-money')
+        expect(other_money).to_contain_text('Учтённое денежное закрытие: 0 ₽')
+        expect(other_money).to_contain_text('Процент денежного закрытия не подтверждён')
+        assert other_money.locator('.contract-progress').count() == 0
         assert page.locator(f'tr[data-contract-id="{OTHER}"] .contract-main-money').all_text_contents() == ['—']
         other = opened(page, OTHER)
         expect(other.locator('#contractCardSummary [data-label="Сумма договора"]')).to_contain_text('Не подтверждена')

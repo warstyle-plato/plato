@@ -165,7 +165,7 @@ def test_passive_discovery_of_newer_unsigned_ds_cannot_replace_legacy_graph(card
     assert current['gpr']['source']['sha256'] == original_sha
     assert current['gpr']['pending'][0]['source']['sha256'] == new_sha
     fresh = files._stored(folder/(new_sha+'.json'))
-    assert fresh['gpr_pending'] is True and fresh['reader'] == 15
+    assert fresh['gpr_pending'] is True and fresh['reader'] == documents.READER_VERSION
     assert fresh['gpr_discovery']['reason'] == 'new_graph_discovered_by_reader'
     assert fresh['gpr_discovery']['from_reader'] == 14
     assert fresh['gpr_discovery']['source_pdf_sha256'] == new_sha
@@ -543,7 +543,12 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         page.locator(f'tr[data-contract-id="{ROW["id"]}"] .contract-open').click()
         expect(page.locator('#contractGprHandover')).to_be_visible()
         expect(page.locator('#contractGprBody')).to_contain_text('дата начала не указана')
-        assert page.locator('.contract-gpr-track rect').count() == 2, 'The source gap must remain a gap.'
+        # SVG defs contain a hatch sample; only direct plan rectangles are intervals.
+        intervals = page.locator('.contract-gpr-track svg > rect')
+        assert intervals.count() == 2, 'The two source intervals must remain separate.'
+        geometry = intervals.evaluate_all('(nodes)=>nodes.map(n=>({x:+n.getAttribute("x"),width:+n.getAttribute("width")}))')
+        assert geometry[0]['width'] > 0 and geometry[1]['width'] > 0
+        assert geometry[0]['x'] + geometry[0]['width'] < geometry[1]['x'], 'The source gap must remain a gap.'
         assert page.locator('.contract-gpr-track rect[fill="#70AD47"]').count() == 0
         page.locator('#contractGprHandover').fill('2026-02-02')
         page.locator('#contractGprReference').fill('Учебный акт передачи, страница 1')

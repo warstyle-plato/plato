@@ -1,6 +1,8 @@
 """Trace physical evidence without altering financial selection or valuation."""
 from __future__ import annotations
 import math
+import copy
+import datetime as dt
 from developaid_contract_fact import match
 from developaid_monitor_statement_union import _unit
 
@@ -36,6 +38,18 @@ def position_audit(position, identity, current, fact, observed, binding, cut):
             'conversion':'1:1' if _unit(evidence['unit']) == _unit(position.get('unit')) else 'unit_conflict'})
     known = bool(observed and observed.get('work_observed') and numeric(observed.get('work_quantity')))
     quantity = observed.get('work_quantity') if known else None
+    # These are already accepted, position-bound increments, not a raw KS-6
+    # accumulated cell. Keep their original quantity/date/coordinates intact.
+    accepted_events = []
+    for event in (observed or {}).get('reporting_events') or []:
+        try:
+            event_day = dt.date.fromisoformat(event.get('end') or '').isoformat()
+        except (TypeError, ValueError):
+            continue
+        if (known and event_day <= cut and event.get('quantity_kind') == 'increment'
+                and numeric(event.get('work_quantity')) and event['work_quantity'] >= 0
+                and isinstance(event.get('source'), dict) and event['source']):
+            accepted_events.append(copy.deepcopy(event))
     derived_zero = quantity == 0 and any('нулевой суммой' in basis.lower() for x in sources for basis in x['quantity_bases'])
     if known and derived_zero:
         state = 'accounted_zero_physical_unknown'
@@ -71,5 +85,6 @@ def position_audit(position, identity, current, fact, observed, binding, cut):
         'estimate_sha256':current.get('estimate_sha256'), 'cut':cut,
         'accepted_work_quantity':quantity, 'accounted_work_quantity':(observed or {}).get('work_quantity'), 'accepted_material_quantity':(observed or {}).get('material_quantity'),
         'accepted_sources':(observed or {}).get('sources') or [],
+        'accepted_events':accepted_events if known else [],
         'gpr_binding':binding, 'conversion':'1:1' if known else None,
         'schedule_reason':(binding or {}).get('reason') or ''}

@@ -117,10 +117,8 @@ def build(listed: dict) -> dict:
                 comments['fact_quantity'] = row['physical_audit']['reason']
             for output, actual, planned in (('quantity_deviation', 'fact_quantity', 'plan_quantity'),
                                            ('deviation', 'fact', 'planned')):
-                if row[planned] is not None:
-                    row[output] = (row[actual] if row[actual] is not None else 0)-row[planned]
-                    if row[actual] is None:
-                        comments[output] = 'Недобор внесённого факта: для отклонения пустой факт считается 0. Это не подтверждённый ноль работ.'
+                if row[planned] is not None and row[actual] is not None:
+                    row[output] = row[actual]-row[planned]
                 else:
                     comments[output] = 'Отклонение не рассчитано: план или факт не подтверждены.'
             quantity = row['contract_quantity']
