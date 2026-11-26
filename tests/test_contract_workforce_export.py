@@ -48,7 +48,9 @@ def test_native_workbook_conditionally_includes_staff_and_checks_even_unavailabl
     assert all(sheet.freeze_panes is None for sheet in book)
     if has_plan:
         assert projection['coverage']['workers_pairs'] == projection['coverage']['itr_pairs'] == 1
-        assert list(next(book['Численность'].iter_rows(min_row=6, max_row=6, min_col=2, max_col=7, values_only=True))) == [10, 8, -2, 2, 1, -1]
+        assert book['Численность']['D6'].data_type == book['Численность']['G6'].data_type == 'f'
+        cached=load_workbook(io.BytesIO(response.content),data_only=True)
+        assert list(next(cached['Численность'].iter_rows(min_row=6, max_row=6, min_col=2, max_col=7, values_only=True))) == [10, 8, -2, 2, 1, -1]
     else:
         assert projection['reason'] in '\n'.join(str(cell.value) for row in book['ГПР'] for cell in row)
     # Even an unavailable staffing projection pins its current source set. The

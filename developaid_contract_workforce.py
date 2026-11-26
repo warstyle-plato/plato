@@ -621,13 +621,15 @@ def write_sheet(workbook, projection):
             *[item.get(category+'_'+field) for category in CATEGORIES for field in ('plan','fact','delta')],
             '\n'.join(dict.fromkeys(notes))])
         row=sheet.max_row;sheet.cell(row,1).number_format='dd.mm.yyyy'
+        for target,planned,actual in (('D','B','C'),('G','E','F')):
+            sheet[target+str(row)]='=IF(COUNT('+planned+str(row)+':'+actual+str(row)+')=2,'+actual+str(row)+'-'+planned+str(row)+',"")'
         sources={'plan':projection.get('plan_source'),'date':item.get('date'),'sources':item.get('sources'),
                  'candidates':item.get('candidates')}
         sheet.cell(row,8).comment=Comment(json.dumps(sources,ensure_ascii=False,sort_keys=True),'DevelopAid')
         sheet.row_dimensions[row].height=min(180,max(44,14*(1+len(sheet.cell(row,8).value)//65+sheet.cell(row,8).value.count('\n'))))
     for cells in sheet:
         for cell in cells:
-            if isinstance(cell.value, str):
+            if isinstance(cell.value, str) and not (cell.row > 5 and cell.column in (4,7) and cell.data_type == 'f'):
                 cell.data_type = 's'
             cell.alignment=Alignment(wrap_text=True,vertical='top')
             if cell.row != 5:cell.font=Font(name='Calibri',size=10)

@@ -382,6 +382,17 @@ def propose(estimate, schedule, *, agreement=False):
         item["lines"] = linked([s["line"] for s in found])
         if len(found) > 1:
             item["assumption"] = SHARE_ASSUMPTION
+    for item in positions:
+        if item['status'] != 'review' or item['lines'] or item['suggested']:
+            continue
+        numbered = [sign['line'] for sign in signs if printed(sign['line']) == _text(item.get('number')).rstrip('.')]
+        if len(numbered) == 1 and not _same_name(numbered[0]['name'], item['name']):
+            candidate = numbered[0]
+            item['source_candidates'] = [{key:candidate.get(key) for key in ('code','name','start','finish')}]
+            item['reason'] = (f"В ГПР есть строка с тем же полным номером {printed(candidate)}, но описание отличается: "
+                f"РДС «{item['name']}»; ГПР «{candidate['name']}». "
+                "Связь и объём работ требуют проверки; совпадение номера не подменяет сопоставление. "
+                + item['reason'])
     return {"positions": positions, **summary(positions, schedule)}
 
 

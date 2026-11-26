@@ -203,6 +203,8 @@ def deadline_status(line, progress, cut):
         return {'state':'overdue_unclosed', 'days_after_planned_finish':days,
                 'text':'Срок истёк; физфакт не подтверждён. '+str(days)+' кал. дн. после срока ГПР. Это календарный риск незакрытия КС, а не подтверждённый нулевой объём.'}
     observed_dates = [gpr.day(value) for value in progress.get('source_dates') or []]
+    if gpr.day(progress.get('last_confirmed_at')):
+        observed_dates.append(gpr.day(progress['last_confirmed_at']))
     observed_dates = [value for value in observed_dates if value and value <= date]
     if progress['planned_fraction'] is None:
         return {'state':'deadline_comparison_unconfirmed','days_after_planned_finish':days,
@@ -296,6 +298,11 @@ def presentation(schedule, overlays, cut, positions=(), *, statement=None, sourc
                 parts.append((begin, end))
         overlay = overlays.get(line['code'])
         progress = physical_progress(line,overlay,cut,source_dates)
+        model = reporting.project({**{key:overlay[key] for key in ('reporting_events','reporting_plan_start')
+                                      if overlay and key in overlay},**line},progress,parts,
+                                  first.isoformat() if first else None,cut)
+        if progress and model.get('last_confirmed_at'):
+            progress = {**progress,'last_confirmed_at':model['last_confirmed_at'],'age_days':model['age_days']}
         bars = []
         boundary = (gpr.day(cut)-first).days+1 if first and gpr.day(cut) else None
         for begin, end in parts:
@@ -309,7 +316,7 @@ def presentation(schedule, overlays, cut, positions=(), *, statement=None, sourc
                      'duration_printed': line.get('duration_printed'), 'relative_unit': line.get('relative_unit'),
                      'page': line.get('page'), 'bars': bars, 'physical': overlay,
                      'progress': progress, 'deadline_status': deadline_status(line,progress,cut),
-                     'reporting': reporting.project({**{key:overlay[key] for key in ('reporting_events','reporting_plan_start') if overlay and key in overlay},**line},progress,parts,first.isoformat() if first else None,cut),
+                     'reporting': model,
                      **{key: line[key] for key in ('number', 'section', 'position_key', 'gpr_code', 'quantity', 'note', 'physical_audit') if key in line}})
     projected = (presentation({**schedule, 'lines': positions}, position_overlays, cut, source_dates=source_dates, _ticks=ticks)['rows']
                  if positions else [])
@@ -459,7 +466,7 @@ def workbook(meta, cached):
     text_rows = ['ГПР · '+(label.get('contract') or 'Договор')+' · '+(label.get('contractor') or ''),
         'Проект: '+meta['project']+' · Редакция ГПР: '+_edition_label(source),
         'Срез: '+gpr.day(meta['cut']).strftime('%d.%m.%Y')+' · Источник выполнения: '+_fact_source_label(comparison),
-        'Серый — будущий план; сиреневый — нет подтверждения. Зелёный — план выполнен; жёлтый — отставание; красный — подтверждённая незавершённость после срока.']
+        reporting.SHORT_LEGEND]
     statement = statement_projection(comparison)
     if statement:
         text_rows[3:3] = ['\n'.join(statement_text(statement))]
@@ -476,7 +483,8 @@ def workbook(meta, cached):
         put(row, 1, text)
         sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
         sheet.row_dimensions[row].height = (max(42, 6+14*sum(max(1, math.ceil(len(line)/110))
-            for line in statement_text(statement))) if statement and row == 4 else 30)
+            for line in statement_text(statement))) if statement and row == 4 else
+            max(30,14*(1+math.ceil(len(text)/110))))
     sheet['A1'].comment = Comment(rds_export._text('Источник SHA256: '+source['sha256']+
         '\nРедакция: '+str(source['edition'])+'\nОснование начала: '+str(schedule.get('anchor') or {})+
         '\nПодписание: '+str(state.get('signature_evidence') or {})), 'DevelopAid')
