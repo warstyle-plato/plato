@@ -20,7 +20,7 @@ import developaid_contract_workforce as workforce
 import developaid_contract_gpr_reporting as reporting
 from developaid_contract_rds import LAYOUT
 
-SCHEMA = 'contract-gpr-performance-xlsx-v10'
+SCHEMA = 'contract-gpr-performance-xlsx-v11'
 PRESENTATION_SCHEMA = 'contract-gpr-known-state-v9'
 COLORS = reporting.COLORS
 LEGEND = reporting.LEGEND
@@ -353,9 +353,11 @@ def fact_source_dates(comparison):
 
 def company_workforce_rows(projection):
     """Supplemental source observations, never a contract allocation or total."""
-    if projection.get('available'):
-        return []
-    found, single, by_date = [], False, {}
+    found, by_date = [], {}
+    for candidate in projection.get('company_observations') or []:
+        date = candidate.get('date')
+        if gpr.day(date) and (not projection.get('cut') or date <= projection['cut']):
+            by_date.setdefault(date, []).append(candidate)
     for item in projection.get('rows') or []:
         if (not gpr.day(item.get('date')) or
                 projection.get('cut') and item['date'] > projection['cut']):
@@ -364,25 +366,26 @@ def company_workforce_rows(projection):
     for date, values in sorted(by_date.items()):
         # Only identical source records are duplicates. Different source keys
         # or conflicting values stay separate even when their counts match.
-        candidates = list({workforce.digest(candidate):candidate for candidate in values}.values())
+        candidates = list({workforce.digest({k:v for k,v in candidate.items() if k != 'date'}):candidate
+                           for candidate in values}.values())
         if not candidates:
             continue
-        row = {'date':date,'workers':None,'itr':None,'candidates':candidates,
-               'reason':'Несколько строк подрядчика на дату; численность не суммируется.'}
-        if len(candidates) == 1:
-            candidate = candidates[0]
+        for candidate in candidates:
+            row = {'date':date,'workers':None,'itr':None,'candidates':[candidate]}
             reasons = []
             for key,label in (('workers','Рабочие'),('itr','ИТР')):
                 value = candidate.get(key)
                 if (candidate.get(key+'_present') is True and type(value) in (int,float)
                         and math.isfinite(value) and value >= 0 and not (candidate.get('ambiguities') or {}).get(key)):
                     row[key] = value
-                    single = True
                 else:
                     reasons.append(label+': категория не подтверждена.')
-            row['reason'] = 'Одна запись подрядчика на дату. По договорам повторно не суммировать. План не сопоставлен.'+(' '+' '.join(reasons) if reasons else '')
-        found.append(row)
-    return found if single else []
+            row['reason'] = (str(candidate.get('party') or 'Подрядчик')+
+                '. Отдельная запись источника; с другими строками не суммируется. '
+                'По договорам повторно не суммировать. План не сопоставлен.'+
+                (' '+' '.join(reasons) if reasons else ''))
+            found.append(row)
+    return found
 
 
 def write_company_workforce(book,projection):
@@ -708,9 +711,8 @@ def workbook(meta, cached):
         sheet.merge_cells(start_row=row+1, start_column=1, end_row=row+1, end_column=6)
         sheet.row_dimensions[row+1].height = 44
         row += 1
-    if (workforce.write_sheet(book, state.get('workforce') or {}) is None
-            or (state.get('workforce') or {}).get('report_input_status') == 'not_loaded'):
-        write_company_workforce(book,state.get('workforce') or {})
+    workforce.write_sheet(book, state.get('workforce') or {})
+    write_company_workforce(book,state.get('workforce') or {})
     for page in book:
         page.freeze_panes = None
         page.sheet_view.topLeftCell = 'A1'

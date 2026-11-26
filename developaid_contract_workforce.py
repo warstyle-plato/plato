@@ -15,7 +15,7 @@ import re
 import stat
 from contextlib import nullcontext
 
-SCHEMA = 'contract-workforce-v2'
+SCHEMA = 'contract-workforce-v3'
 REPORTS_NOT_LOADED = 'Сводки бота не загружены; наличие отчёта и фактическая численность не проверены.'
 CATEGORIES = ('workers', 'itr')
 HEADERS = ('Дата', 'Рабочие: план', 'Рабочие: факт', 'Отклонение, чел.',
@@ -366,6 +366,8 @@ def _binding(person, category, row, source, plans, peers, bindings, schedule):
         if owners == {row['id']}:
             return True, 'Сохранённая связь полного состава с договором и редакцией ГПР.', valid[0]['source']
         return False, 'Одна бригада или ИТР относятся к нескольким договорам; распределение не подтверждено.', None
+    if person['source'].get('contract_scope_confirmed') is False:
+        return False, 'Источник содержит численность подрядчика по направлению; полный состав по договору не подтверждён.', None
     if ids != {row['id']}:
         return False, 'Численность сообщения не распределена однозначно между договорами подрядчика.', None
     resources = plans.get(category) or [dict(r, label=r.get('name'))
@@ -408,6 +410,7 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
         'report_input_status': 'loaded' if reports_loaded else 'not_loaded',
         'report_status_note': '' if reports_loaded else REPORTS_NOT_LOADED,
         'report_sources_revision': reports_revision(reports, cut) if reports_loaded else None,
+        'company_observations': [], 'report_dates': sorted({_day(r.get('date')) for r in reports if _day(r.get('date')) and r['date'] <= cut}),
         'bindings_revision': digest(existing_bindings),
         'coverage': {'dates': 0, 'workers_pairs': 0, 'itr_pairs': 0, 'project_total': False}}
     if not cut or not _plan_bound(row, source):
@@ -416,6 +419,11 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
         return result
     people = personnel(reports, cut)
     peers = register.get('rows') or []
+    import developaid_monitor_contract_links as links
+    for person in people:
+        company_rows, basis = links._party_rows(person['party'], peers)
+        if basis in ('exact', 'work_context') and any(r.get('id') == row.get('id') for r in company_rows):
+            result['company_observations'].append({k:person.get(k) for k in ('date','personnel_key','party','workers','itr','workers_present','itr_present','source','raw','ambiguities')})
     by_date = defaultdict(list)
     for person in people:
         candidates, _, _ = _candidates(person, peers)

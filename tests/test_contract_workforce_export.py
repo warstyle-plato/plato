@@ -44,7 +44,7 @@ def test_native_workbook_conditionally_includes_staff_and_checks_even_unavailabl
     response = client.post('/monitor/contracts/gpr.xlsx', json=body)
     assert response.status_code == 200, response.text
     book = load_workbook(io.BytesIO(response.content))
-    assert book.sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']+(['Численность'] if has_plan else [])
+    assert book.sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']+(['Численность','Численность подрядчика'] if has_plan else [])
     assert all(sheet.freeze_panes is None for sheet in book)
     if has_plan:
         assert projection['coverage']['workers_pairs'] == projection['coverage']['itr_pairs'] == 1

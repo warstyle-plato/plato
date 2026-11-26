@@ -447,3 +447,19 @@ def test_rss_inventory_can_change_register_subject_and_is_also_pinned(monkeypatc
     estimate=root/'estimate';estimate.mkdir()
     (estimate/'2026-01-01.xlsx').write_bytes(b'native-workbook-not-read')
     assert not workforce.require_current(got,'test')
+
+
+def test_summary_observations_keep_two_disciplines_without_allocating_a_contract_crew():
+    values=list(inputs());row,_,_,_,register=values
+    register['rows'].append(dict(row,id='c'*64,contract='A-456',scope=['Кладка']))
+    values[3]=[{'date':'2026-01-20','parsed':{'contractors':[
+        {'name':'Исполнитель (кровля)','workers':8,'itr':1},
+        {'name':'Исполнитель (кладка)','workers':15,'itr':1}]},
+        'source':{'kind':'monitor_daily_summary','contract_scope_confirmed':False}}]
+    result=view(values)
+    assert len(result['company_observations'])==2
+    assert [p['workers'] for p in result['company_observations']]==[8,15]
+    assert result['report_dates']==['2026-01-20']
+    assert result['available']  # Source plan remains available.
+    assert all(r['workers_fact'] is r['itr_fact'] is r['workers_delta'] is None for r in result['rows'])
+    assert any('полный состав' in reason for r in result['rows'] for reason in r['reasons'])
