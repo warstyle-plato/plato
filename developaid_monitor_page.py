@@ -887,6 +887,8 @@ function layoutGanttAxis(axis){
 }
 function observeGanttAxis(){
  clearGanttAxisLayout();const axis=$('gantt').querySelector('.axis');if(!axis)return;
+ // A rebuilt visible chart must fit before the next animation frame.
+ layoutGanttAxis(axis);
  let stopped=false,frame=0;
  const update=()=>{if(stopped||frame)return;frame=requestAnimationFrame(()=>{frame=0;if(!stopped)layoutGanttAxis(axis);});};
  const print=()=>{if(!stopped)layoutGanttAxis(axis);};

@@ -299,3 +299,31 @@ def test_cached_conditional_date_cannot_cross_the_construction_method_boundary(m
         expect(cell.locator('.gpr-cell-forecast')).to_have_text('Расчётная дата не определена')
         assert schedule['work_forecast'] == old
         assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+@pytest.mark.parametrize('kind', ['profile', 'fallback'])
+def test_calendar_labels_fit_immediately_when_a_visible_chart_is_rebuilt(monkeypatch, width, kind):
+    value = view(kind)
+    serve(monkeypatch, value)
+    with browser_page(width) as (page, _, errors):
+        show(page, value)
+        page.locator('#gprCalendar > summary').click()
+        # A frame may be deferred on a busy or backgrounded phone. Rendering
+        # a replacement chart must not widen the page until that frame runs.
+        result = page.evaluate('''(v)=>{
+            const original=requestAnimationFrame;
+            window.requestAnimationFrame=()=>0;
+            try{
+                renderGantt(v);
+                const axis=document.querySelector('#gantt .axis').getBoundingClientRect();
+                return {width:innerWidth,scroll:document.documentElement.scrollWidth,
+                    outside:[...document.querySelectorAll('#gantt .axis .axis-lab')]
+                        .filter(e=>e.getClientRects().length&&getComputedStyle(e).display!=='none')
+                        .map(e=>({text:e.textContent,box:e.getBoundingClientRect()}))
+                        .filter(x=>x.box.left<axis.left-.5||x.box.right>axis.right+.5)};
+            }finally{window.requestAnimationFrame=original;}
+        }''', value)
+        assert result['scroll'] <= result['width'], result
+        assert result['outside'] == [], result
+        assert not errors
