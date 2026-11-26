@@ -21,6 +21,15 @@ def test_calendar_overdue_is_continuous_from_deadline_to_cut_with_separate_evide
     assert forecast['finish']=='2026-12-16'
 
 
+def test_dated_act_history_supplies_confirmation_without_a_dated_snapshot():
+    row=view(53,[event(53,'2026-11-15')],finish='2026-11-10',source_dates=[])
+    assert row['progress']['last_confirmed_at']=='2026-11-15'
+    assert row['progress']['age_days']==9
+    assert row['progress']['source_dates']==[]  # no source snapshot date invented
+    assert row['deadline_status']['observed_at']=='2026-11-15'
+    assert 'дата не подтверждена' not in row['deadline_status']['text']
+
+
 def test_confirmed_period_pace_is_preferred_to_an_assumed_plan_start():
     value=view(53,[event(53,'2026-11-15','2026-11-06')],finish='2026-11-10')['reporting']
     forecast=value['forecast']
