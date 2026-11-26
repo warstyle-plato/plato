@@ -80,8 +80,8 @@ def test_unknown_and_no_rds_are_not_zero_or_pseudo_estimate_rows():
     sheet, header = table(xlsx(native_card(unknown=True)), data_only=True)
     assert sheet.cell(header+1,6).value == 10
     assert all(sheet.cell(header+1,i).value is None for i in (8,9,12,14,15,16))
-    assert sheet.cell(header+1,10).value == -10
-    assert sheet.cell(header+1,13).value == -500
+    assert sheet.cell(header+1,10).value is None
+    assert sheet.cell(header+1,13).value is None
     assert 'не подтверждена' in sheet.cell(header+1,8).comment.text
     empty = native_card(empty=True)
     assert empty['comparison_export']['available'] is False
@@ -357,7 +357,7 @@ def test_previous_export_v4_schema_cannot_be_reused_as_current_snapshot():
         export.select_snapshot(cached,PROJECT,binding['cut'],CONTRACT,binding['revision'],binding['row_tokens'])
 
 
-@pytest.mark.parametrize('previous_schema',['contract-rds-plan-fact-export-v5','contract-rds-plan-fact-export-v6'])
+@pytest.mark.parametrize('previous_schema',['contract-rds-plan-fact-export-v5','contract-rds-plan-fact-export-v6','contract-rds-plan-fact-export-v7'])
 def test_previous_runtime_export_is_rejected_even_with_unchanged_sources(monkeypatch,previous_schema):
     cached=native_card()
     schema=export.SCHEMA

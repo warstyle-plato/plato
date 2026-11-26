@@ -20,8 +20,8 @@ import developaid_contract_workforce as workforce
 import developaid_contract_gpr_reporting as reporting
 from developaid_contract_rds import LAYOUT
 
-SCHEMA = 'contract-gpr-performance-xlsx-v8'
-PRESENTATION_SCHEMA = 'contract-gpr-known-state-v7'
+SCHEMA = 'contract-gpr-performance-xlsx-v9'
+PRESENTATION_SCHEMA = 'contract-gpr-known-state-v8'
 COLORS = reporting.COLORS
 LEGEND = reporting.LEGEND
 
@@ -201,7 +201,7 @@ def deadline_status(line, progress, cut):
     days = (date-finish).days
     if not progress:
         return {'state':'overdue_unclosed', 'days_after_planned_finish':days,
-                'text':'Просрочено по ГПР: '+str(days)+' кал. дн. Объём не закрыт учтёнными КС; физическое количество в источнике не подтверждено.'}
+                'text':'Срок истёк; физфакт не подтверждён. '+str(days)+' кал. дн. после срока ГПР. Это календарный риск незакрытия КС, а не подтверждённый нулевой объём.'}
     observed_dates = [gpr.day(value) for value in progress.get('source_dates') or []]
     observed_dates = [value for value in observed_dates if value and value <= date]
     if progress['planned_fraction'] is None:
@@ -345,37 +345,8 @@ def fact_source_dates(comparison):
 
 
 def company_workforce_rows(projection):
-    """Supplemental source observations, never a contract allocation or total."""
-    if projection.get('available'):
-        return []
-    found, single, by_date = [], False, {}
-    for item in projection.get('rows') or []:
-        if (not gpr.day(item.get('date')) or
-                projection.get('cut') and item['date'] > projection['cut']):
-            continue
-        by_date.setdefault(item['date'],[]).extend(c for c in item.get('candidates') or [] if c.get('personnel_key'))
-    for date, values in sorted(by_date.items()):
-        # Only identical source records are duplicates. Different source keys
-        # or conflicting values stay separate even when their counts match.
-        candidates = list({workforce.digest(candidate):candidate for candidate in values}.values())
-        if not candidates:
-            continue
-        row = {'date':date,'workers':None,'itr':None,'candidates':candidates,
-               'reason':'Несколько строк подрядчика на дату; численность не суммируется.'}
-        if len(candidates) == 1:
-            candidate = candidates[0]
-            reasons = []
-            for key,label in (('workers','Рабочие'),('itr','ИТР')):
-                value = candidate.get(key)
-                if (candidate.get(key+'_present') is True and type(value) in (int,float)
-                        and math.isfinite(value) and value >= 0 and not (candidate.get('ambiguities') or {}).get(key)):
-                    row[key] = value
-                    single = True
-                else:
-                    reasons.append(label+': категория не подтверждена.')
-            row['reason'] = 'Одна запись подрядчика на дату. По договорам повторно не суммировать. План не сопоставлен.'+(' '+' '.join(reasons) if reasons else '')
-        found.append(row)
-    return found if single else []
+    """The PAGE and workbook consume the same server-side company projection."""
+    return projection.get('company_rows') if isinstance(projection.get('company_rows'),list) else workforce.company_rows(projection)
 
 
 def write_company_workforce(book,projection):
@@ -394,13 +365,24 @@ def write_company_workforce(book,projection):
         cell=sheet.cell(4,column,text);cell.fill=PatternFill('solid',fgColor='1F4E78')
         cell.font=Font(name='Calibri',size=10,bold=True,color='FFFFFF')
     for index,item in enumerate(rows,5):
-        values=(gpr.day(item['date']),None,item['workers'],None,None,item['itr'],None,item['reason'])
+        annotations = [a for a in projection.get('plan_annotations') or [] if
+            gpr.day(a.get('start')) and gpr.day(a.get('finish')) and a['start'] <= item['date'] <= a['finish']]
+        reason = item['reason']
+        if annotations:
+            reason += ' В ГПР на эту дату: '+', '.join(dict.fromkeys(a['literal'] for a in annotations))+'. Это подписи отдельных операций; рабочие и ИТР не разделены, бригады не суммируются.'
+        elif projection.get('plan_annotations'):
+            reason += ' На эту дату в исходном ГПР нет подписи численности; прежние диапазоны не перенесены.'
+        edition = (projection.get('plan_source') or {}).get('edition') or {}
+        if edition.get('date') and item['date'] < edition['date']:
+            reason += ' Дата предшествует текущей редакции ГПР; её историческое действие не подтверждено.'
+        values=(gpr.day(item['date']),None,item['workers'],None,None,item['itr'],None,reason)
         for column,value in enumerate(values,1):
             cell=sheet.cell(index,column,rds_export._text(value) if isinstance(value,str) else value)
             if isinstance(value,str):cell.data_type='s'
         sheet.cell(index,1).number_format='dd.mm.yyyy'
         sheet.cell(index,8).comment=Comment(json.dumps({'scope':'contractor_unallocated','contract_fact':False,
-            'plan':None,'delta':None,'date':item['date'],'candidates':item['candidates']},ensure_ascii=False),'DevelopAid')
+            'plan':None,'delta':None,'date':item['date'],'candidates':item['candidates'],
+            'plan_annotations':annotations,'plan_source':projection.get('plan_source')},ensure_ascii=False),'DevelopAid')
         sheet.row_dimensions[index].height=62
     for cells in sheet:
         for cell in cells:
@@ -409,6 +391,27 @@ def write_company_workforce(book,projection):
     for column,width in zip('ABCDEFGH',(14,15,18,15,13,17,15,66)):
         sheet.column_dimensions[column].width=width
     sheet.auto_filter.ref='A4:H'+str(sheet.max_row)
+    annotations = projection.get('plan_annotations') or []
+    if annotations:
+        sheet.append([])
+        sheet.append(['Подписи численности в исходном ГПР — по операциям, не общий план рабочих / ИТР'])
+        sheet.merge_cells(start_row=sheet.max_row,start_column=1,end_row=sheet.max_row,end_column=8)
+        sheet.row_dimensions[sheet.max_row].height=36
+        sheet.append(['Операция','Работа','С','По','Как напечатано','Категория','Область','Источник'])
+        for annotation in annotations:
+            source = annotation.get('source') or {}
+            values = (annotation.get('operation'),annotation.get('name'),gpr.day(annotation.get('start')),
+                gpr.day(annotation.get('finish')),annotation.get('literal'),'Люди; рабочие / ИТР не разделены',
+                'Одна операция и период. Возможная общая бригада; не суммировать.',
+                'ГПР SHA '+str(source.get('sha256') or 'не указан')+' · стр. '+str(source.get('page') or '—')+
+                ' · строка '+str(source.get('row') or '—')+' · столбец '+str(source.get('column') or '—'))
+            sheet.append(list(values))
+            for cell in sheet[sheet.max_row]:
+                if isinstance(cell.value,str):cell.data_type='s'
+                cell.alignment=Alignment(wrap_text=True,vertical='top');cell.font=Font(name='Calibri',size=10)
+            for column in (3,4):sheet.cell(sheet.max_row,column).number_format='dd.mm.yyyy'
+            sheet.cell(sheet.max_row,8).comment=Comment(json.dumps(annotation,ensure_ascii=False),'DevelopAid')
+            sheet.row_dimensions[sheet.max_row].height=72
     sheet.freeze_panes=None
     sheet.sheet_properties.pageSetUpPr.fitToPage=True
     sheet.page_setup.orientation='landscape';sheet.page_setup.fitToWidth=1;sheet.page_setup.fitToHeight=0
@@ -516,7 +519,7 @@ def workbook(meta, cached):
         if status['state'] == 'overdue_incomplete':
             text = 'Просрочка '+str(status['days_after_planned_finish'])+' дн. · остаток '+format(status['remaining_quantity'],'.15g')+' '+status['unit']+' ('+format(status['remaining_fraction']*100,'.1f')+'%)'
         elif status['state'] == 'overdue_unclosed':
-            text = 'Просрочка '+str(status['days_after_planned_finish'])+' дн. · КС не закрыто.'
+            text = 'Срок истёк; физфакт не подтверждён. '+str(status['days_after_planned_finish'])+' дн. после срока.'
         elif status['state'] == 'deadline_comparison_unconfirmed':
             text = 'Срок прошёл; связь объёма с этим сроком не подтверждена.'
         elif status['state'] == 'not_due':
@@ -536,8 +539,9 @@ def workbook(meta, cached):
             cell = put(row,index+7,'')
             cell.fill = PatternFill('solid',fgColor=COLORS[bar['state']])
             if bar['state']=='overdue_unclosed':
+                cell.fill = PatternFill('lightDown',fgColor=COLORS['overdue'],bgColor='FFF2F2')
                 cell.border=Border(top=Side(style='thin',color=COLORS['overdue']),bottom=Side(style='thin',color=COLORS['overdue']))
-                cell.comment=Comment('Просрочка по ГПР: объём не закрыт учтёнными КС. Физический объём по отсутствующим данным не выдуман.\n'+json.dumps({
+                cell.comment=Comment('Срок истёк; физфакт не подтверждён. Красная штриховка — календарный риск, а не подтверждённый нулевой объём.\n'+json.dumps({
                     **identity(line,'overdue_without_ks_closure'),**bar},ensure_ascii=False),'DevelopAid')
                 continue
             checkpoint = next((item for item in model['checkpoints'] if item['date']==bar['report_date']),model['current'])

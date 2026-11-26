@@ -15,7 +15,7 @@ import re
 import stat
 from contextlib import nullcontext
 
-SCHEMA = 'contract-workforce-v1'
+SCHEMA = 'contract-workforce-v2'
 CATEGORIES = ('workers', 'itr')
 HEADERS = ('Дата', 'Рабочие: план', 'Рабочие: факт', 'Отклонение, чел.',
            'ИТР: план', 'ИТР: факт', 'Отклонение, чел.', 'Источники и пояснение')
@@ -308,6 +308,31 @@ def _candidates(person, rows):
     return found, basis, references
 
 
+def company_observations(people, row, peers):
+    """Whole-company identity only; a work qualifier never allocates a crew.
+
+    The strict contract matcher may correctly reject '(roofing)' when the
+    register has no work context. That does not erase the company's source
+    report. Distinct explicit legal names/forms remain distinct here too.
+    """
+    import developaid_monitor_contract_links as links
+    result = []
+    for person in people:
+        party = re.split(r'\b(?:договор\w*|дог\.)\s*', person['party'], maxsplit=1, flags=re.I)[0].strip(' ,;:—-')
+        qualifier = re.fullmatch(r'(.+?)\s*\(([^()]*)\)\s*', party)
+        base = qualifier[1].strip() if qualifier else party
+        candidates, basis = links._party_rows(base, peers)
+        identities = {tuple(links._party_parts(r.get('contractor'))[0]) + (links._party_parts(r.get('contractor'))[1],)
+                      for r in candidates}
+        if (basis in {'not_found','unresolved_context','ambiguous_alias'} or len(identities) != 1
+                or not any(r.get('id') == row.get('id') and r.get('excluded') is not True for r in candidates)):
+            continue
+        result.append({'date':person['date'], 'scope':'contractor_unallocated', 'contract_fact':False,
+            'candidate':{k:person.get(k) for k in ('personnel_key','party','workers','itr','workers_present',
+                'itr_present','source','raw','ambiguities')}})
+    return result
+
+
 def _whole_resource(resource, schedule, person, row):
     scope = resource.get('scope')
     if isinstance(scope, dict):
@@ -411,6 +436,10 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
         return result
     people = personnel(reports, cut)
     peers = register.get('rows') or []
+    result['company_observations'] = company_observations(people, row, peers)
+    # Literal operation/period captions are context, never whole-crew totals.
+    result['plan_annotations'] = [dict(a) for a in (schedule or {}).get('personnel_annotations') or []
+        if (a.get('source') or {}).get('sha256') == source.get('sha256')]
     by_date = defaultdict(list)
     for person in people:
         candidates, _, _ = _candidates(person, peers)
@@ -475,9 +504,53 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
         result['reason'] = ('В ГПР нет календарных строк численности; записи подрядчика в отчётах есть, '
             'но состав по этому договору не распределён.' if by_date else
             'В ГПР нет календарных строк численности и в сохранённых отчётах нет применимого состава этого договора.')
+        if result['company_observations']:
+            result['reason'] = ('Датированные записи подрядчика в отчётах есть; численность показана отдельно. '
+                'Общий состав по этому договору не подтверждён; план и отклонения не рассчитаны.')
     result['coverage']['dates'] = len(result['rows'])
+    result['company_rows'] = company_rows(result)
     result['revision'] = digest(result)
     return result
+
+
+def company_rows(projection):
+    """Supplemental source observations, never a contract allocation or total."""
+    if projection.get('available'):
+        return []
+    found, single, by_date = [], False, {}
+    for item in projection.get('rows') or []:
+        if (not _day(item.get('date')) or
+                projection.get('cut') and item['date'] > projection['cut']):
+            continue
+        by_date.setdefault(item['date'],[]).extend(c for c in item.get('candidates') or [] if c.get('personnel_key'))
+    for item in projection.get('company_observations') or []:
+        if (_day(item.get('date')) and (not projection.get('cut') or item['date'] <= projection['cut'])
+                and item.get('scope') == 'contractor_unallocated' and item.get('contract_fact') is False):
+            candidate = item.get('candidate') or {}
+            if candidate.get('personnel_key'):
+                by_date.setdefault(item['date'],[]).append(candidate)
+    for date, values in sorted(by_date.items()):
+        # Only identical source records are duplicates. Different source keys
+        # or conflicting values stay separate even when their counts match.
+        candidates = list({digest(candidate):candidate for candidate in values}.values())
+        if not candidates:
+            continue
+        row = {'date':date,'workers':None,'itr':None,'candidates':candidates,
+               'reason':'Несколько строк подрядчика на дату; численность не суммируется.'}
+        if len(candidates) == 1:
+            candidate = candidates[0]
+            reasons = []
+            for key,label in (('workers','Рабочие'),('itr','ИТР')):
+                value = candidate.get(key)
+                if (candidate.get(key+'_present') is True and type(value) in (int,float)
+                        and math.isfinite(value) and value >= 0 and not (candidate.get('ambiguities') or {}).get(key)):
+                    row[key] = value
+                    single = True
+                else:
+                    reasons.append(label+': категория не подтверждена.')
+            row['reason'] = 'Одна запись подрядчика на дату. По договорам повторно не суммировать. План не сопоставлен.'+(' '+' '.join(reasons) if reasons else '')
+        found.append(row)
+    return found if single else []
 
 
 def from_cached(project_name, row, register, cut, gpr_state, *, existing_bindings=()):

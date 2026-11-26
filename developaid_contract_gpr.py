@@ -585,13 +585,20 @@ def position_projections(listed, rds, schedule):
     counts = Counter(line['code'] for line in source_lines)
     source = {line['code']: line for line in source_lines}
     identities = Counter((r.get('estimate'), r.get('index')) for r in rds.get('rows') or [])
-    headings = {h['before_position']: h['name'] for h in rds.get('headings') or [] if not h.get('number')}
-    result, section = [], ''
+    headings = {}
+    for heading in rds.get('headings') or []:
+        if not heading.get('number') or re.fullmatch(r'\d+',str(heading.get('number'))):
+            headings.setdefault(heading['before_position'],[]).append(heading['name'])
+    result, section, previous_estimate = [], '', None
     observations = {(item.get('estimate'), item.get('index')): item
                     for item in (listed.get('fact') or {}).get('rds_positions') or []
                     if item.get('estimate_sha256') == rds.get('estimate_sha256')}
     for index, row in enumerate(rds.get('rows') or []):
-        section = headings.get(index, section)
+        if row.get('estimate') != previous_estimate:
+            section = ''
+        previous_estimate = row.get('estimate')
+        for heading in headings.get(index,[]):
+            section = heading
         identity = (row.get('estimate'), row.get('index'))
         binding = (bindings.get(identity) or {}) if binding_counts[identity] == 1 else {}
         targets = binding.get('lines') or [] if binding.get('status') in ('confirmed', 'proposed') else []

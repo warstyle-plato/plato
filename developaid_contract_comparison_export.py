@@ -21,7 +21,7 @@ from openpyxl.utils import get_column_letter
 from developaid_contract_rds import LAYOUT, FIELDS
 from developaid_contract_fact import _money
 
-SCHEMA = "contract-rds-plan-fact-export-v7"
+SCHEMA = "contract-rds-plan-fact-export-v8"
 MAX_ROWS = 10_000
 MAX_XLSX_BYTES = 8 * 1024 * 1024
 FILTERS = {"all": "Все работы и поставки", "behind": "Отстают от плана", "ahead": "Опережают план",
@@ -267,13 +267,13 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
             elif field == 'forecast_delay_days':
                 cell.number_format = '[Red]+0;-0;0'
         for column,formula in {
-            10:f'=IF(COUNT(F{excel_row})<1,"",IF(H{excel_row}="",0,H{excel_row})-F{excel_row})',
-            13:f'=IF(COUNT(K{excel_row})<1,"",IF(L{excel_row}="",0,L{excel_row})-K{excel_row})',
+            10:f'=IF(COUNT(F{excel_row},H{excel_row})<2,"",H{excel_row}-F{excel_row})',
+            13:f'=IF(COUNT(K{excel_row},L{excel_row})<2,"",L{excel_row}-K{excel_row})',
             16:f'=IF(OR(O{excel_row}="",E{excel_row}=""),"",O{excel_row}-E{excel_row})'
         }.items():
             sheet.cell(excel_row,column,formula)
             if column in (10,13):
-                sheet.cell(excel_row,column).comment = Comment('Факт минус план. Для отклонения пустой факт считается 0; это недобор внесённого факта, а не подтверждённый ноль работ.','DevelopAid')
+                sheet.cell(excel_row,column).comment = Comment('Факт минус план, только когда оба числа подтверждены. Пустой факт не заменяется нулём; явно записанный числовой 0 сохраняется.','DevelopAid')
         from developaid_contract_hierarchy import style_row
         style_row(sheet, excel_row, source.get('number'))
         sheet.row_dimensions[excel_row].height = min(78, max(30, 14*(len(str(source.get('name') or ''))//48+1)))

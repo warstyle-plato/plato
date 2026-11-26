@@ -48,14 +48,24 @@ def write_audit(book, comparison):
         section = headings.get(index,section)
         audit = row.get('physical_audit') or {}
         sources = audit.get('sources') or []
+        events = audit.get('accepted_events') or []
         def joined(key):
             return '; '.join(str(x[key]) if x.get(key) is not None else 'не записан' for x in sources) or 'нет источника'
         references = '; '.join(str(x.get('source',{}).get('sheet',''))+'!'+str(x.get('source',{}).get('row',''))+
             ' · '+str(x.get('source',{}).get('completed_quantity_cell') or '') for x in sources)
+        work, material, dates = joined('reported_work_quantity'), joined('reported_material_quantity'), joined('snapshot_date')
+        if not sources and events:
+            # Preserve the typed act increment instead of inventing a raw
+            # cumulative cell or saying that a known quantity has no source.
+            references = '; '.join(str(x.get('label') or 'КС')+' · стр. '+str(x['source'].get('page') or '—')+
+                ' · строка '+str(x['source'].get('row') or '—')+' · SHA '+str(x['source'].get('sha256') or x['source'].get('file_sha256') or 'не указан') for x in events)
+            work = '; '.join(str(x['work_quantity']) for x in events)
+            material = 'В датированных записях объём поставки не указан'
+            dates = '; '.join(dict.fromkeys(x['end'] for x in events))
         binding = audit.get('gpr_binding') or {}
         links = '; '.join(str(x['code'])+' × '+str(x['share']) for x in binding.get('lines') or [])
         sheet.append([section,row.get('number'),row.get('name'),row.get('contract_quantity'),row.get('unit'),references,
-            joined('reported_work_quantity'),joined('reported_material_quantity'),joined('snapshot_date'),
+            work,material,dates,
             row.get('fact_quantity'),audit.get('accepted_material_quantity'),audit.get('conversion') or 'не принято',
             links or binding.get('reason') or 'не привязано',audit.get('state') or 'audit_not_retained',
             audit.get('reason') or (row.get('comments') or {}).get('fact_quantity') or 'Аудит источника не сохранён; обновите карточку.'])
