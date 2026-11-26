@@ -44,7 +44,7 @@ def test_native_workbook_conditionally_includes_staff_and_checks_even_unavailabl
     response = client.post('/monitor/contracts/gpr.xlsx', json=body)
     assert response.status_code == 200, response.text
     book = load_workbook(io.BytesIO(response.content))
-    assert book.sheetnames == ['ГПР', 'Выполнение']+(['Численность'] if has_plan else [])
+    assert book.sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']+(['Численность'] if has_plan else [])
     assert all(sheet.freeze_panes is None for sheet in book)
     if has_plan:
         assert projection['coverage']['workers_pairs'] == projection['coverage']['itr_pairs'] == 1
@@ -133,7 +133,7 @@ def test_persisted_document_change_rebuilds_fresh_scope_and_keeps_gpr_download_u
     assert workforce.require_current(changed['gpr']['workforce'], PROJECT)
     response = client.post('/monitor/contracts/gpr.xlsx', json={**base, 'ticket': changed['ticket'],
         'revision': changed['gpr_export']['revision']})
-    assert response.status_code == 200 and load_workbook(io.BytesIO(response.content)).sheetnames == ['ГПР', 'Выполнение']
+    assert response.status_code == 200 and load_workbook(io.BytesIO(response.content)).sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']
 
 
 def test_corrected_operational_document_write_seals_old_context_then_reads_fresh_gpr_card(pair, monkeypatch):

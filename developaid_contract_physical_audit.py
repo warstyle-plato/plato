@@ -62,6 +62,10 @@ def position_audit(position, identity, current, fact, observed, binding, cut):
         state, reason = 'processing_or_component_gap', ' '.join(observed.get('reasons') or []) or 'Запись есть, но компонент работ не определён.'
     else:
         state, reason = 'source_missing', 'Исходная строка КС для этой позиции не найдена.'
+    details = [row.get('reason') for row in fact.get('rds_unread') or []
+               if (row.get('estimate'),row.get('index')) == identity and row.get('reason')]
+    if details:
+        reason += ' '+ '; '.join(dict.fromkeys(details))
     return {'state':state, 'reason':reason, 'sources':sources, 'rds_position':list(identity),
         'rds_number':position.get('number'), 'rds_unit':position.get('unit'), 'rds_quantity':position.get('quantity'),
         'estimate_sha256':current.get('estimate_sha256'), 'cut':cut,
