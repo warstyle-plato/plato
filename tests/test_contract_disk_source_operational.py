@@ -37,7 +37,7 @@ def prepare(pair, *, raw=None, kind='Договор'):
     row,=main.core._monitor_contract_disk_rows(PROJECT,CUT)
     assert not row.get('_disk_review_reason'),row
     raw=raw or pdf_for(disk.native_owner(row))
-    catalog=source(raw,party='Учебный исполнитель',number='SOURCE-B',kind=kind)
+    catalog=source(raw,role='Сметчик' if kind=='КС-6а' else 'Юрист',party='Учебный исполнитель',number='SOURCE-B',kind=kind)
     if kind=='КС-6а': catalog={key.replace('.pdf','.xlsx'):value for key,value in catalog.items()}
     client=Client(catalog)
     with journal.namespace(PROJECT):

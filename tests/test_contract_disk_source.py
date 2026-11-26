@@ -38,8 +38,10 @@ def setup(monkeypatch,tmp_path):
 def source(raw=b'%PDF-fixture',role='Юрист',party='Учебный подрядчик',number='A-12',kind='Договор'):
     return {f'/{role}/{party}/{number}/{kind}/file.pdf':raw}
 
-def test_same_source_in_two_roles_is_one_item(setup):
-    result=disk.scan('Fixture',URL,'2026-11-25',client=Client({**source(),**source(role='Сметчик')}))
+def test_same_source_in_two_legal_locations_is_one_item(setup):
+    result=disk.scan('Fixture',URL,'2026-11-25',client=Client({
+        '/Юрист/Учебный подрядчик/A-12/file.pdf':b'%PDF-fixture',
+        '/Юрист/Учебный подрядчик/A-12/Приложения/file.pdf':b'%PDF-fixture'}))
     assert len(result['entries'])==1
     assert len(result['entries'][0]['locations'])==2
     assert result['entries'][0]['status']=='new'
@@ -53,7 +55,7 @@ def test_same_bytes_in_other_contract_never_autoassigns(setup):
     assert all(x['status']=='review' for x in result['entries'])
 
 @pytest.mark.parametrize('path,kind,layout',[
- ('/Юрист/Учебный подрядчик/A-12/ГПР/a.pdf','ГПР','current'),
+ ('/Юрист/Учебный подрядчик/A-12/ГПР/a.pdf','ГПР','legacy'),
  ('/Сметчик/КС-6/Учебный подрядчик/A-12/a.xlsx','КС-6а','legacy'),
  ('/Общие по проекту/Сводная по закрытию/all.xlsx',disk.COMMON,'current')])
 def test_explicit_layouts(path,kind,layout):
@@ -172,7 +174,7 @@ def test_reused_pdf_number_does_not_prove_another_counterparty(setup,monkeypatch
 
 
 def test_xlsx_in_gpr_folder_is_visible_and_held_not_imported_as_ks6(setup):
-    client=Client({'/Сметчик/Учебный подрядчик/A-12/ГПР/Gantt.xlsx':b'xlsx-fixture'})
+    client=Client({'/Юрист/Учебный подрядчик/A-12/ГПР/Gantt.xlsx':b'xlsx-fixture'})
     result=disk.scan('Fixture',URL,'2026-11-25',client=client)
     assert len(result['entries'])==1
     assert result['entries'][0]['status']=='review'

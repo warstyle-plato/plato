@@ -20,10 +20,11 @@ import urllib.request
 import zipfile
 import developaid_contract_identity_store as ns
 
-SCHEMA = 'contract-disk-intake-v4'
+SCHEMA = 'contract-disk-intake-v5'
 API = 'https://cloud-api.yandex.net/v1/disk/public/resources'
 ROLES = {'Юрист', 'Сметчик'}
 KINDS = {'Договор', 'Дополнительные соглашения', 'РДС', 'ГПР', 'КС-2', 'КС-6а', 'Акты передачи площадки'}
+LEGAL_DOCUMENTS = 'Документы договора'
 COMMON = 'Сводная по закрытию'
 MAX_FILE, MAX_BATCH, MAX_JSON = 20*1024*1024, 50*1024*1024, 2*1024*1024
 HASH = re.compile(r'[0-9a-f]{64}\Z')
@@ -54,10 +55,15 @@ def location(path):
         parts.pop(0)
     if len(parts) == 3 and parts[:2] == ['Общие по проекту', COMMON]:
         return {'role': parts[0], 'party': '', 'contract': '', 'kind': COMMON, 'layout': 'current'}
-    if len(parts) != 5 or parts[0] not in ROLES:
+    if not parts or parts[0] not in ROLES:
+        return None
+    if (parts[0] == 'Юрист' and (len(parts) == 4 or len(parts) == 5 and parts[3] == 'Приложения')
+            and parts[1].strip() and parts[2].strip()):
+        return dict(role=parts[0], party=parts[1], contract=parts[2], kind=LEGAL_DOCUMENTS, layout='current')
+    if len(parts) != 5:
         return None
     role, party, contract, kind, _ = parts
-    layout = 'current'
+    layout = 'current' if role == 'Сметчик' and kind in {'КС-2', 'КС-6'} else 'legacy'
     if party in KINDS | {'КС-6'}:
         role, kind, party, contract, _ = parts
         layout = 'legacy'
@@ -65,6 +71,41 @@ def location(path):
     if kind not in KINDS or not party.strip() or not contract.strip():
         return None
     return dict(role=role, party=party, contract=contract, kind=kind, layout=layout)
+
+
+def location_purpose(loc):
+    """Role directs the workflow; it never proves the document's content."""
+    if loc.get('kind') == COMMON and loc.get('role') == 'Общие по проекту':
+        return 'summary_book'
+    if loc.get('role') == 'Юрист' and loc.get('kind') not in {'КС-2', 'КС-6а'}:
+        return 'legal_pdf'
+    if loc.get('role') == 'Сметчик':
+        return {'КС-2': 'ks2_pdf', 'КС-6а': 'ks6_book'}.get(loc.get('kind'), '')
+    return ''
+
+
+def pdf_document_types(record):
+    """Only actual native reader results supply semantic document types."""
+    if record.get('act'):
+        return ['КС-2']
+    types = []
+    if record.get('agreement'):
+        types.append('Дополнительное соглашение')
+    if record.get('estimates'):
+        types.append('РДС')
+    if record.get('schedule'):
+        types.append('ГПР')
+    return types or ['Документ договора']
+
+
+def pdf_role_reason(entry, record):
+    purposes = {location_purpose(loc) for loc in entry.get('locations') or []}
+    wanted = 'ks2_pdf' if record.get('act') else 'legal_pdf'
+    if purposes != {wanted}:
+        return ('По содержимому это акт КС-2: он должен находиться в Сметчик / Контрагент / Договор / КС-2.'
+                if wanted == 'ks2_pdf' else
+                'По содержимому это документ договора или приложение, а не акт КС-2. Такие PDF должны находиться в Юрист / Контрагент / Договор.')
+    return ''
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args):
@@ -333,6 +374,8 @@ def known(entry, hashes):
         record = ns.read_bytes(card/(sha+'.json'), 16*1024*1024)
         need(raw and hashlib.sha256(raw).hexdigest() == sha and record and json.loads(record).get('sha256') == sha,
              'Сохранённый PDF не совпал с его отпечатком. Проверьте исходник карточки.')
+        if pdf_role_reason(entry, json.loads(record)):
+            return False
         return True
     if entry['identity'] not in hashes['ks6'].get(sha, set()):
         return False
@@ -368,15 +411,21 @@ def scan(project, source, cut, *, client=None, row_provider=None):
         grouped, issues = {}, []
         for item in files:
             loc = location(item['path'])
-            reason = ('Нужен путь Роль / Контрагент / Договор / Тип / Файл.' if not loc else
+            reason = ('Нужен путь Юрист / Контрагент / Договор / Файл либо Сметчик / Контрагент / Договор / КС-2 или КС-6 / Файл.' if not loc else
                       'Контрольная сумма или допустимый размер файла не подтверждены.' if not isinstance(item['sha256'], str) or not HASH.fullmatch(item['sha256']) or type(item['bytes']) is not int or not 0 < item['bytes'] <= MAX_FILE else '')
             if reason:
                 issues.append({**item, 'status': 'review', 'reason': reason})
                 continue
+            purpose = location_purpose(loc)
+            if not purpose:
+                issues.append({**item, 'status':'review', 'reason':
+                    'Договор, допники, РДС, ГПР и приложения хранятся у Юриста; КС-2 и КС-6 — только у Сметчика. Файл не принят из папки другого назначения.'})
+                continue
             common = loc['kind'] == COMMON
             matches = [] if common else match_rows(loc, candidates)
             suffix = PurePosixPath(item['filename']).suffix.lower()
-            family = 'ks6' if loc['kind'] in {'КС-6а',COMMON} and suffix in {'.xls','.xlsx','.xlsm'} else 'pdf' if suffix == '.pdf' and loc['kind'] not in {'КС-6а',COMMON} else ''
+            family = ('ks6' if purpose in {'ks6_book','summary_book'} and suffix in {'.xls','.xlsx','.xlsm'} else
+                      'pdf' if purpose in {'legal_pdf','ks2_pdf'} and suffix == '.pdf' else '')
             row = matches[0] if len(matches) == 1 else None
             scope = 'project' if common else row['id'] if row else ns.digest(dict(party=loc['party'], contract=loc['contract']))
             identifier = ns.digest(dict(scope=scope, sha256=item['sha256']))
@@ -386,7 +435,8 @@ def scan(project, source, cut, *, client=None, row_provider=None):
             if loc['kind'] not in entry['kinds']:
                 entry['kinds'].append(loc['kind'])
             if not family:
-                entry.update(status='review', reason='ГПР в Excel виден в каталоге, но его приём в карточку договора пока не поддерживается. Нужен отдельный разбор ГПР.' if loc['kind']=='ГПР' and suffix in {'.xls','.xlsx','.xlsm'} else 'Нужен PDF, а для КС-6а или сводной — XLS, XLSX либо XLSM.')
+                entry.update(status='review', reason='Excel-приложение сохранено на Диске, но его приём как РДС или ГПР пока не поддерживается. Это не КС-6; нужен отдельный поддерживаемый разбор.' if purpose=='legal_pdf' and suffix in {'.xls','.xlsx','.xlsm'} else
+                    'Для договора, допников, приложений и КС-2 нужен PDF; для КС-6 и общей сводной — XLS, XLSX либо XLSM.')
             elif not common and row is None:
                 entry.update(status='review', reason='Договор не найден однозначно. Сверьте реквизиты или сначала создайте карточку через приём исходного PDF.')
             elif family == 'ks6' and entry['sha256'] in hashes['ks6'] and not known(entry, hashes):
@@ -484,6 +534,8 @@ def check_pdf(entry, raw, row):
     need(row and ns.day(row.get('contract_date')), 'Дата договора не подтверждена в карточке. Уточните реквизиты перед приёмом с Диска.')
     record = files._record(entry['sha256'], entry['filename'], raw, dt.datetime.now(dt.timezone.utc).isoformat())
     need(not record.get('scan'), 'PDF требует подтверждения реквизитов. Откройте штатный приём документа договора.')
+    reason = pdf_role_reason(entry, record)
+    need(not reason, reason)
     source_contract = record.get('contract')
     # Manual card upload permits ancillary documents without their own header.
     # Automated folder intake cannot use that exception to assign a source:
@@ -497,7 +549,9 @@ def check_pdf(entry, raw, row):
     reason = files._same_contract(source_contract, row)
     need(not reason, reason or 'Принадлежность PDF не подтверждена.')
     parties = pdf_party_proofs(raw,row)
-    return dict(kind='pdf', title=record.get('title'), contract=record.get('contract'), parties=parties, notice='Сохранение не подтверждает подпись, ГПР или финансовый факт.')
+    return dict(kind='pdf', document_types=pdf_document_types(record), semantic_basis='native_pdf_content',
+                title=record.get('title'), contract=record.get('contract'), parties=parties,
+                notice='Тип документа прочитан из PDF. Сохранение не подтверждает подпись, ГПР или финансовый факт.')
 
 def stage(project, revision, item_ids, *, client=None, row_provider=None):
     need(isinstance(revision, str) and HASH.fullmatch(revision), 'Номер проверки каталога неверен.')
