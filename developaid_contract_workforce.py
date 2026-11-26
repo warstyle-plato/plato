@@ -175,7 +175,7 @@ def reports_revision(reports, cut):
     pinned = [{'date': r.get('date'), 'text': r.get('text'),
                'parsed': r.get('parsed'), 'contractors': r.get('contractors'),
                'source': r.get('source'), 'stored_at': r.get('stored_at')}
-              for r in reports if _day(r.get('date')) and r['date'] <= cut]
+              for r in reports if cut and _day(r.get('date')) and _day(r['date']) <= cut]
     return digest(sorted({digest(r) for r in pinned}))
 
 
@@ -435,7 +435,7 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
         'report_input_status': 'loaded' if reports_loaded else 'not_loaded',
         'report_status_note': '' if reports_loaded else REPORTS_NOT_LOADED,
         'report_sources_revision': reports_revision(reports, cut) if reports_loaded else None,
-        'company_observations': [], 'report_dates': sorted({_day(r.get('date')) for r in reports if _day(r.get('date')) and r['date'] <= cut}),
+        'company_observations': [], 'report_dates': sorted({_day(r.get('date')) for r in reports if cut and _day(r.get('date')) and _day(r['date']) <= cut}),
         'bindings_revision': digest(existing_bindings),
         'coverage': {'dates': 0, 'workers_pairs': 0, 'itr_pairs': 0, 'project_total': False}}
     if not cut or not _plan_bound(row, source):
@@ -524,10 +524,12 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
 
 
 def company_rows(projection):
-    """Supplemental source observations, never a contract allocation or total."""
-    if projection.get('available'):
-        return []
-    found, single, by_date = [], False, {}
+    """One source observation per row, shared by the PAGE and workbook.
+
+    A contract resource plan does not suppress unallocated company reports.
+    Different source records remain separate even when their counts agree.
+    """
+    found, by_date = [], {}
     for item in projection.get('rows') or []:
         if (not _day(item.get('date')) or
                 projection.get('cut') and item['date'] > projection['cut']):
@@ -540,27 +542,23 @@ def company_rows(projection):
             if candidate.get('personnel_key'):
                 by_date.setdefault(item['date'],[]).append(candidate)
     for date, values in sorted(by_date.items()):
-        # Only identical source records are duplicates. Different source keys
-        # or conflicting values stay separate even when their counts match.
         candidates = list({digest(candidate):candidate for candidate in values}.values())
-        if not candidates:
-            continue
-        row = {'date':date,'workers':None,'itr':None,'candidates':candidates,
-               'reason':'Несколько строк подрядчика на дату; численность не суммируется.'}
-        if len(candidates) == 1:
-            candidate = candidates[0]
+        for candidate in candidates:
+            row = {'date':date,'workers':None,'itr':None,'candidates':[candidate]}
             reasons = []
             for key,label in (('workers','Рабочие'),('itr','ИТР')):
                 value = candidate.get(key)
                 if (candidate.get(key+'_present') is True and type(value) in (int,float)
                         and math.isfinite(value) and value >= 0 and not (candidate.get('ambiguities') or {}).get(key)):
                     row[key] = value
-                    single = True
                 else:
                     reasons.append(label+': категория не подтверждена.')
-            row['reason'] = 'Одна запись подрядчика на дату. По договорам повторно не суммировать. План не сопоставлен.'+(' '+' '.join(reasons) if reasons else '')
-        found.append(row)
-    return found if single else []
+            row['reason'] = (str(candidate.get('party') or 'Подрядчик')+
+                '. Отдельная запись источника; с другими строками не суммируется. '
+                'По договорам повторно не суммировать. План не сопоставлен.'+
+                (' '+' '.join(reasons) if reasons else ''))
+            found.append(row)
+    return found
 
 
 def from_cached(project_name, row, register, cut, gpr_state, *, existing_bindings=()):

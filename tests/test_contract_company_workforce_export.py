@@ -110,3 +110,14 @@ def test_native_unallocated_company_export_is_guarded_even_though_contract_avail
     assert fresh['gpr']['workforce']['available'] is False
     result=client.post('/monitor/contracts/gpr.xlsx',json={**body,'ticket':fresh['ticket'],'revision':fresh['gpr_export']['revision']})
     assert load_workbook(io.BytesIO(result.content))['Численность подрядчика']['C5'].value==9
+
+
+def test_unread_reports_with_a_dated_plan_keep_an_undated_unknown_company_row():
+    state=projection([])
+    state.update(report_input_status='not_loaded',report_status_note=workforce.REPORTS_NOT_LOADED,
+                 plan_source={'edition':{'date':'2026-01-20'}},
+                 plan_annotations=[{'literal':'2–5 чел','start':'2026-01-20','finish':'2026-01-24'}])
+    sheet=export.write_company_workforce(Workbook(),state)
+    assert sheet['A5'].value is sheet['C5'].value is sheet['F5'].value is None
+    assert sheet['H5'].value==workforce.REPORTS_NOT_LOADED
+    assert sheet['D5'].data_type==sheet['G5'].data_type=='f'

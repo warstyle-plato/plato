@@ -34,7 +34,8 @@ def test_work_qualifier_keeps_company_reports_without_changing_strict_contract_a
     assert [(r['date'],r['workers'],r['itr']) for r in rows]==[('2026-01-14',4,2),('2026-01-24',0,2)]
     wb=Workbook();sheet=export.write_company_workforce(wb,got)
     assert sheet['C6'].value==0 and sheet['F6'].value==2
-    assert all(sheet.cell(i,c).value is None for i in (5,6) for c in (2,4,5,7))
+    assert all(sheet.cell(i,c).value is None for i in (5,6) for c in (2,5))
+    assert all(sheet.cell(i,c).data_type == 'f' for i in (5,6) for c in (4,7))
     assert 'предшествует' in sheet['H5'].value
     assert 'contractor_unallocated' in sheet['H6'].comment.text and sheet.freeze_panes is None
 
@@ -55,9 +56,11 @@ def test_two_contracts_share_one_company_observation_without_allocation_or_doubl
     assert len(values)==1 and (values[0]['workers'],values[0]['itr'])==(82,5)
     assert all(r['workers_fact'] is None for r in got['rows'])
     assert 'повторно не суммировать' in values[0]['reason']
-    # A second, genuinely distinct report is a conflict, never 164 workers.
+    # A second source stays visible as its own row, never a 164-worker total.
     reports.append({'date':'2026-01-24','text':'Исполнитель (кровля) ИТР 5, рабочие 82','source':{'message':2}})
-    assert export.company_workforce_rows(workforce.project(schedule,reports,row,register,'2026-01-24',source=source))==[]
+    distinct=export.company_workforce_rows(workforce.project(schedule,reports,row,register,'2026-01-24',source=source))
+    assert len(distinct)==2 and [item['workers'] for item in distinct]==[82,82]
+    assert all(len(item['candidates'])==1 and 'не суммируется' in item['reason'] for item in distinct)
 
 
 def test_unknown_plan_ranges_are_source_context_not_workers_itr_totals_or_carried_forward_plan():
@@ -72,7 +75,8 @@ def test_unknown_plan_ranges_are_source_context_not_workers_itr_totals_or_carrie
     wb=Workbook();s=export.write_company_workforce(wb,got)
     assert '2–5 чел' in s['H5'].value and 'предшествует' in s['H5'].value
     assert 'нет подписи' in s['H6'].value
-    assert all(s.cell(r,c).value is None for r in [5,6] for c in [2,4,5,7])
+    assert all(s.cell(r,c).value is None for r in [5,6] for c in [2,5])
+    assert all(s.cell(r,c).data_type == 'f' for r in [5,6] for c in [4,7])
     assert len(json.loads(s['H5'].comment.text)['plan_annotations'])==2
     assert sum(c.value=='2–5 чел' for cells in s for c in cells)==2
     assert any('SHA '+source['sha256'] in str(c.value) for cells in s for c in cells)

@@ -376,14 +376,14 @@ def write_company_workforce(book,projection):
         cell.font=Font(name='Calibri',size=10,bold=True,color='FFFFFF')
     for index,item in enumerate(rows,5):
         annotations = [a for a in projection.get('plan_annotations') or [] if
-            gpr.day(a.get('start')) and gpr.day(a.get('finish')) and a['start'] <= item['date'] <= a['finish']]
+            gpr.day(item.get('date')) and gpr.day(a.get('start')) and gpr.day(a.get('finish')) and a['start'] <= item['date'] <= a['finish']]
         reason = item['reason']
         if annotations:
             reason += ' В ГПР на эту дату: '+', '.join(dict.fromkeys(a['literal'] for a in annotations))+'. Это подписи отдельных операций; рабочие и ИТР не разделены, бригады не суммируются.'
         elif projection.get('plan_annotations'):
             reason += ' На эту дату в исходном ГПР нет подписи численности; прежние диапазоны не перенесены.'
         edition = (projection.get('plan_source') or {}).get('edition') or {}
-        if edition.get('date') and item['date'] < edition['date']:
+        if edition.get('date') and gpr.day(item.get('date')) and item['date'] < edition['date']:
             reason += ' Дата предшествует текущей редакции ГПР; её историческое действие не подтверждено.'
         values=(gpr.day(item['date']),None,item['workers'],None,None,item['itr'],None,reason)
         for column,value in enumerate(values,1):
