@@ -192,7 +192,10 @@ def test_native_admin_choice_refreshes_control_and_denies_old_ticket(card,monkey
     assert files._schedule_identity(updated['documents'],CUT)['sha256']==second
     assert client.post('/monitor/contracts/result',json={'key':KEY,'session':'synthetic-owner','ticket':opened['ticket']}).status_code==409
     exported=client.post('/monitor/contracts/gpr.xlsx',json={**base,'ticket':updated['ticket'],'revision':updated['gpr_export']['revision']})
-    assert exported.status_code==200 and load_workbook(io.BytesIO(exported.content)).sheetnames==['ГПР','Выполнение']
+    assert exported.status_code == 200
+    workbook = load_workbook(io.BytesIO(exported.content))
+    assert workbook.sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']
+    assert all(workbook[name].max_row > 1 for name in workbook.sheetnames)
 
 
 @pytest.mark.parametrize('width',[390,1440])
