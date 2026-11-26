@@ -265,6 +265,14 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
                 cell.number_format = '[Red]+0;-0;0'
             elif field == 'forecast_delay_days':
                 cell.number_format = '[Red]+0;-0;0'
+        for column,formula in {
+            10:f'=IF(COUNT(F{excel_row})<1,"",IF(H{excel_row}="",0,H{excel_row})-F{excel_row})',
+            13:f'=IF(COUNT(K{excel_row})<1,"",IF(L{excel_row}="",0,L{excel_row})-K{excel_row})',
+            16:f'=IF(OR(O{excel_row}="",E{excel_row}=""),"",O{excel_row}-E{excel_row})'
+        }.items():
+            sheet.cell(excel_row,column,formula)
+            if column in (10,13):
+                sheet.cell(excel_row,column).comment = Comment('Факт минус план. Для отклонения пустой факт считается 0; это недобор внесённого факта, а не подтверждённый ноль работ.','DevelopAid')
         from developaid_contract_hierarchy import style_row
         style_row(sheet, excel_row, source.get('number'))
         sheet.row_dimensions[excel_row].height = min(78, max(30, 14*(len(str(source.get('name') or ''))//48+1)))
@@ -307,7 +315,8 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     sheet.oddFooter.center.text = 'Страница &P из &N'
     output = io.BytesIO()
     book.save(output)
-    raw = output.getvalue()
+    from developaid_contract_builder_plan import cache_builder_formulas
+    raw = cache_builder_formulas(output.getvalue(),book)
     if len(raw) > MAX_XLSX_BYTES:
         raise ExportProblem('Файл слишком большой для выгрузки.')
     return raw

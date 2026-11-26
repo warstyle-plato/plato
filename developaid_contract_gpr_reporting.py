@@ -2,7 +2,8 @@
 
 Observation checkpoints retain their dates and outcomes. Forward-held state is
 an analytical comparison, never a production interval or a new observation.
-No history is backfilled before the first confirmation; source gaps stay empty.
+The first report can assess preceding source-plan intervals retrospectively;
+this is explicitly distinct from observed daily history or production dates.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import math
 
 import developaid_contract_plan as plan
 
-SCHEMA = 'contract-physical-state-v2'
+SCHEMA = 'contract-physical-state-v3'
 COLORS = {'plan': 'D9D9D9', 'unknown': 'E4DFEC', 'closure_unconfirmed': 'E4DFEC', 'fact': '70AD47',
           'warning': 'FFD966', 'overdue': 'E06666', 'lag': 'FFD966'}
 LEGEND = ('Серый — будущий план; сиреневый — нет подтверждённых данных или завершение после срока не подтверждено. '
@@ -21,7 +22,7 @@ LEGEND = ('Серый — будущий план; сиреневый — нет
           'красный — незавершённость подтверждена источником после срока ГПР. '
           'Последний известный объём сохраняется до следующего наблюдения и среза; план сравнивается с ним на каждый день. '
           'Накопленный объём не подтверждает даты производства; перенос не означает новые работы. '
-          'До первого наблюдения факт неизвестен; реальные разрывы исходного ГПР сохранены. '
+          'Светлый или штрихованный участок до первого отчёта оценивает плановый участок по итогу этого отчёта; ежедневные объёмы и начало работ не восстановлены. Реальные разрывы ГПР сохранены. '
           'Будущее остаётся серым. План равномерный по активным интервалам ГПР, если профиль объёмов не указан. '
           'Дата последнего подтверждения и возраст данных показаны отдельно. '
           'Чёрная линия — срез; оранжевая — сегодня. Денежное закрытие не является оплатой или физической готовностью.')
@@ -140,10 +141,22 @@ def project(line, progress, parts, origin, cut):
             'range_kind': 'source_snapshot', 'date_basis': 'dated_source_snapshot'}
         result['checkpoints'].append(snapshot)
         last_report = observed
-    # An observation becomes known on its own date, never at the beginning of
-    # a reported production period. Carry only its quantity forward, comparing
-    # it with each day's plan. Later catch-up cannot repaint an earlier day.
     checkpoints = result['checkpoints']
+    # The owner needs the whole source-plan interval readable. Assess its
+    # prefix by the FIRST report, explicitly as a retrospective assessment,
+    # never as daily physical observations or a reconstructed work start.
+    # Later catch-up cannot change this first report's result.
+    if checkpoints:
+        point = checkpoints[0]
+        first_report_offset = (day(point['date'])-first).days
+        for left, right in parts:
+            for offset in range(left, min(right, first_report_offset, cut_offset+1)):
+                at = first+dt.timedelta(days=offset)
+                state = point['state']
+                if state == 'overdue' and at <= finish:
+                    state = 'warning'
+                _append(result['bars'],offset,state,point,'retrospective_report_assessment',at,point['planned_fraction'])
+    # From the report onward, carry the known quantity against each day's plan.
     for index, point in enumerate(checkpoints):
         begin = day(point['date'])
         until = day(checkpoints[index+1]['date'])-dt.timedelta(days=1) if index+1 < len(checkpoints) else date
@@ -171,7 +184,7 @@ def project(line, progress, parts, origin, cut):
     result['note'] = ('Последний подтверждённый объём: '+format(last_checkpoint['fact_quantity'], '.15g')+
         ' '+progress['unit']+' на '+last_checkpoint['date']+'; возраст данных на срез: '+str(result['age_days'])+
         ' дн. Объём перенесён до среза без новых наблюдений; цвет сравнивает его с планом каждого дня. '
-        'Отчётные результаты сохранены по действующей редакции ГПР; это не история опубликованных вердиктов.'
+        'Участок до первого отчёта оценён по его итогу на '+checkpoints[0]['date']+'; это не начало работ и не восстановленные ежедневные объёмы. '
         if last_checkpoint else 'Нет датированного подтверждения объёма. Прежние периоды не восстановлены.')
 
     return result
@@ -190,7 +203,9 @@ def _append(bars, offset, state, point, kind, at, planned):
                      'state_start':at.isoformat(), 'state_finish':at.isoformat(),
                      'planned_fraction_start':planned, 'planned_fraction_finish':planned,
                      'fact_quantity': point['fact_quantity'], 'fact_fraction': point['fact_fraction'],
-                     'carried_forward': True, 'not_actual_dates': True})
+                     'carried_forward': kind != 'retrospective_report_assessment',
+                     'comparison_date': point['date'] if kind == 'retrospective_report_assessment' else None,
+                     'not_actual_dates': True})
 
 
 def cell_states(model, ticks):

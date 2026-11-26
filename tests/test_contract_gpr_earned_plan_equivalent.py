@@ -55,7 +55,7 @@ def test_yellow_old_period_survives_green_catchup_and_future_never_green():
     assert first['history_available'] and latest['history_available']
     assert latest['checkpoints'][0]==first['checkpoints'][0]
     assert [p['state'] for p in latest['checkpoints']]==['warning','fact']
-    assert [(bar['start'],bar['end'],bar['state']) for bar in latest['bars']]==[(9,19,'warning'),(19,24,'fact')]
+    assert [(bar['start'],bar['end'],bar['state']) for bar in latest['bars']]==[(0,9,'warning'),(9,19,'warning'),(19,24,'fact')]
     assert all(bar['end']<=24 for bar in latest['bars'])
     assert latest['current']['delta_pp']==pytest.approx(0)
 
@@ -88,9 +88,11 @@ def test_equal_deadline_is_yellow_and_complete_has_no_on_time_claim():
 
 def test_document_observation_stays_a_point_but_its_quantity_persists_forward():
     row=view(80,[event(10,'2026-11-10'),event(70,'2026-11-20',label='КС-2 № 2')])
-    assert [(bar['start'],bar['end']) for bar in row['reporting']['bars']]==[(9,19),(19,24)]
+    assert [(bar['start'],bar['end']) for bar in row['reporting']['bars']]==[(0,9),(9,19),(19,24)]
     assert all(p['start']==p['date'] for p in row['reporting']['checkpoints'])
-    assert all(b['carried_forward'] and b['not_actual_dates'] for b in row['reporting']['bars'])
+    assert all(b['not_actual_dates'] for b in row['reporting']['bars'])
+    assert row['reporting']['bars'][0]['range_kind']=='retrospective_report_assessment'
+    assert row['reporting']['bars'][0]['carried_forward'] is False
     assert all(p['date_basis']=='document_observation' for p in row['reporting']['checkpoints'])
 
 
@@ -98,7 +100,7 @@ def test_latest_total_without_increments_cannot_reconstruct_previous_reports():
     row=view(81.5,source_dates=['2026-11-18'])
     model=row['reporting']
     assert not model['history_available']
-    assert [(b['start'],b['end'],b['range_kind']) for b in model['bars']]==[(17,24,'known_state')]
+    assert [(b['start'],b['end'],b['range_kind']) for b in model['bars']]==[(0,17,'retrospective_report_assessment'),(17,24,'known_state')]
     assert model['last_confirmed_at']=='2026-11-18' and model['age_days']==6
     assert model['checkpoints'][0]['planned_fraction']==.6
     assert model['current']['planned_fraction']==.8

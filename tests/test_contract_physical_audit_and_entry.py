@@ -9,7 +9,7 @@ from tests.test_contract_gpr_earned_plan_equivalent import view, event
 def test_no_report_day_resets_quantity_and_plan_can_overtake_it():
     row = view(60,[event(60,'2026-11-10')])
     model = row['reporting']
-    states = {day:bar for bar in model['bars'] for day in range(bar['start'],bar['end'])}
+    states = {day:bar for bar in model['bars'] if bar['range_kind']!='retrospective_report_assessment' for day in range(bar['start'],bar['end'])}
     assert set(states) == set(range(9,24))  # every day from observation to cut
     assert states[9]['state']=='fact' and states[23]['state']=='warning'
     assert all(bar['fact_quantity']==60 and bar['report_date']=='2026-11-10' for bar in states.values())
@@ -36,14 +36,15 @@ def test_source_cached_zero_is_visible_but_not_accepted_as_work():
     assert accepted['state']=='confirmed_zero'
 
 
-def test_entry_sheet_is_blank_and_separates_work_from_delivery():
+def test_entry_sheet_defaults_to_zero_and_separates_work_from_delivery():
     book=Workbook();r={'number':'1','name':'Монтаж','unit':'м2','contract_quantity':10,'estimate':0,'index':0,'fact_quantity':3}
     data={'rows':[r],'headings':[{'name':'Корпус 2','before_position':0}],'estimate_sha256':'a'*64}
     write_builder_template(book,data);write_audit(book,data);sheet=book['Физфакт строителей']
     assert sheet['A5'].value==sheet['A6'].value=='Корпус 2'
     assert [sheet['D5'].value,sheet['D6'].value]==['Монтаж','Поставка']
-    assert sheet['H4'].value is None and sheet['H5'].value is None
-    assert sheet['G4'].value is None
+    assert sheet['L5'].value==0 and sheet['L6'].value==0
+    assert sheet['I5'].value is None
+    assert sheet['I1'].value is not None
     assert all(s.freeze_panes is None for s in book)
     assert len(sheet.data_validations.dataValidation)==2
 
@@ -86,5 +87,5 @@ def test_material_only_zero_increment_cannot_backfill_a_physical_baseline():
     result=view(60,[material,positive])['reporting']
     assert result['history_available']
     assert result['checkpoints'][0]['date']=='2026-11-10'
-    assert min(b['start'] for b in result['bars'])==9
+    assert min(b['start'] for b in result['bars'] if b['carried_forward'])==9
     assert all(b['report_date']!='2026-11-03' for b in result['bars'])

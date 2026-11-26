@@ -20,8 +20,8 @@ import developaid_contract_workforce as workforce
 import developaid_contract_gpr_reporting as reporting
 from developaid_contract_rds import LAYOUT
 
-SCHEMA = 'contract-gpr-performance-xlsx-v6'
-PRESENTATION_SCHEMA = 'contract-gpr-known-state-v5'
+SCHEMA = 'contract-gpr-performance-xlsx-v7'
+PRESENTATION_SCHEMA = 'contract-gpr-known-state-v6'
 COLORS = reporting.COLORS
 LEGEND = reporting.LEGEND
 
@@ -430,7 +430,7 @@ def workbook(meta, cached):
     book.active.title = 'Выполнение'
     from developaid_contract_physical_sheets import write_audit, write_builder_template
     write_audit(book, comparison)
-    write_builder_template(book, comparison)
+    write_builder_template(book, comparison, state.get('schedule'))
     if not comparison.get('available'):
         book.active['A4'] = comparison.get('detail') or 'РДС или пригодные данные выполнения не определены.'
     sheet = book.create_sheet('ГПР', 0)
@@ -538,7 +538,11 @@ def workbook(meta, cached):
             title = {'fact':'Известный объём покрывает план','warning':'Известный объём отстаёт от плана',
                      'overdue':'Не завершено после срока ГПР',
                      'closure_unconfirmed':'После срока нет свежего подтверждения завершения'}[bar['state']]
+            if bar['range_kind'] == 'retrospective_report_assessment':
+                cell.fill = PatternFill('lightDown',fgColor=COLORS[bar['state']],bgColor='FFFFFF')
+                title = 'Ретроспективная оценка планового участка по первому отчёту; начало работ не установлено. '+title
             cell.comment = Comment(title+' · состояние '+bar['state_start']+' — '+bar['state_finish']+
+                ' · сравнение на '+str(bar.get('comparison_date') or bar['state_finish'])+
                 ' · план '+format(bar['planned_fraction_start']*100,'.1f')+' → '+format(bar['planned_fraction_finish']*100,'.1f')+
                 '% · факт '+format(bar['fact_fraction']*100,'.1f')+'% по данным от '+bar['report_date']+'; не даты производства'+'\n'+json.dumps({
                 **identity(line,'report_state'),**bar,'checkpoint':checkpoint,'not_actual_dates':True},ensure_ascii=False),'DevelopAid')
@@ -678,7 +682,8 @@ def workbook(meta, cached):
     sheet.page_setup.fitToHeight = 0
     output = io.BytesIO()
     book.save(output)
-    raw = output.getvalue()
+    from developaid_contract_builder_plan import cache_builder_formulas
+    raw = cache_builder_formulas(output.getvalue(),book)
     if len(raw) > rds_export.MAX_XLSX_BYTES:
         raise rds_export.ExportProblem('Excel ГПР превысил допустимый размер.')
     return raw
