@@ -82,7 +82,10 @@ def test_material_statement_uses_material_columns_without_adding_them_to_work_fa
     statement = fact.statement_materials(found, '2026-03-10')
     assert statement['source'] == 'ks6a' and statement['unknown_count'] == 0
     assert (statement['rows'][0]['quantity'], statement['rows'][0]['amount']) == (5, 500)
-    assert statement['rows'][0]['source'] == {'row': 31, 'sheet': 'КС-6а'}
+    source=statement['rows'][0]['source']
+    assert (source['row'],source['sheet']) == (31,'КС-6а')
+    assert source['quantity_cell'] is None and source['amount_cell'] is None
+    assert source['coordinate_note']
     assert fact.statement_materials(found, '2026-02-28')['rows'] == []
 
 

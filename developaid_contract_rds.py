@@ -108,9 +108,16 @@ def build(listed: dict) -> dict:
                 if row['fact_quantity'] == 0:
                     comments['fact_quantity'] = 'Нулевой объём выполненной работы подтверждён отдельной записью КС-6а; поставка не подтверждает монтаж.'
                     comments['fact'] = 'Полная стоимость работ и поставки не подтверждена. '+unread[identity]['reason']
+            from developaid_contract_physical_audit import position_audit
+            row['physical_audit'] = position_audit(position, identity,
+                {**current, 'estimates':document['estimates']}, fact, observed, binding, cut)
+            if row['physical_audit']['state'] == 'accounted_zero_physical_unknown':
+                row['accounted_work_quantity'] = row['fact_quantity']
+                row['fact_quantity'] = None
+                comments['fact_quantity'] = row['physical_audit']['reason']
             for output, actual, planned in (('quantity_deviation', 'fact_quantity', 'plan_quantity'),
                                            ('deviation', 'fact', 'planned')):
-                if row[actual] is not None and row[planned] is not None:
+                if row[planned] is not None and row[actual] is not None:
                     row[output] = row[actual]-row[planned]
                 else:
                     comments[output] = 'Отклонение не рассчитано: план или факт не подтверждены.'
@@ -169,6 +176,31 @@ def build(listed: dict) -> dict:
             else:
                 reason = 'Нет отдельного физического прогноза для этой позиции с единственной полной связью ГПР и подтверждённым объёмом выполнения.'
                 comments['forecast_finish'] = comments['forecast_delay_days'] = reason
+            if row.get('finish') and row['finish']<cut and (row['fact_quantity_ratio'] is None or row['fact_quantity_ratio']<1):
+                row['forecast_finish']=row['forecast_delay_days']=None
+                comments['forecast_finish']=comments['forecast_delay_days']='Для прогноза незакрытого остатка нужны сопоставимый физический объём и темп.'
+            if (physical_known and row.get('unit') and type(row.get('day_deviation')) in (int,float) and math.isfinite(row['day_deviation'])
+                    and row['fact_quantity'] is not None and row['fact_quantity']>0 and positive_base
+                    and len(targets)==1 and targets[0].get('share')==1 and row.get('finish') and row['finish']<cut):
+                import developaid_contract_gpr_reporting as reporting
+                source_line=scheduled[targets[0]['code']]
+                intervals=plan.links.dated_segments(source_line) or [(dt.date.fromisoformat(source_line['start']),dt.date.fromisoformat(source_line['finish']))]
+                origin=min(a for a,b in intervals)
+                physical_line={**source_line,'reporting_events':(observed or {}).get('reporting_events') or [],'reporting_plan_start':current.get('start')}
+                source_dates=[(value.get('source') or {}).get('source_date') if fact.get('source')=='ks6a' else value.get('end') for value in (observed or {}).get('sources') or []]
+                progress={'fact_quantity':row['fact_quantity'],'contract_quantity':quantity,'unit':row['unit'],
+                    'fraction':row['fact_quantity_ratio'],'planned_fraction':row['plan_quantity_ratio'],
+                    'delta_pp':(row['fact_quantity_ratio']-row['plan_quantity_ratio'])*100,
+                    'source_dates':sorted({value for value in source_dates if value and value<=cut})}
+                model=reporting.project(physical_line,progress,[((a-origin).days,(b-origin).days+1) for a,b in intervals],origin.isoformat(),cut)
+                forecast=model.get('forecast')
+                if forecast:
+                    row['forecast_finish']=forecast['finish']
+                    row['forecast_delay_days']=(dt.date.fromisoformat(forecast['finish'])-dt.date.fromisoformat(row['finish'])).days
+                    row['forecast_kind']='physical_remaining_forecast'
+                    comments['forecast_finish']=comments['forecast_delay_days']=reporting.forecast_text(forecast)
+            if row['fact_quantity'] is None:
+                comments['fact_quantity'] = row['physical_audit']['reason']
             rows.append(row)
     return {'layout': LAYOUT, 'available': True, 'cut': cut, 'rows': rows, 'headings': headings,
             'estimate_title': document.get('title') or '', 'estimate_sha256': document['sha256'],
@@ -178,6 +210,7 @@ def build(listed: dict) -> dict:
             'remaining_start': current.get('start'),
             'remaining_source': (current.get('start_source') or {}).get('title'),
             'fact_assumption': fact.get('assumption') or '',
+            'statement_summary': listed.get('control',{}).get('statement_summary'),
             'confirmation': fact.get('confirmation') or {}, 'act_evidence': fact.get('act_evidence') or {},
             'data_gaps': listed.get('control', {}).get('data_gaps') or [],
             'legal_deadline': (listed.get('terms') or {}).get('deadline'),

@@ -40,7 +40,7 @@ import datetime as dt
 import developaid_contract_plan as plan
 from developaid_monitor_statement_union import _unit
 
-CALCULATION_REVISION = 'contract-rds-plan-fact-v3'
+CALCULATION_REVISION = 'contract-gpr-source-material-components-v5'
 
 ASSUMPTION = ("Отставание в днях — на сколько дней назад от даты среза план нарастающим итогом был равен "
               "сегодняшнему факту. Просрочка считается отдельно: сколько дней прошло после срока работы по "
@@ -112,8 +112,58 @@ def _ratio(part, whole):
     return part / whole if whole else None
 
 
+def _material_positions(line, got, due):
+    """One capped contribution per RDS component; equal operation areas are not pooled."""
+    from developaid_contract_statement_components import numeric
+    if 'material_parts' not in line:
+        return None
+    parts=line['material_parts']
+    observed={p['key']:p for p in got.get('material_position_facts') or []}
+    keys=[p.get('key') for p in parts]
+    known=(bool(parts) and all(keys) and len(keys)==len(set(keys))
+        and all(numeric(p.get('amount')) and p['amount']>=0 for p in parts)
+        and numeric(line.get('material_amount')) and
+        abs(sum(p['amount'] for p in parts)-line['material_amount'])<=.01
+        and not got.get('material_positions_unknown'))
+    counted=0.0
+    shown=[]
+    for part in parts:
+        amount=part.get('amount');whole=part.get('quantity');unit=part.get('unit')
+        fact=observed.get(part.get('key'))
+        quantity=fact.get('quantity') if fact else 0.0
+        ready=None
+        basis='quantity'
+        if (numeric(amount) and amount>=0 and numeric(whole) and whole>0 and _unit(unit)
+                and numeric(quantity) and quantity>=0 and
+                (not fact or _unit(fact.get('unit'))==_unit(unit))):
+            if fact or got.get('material_fact') is not None or got.get('material_current_source'):
+                ready=quantity/whole
+        elif numeric(amount) and amount>0 and fact and numeric(fact.get('amount')) and fact['amount']>=0:
+            ready=fact['amount']/amount
+            basis='historical_money'
+        if ready is None:
+            known=False
+        contribution=amount*min(max(ready,0.0),1.0) if ready is not None and numeric(amount) else None
+        if contribution is not None:
+            counted+=contribution
+        shown.append({'key':part.get('key'),'number':part.get('number'),'name':part.get('name'),
+            'unit':unit,'quantity':whole,'fact_quantity':quantity if ready is not None and basis=='quantity' else None,
+            'amount':amount,'readiness':ready,'contribution':contribution,'basis':basis,
+            'source':part.get('source') or {},'last':(fact or {}).get('last')})
+    amount=line.get('material_amount')
+    ready=counted/amount if known and amount else None
+    volume=None
+    if len(shown)==1 and shown[0]['basis']=='quantity' and shown[0]['readiness'] is not None:
+        part=shown[0]
+        volume={'unit':part['unit'],'quantity':part['quantity'],'planned':part['quantity']*due,
+                'fact':part['fact_quantity'],'deviation':part['fact_quantity']-part['quantity']*due}
+    return {'readiness':ready,'contribution':counted if known else None,'known_contribution':counted,
+            'positions':shown,'volume':volume,'basis':'source_positions'}
+
+
 def _materials(lines, facts, day, start):
     """Delivery has its own quantity, price and dates; never reuse installed work quantities."""
+    from developaid_contract_statement_components import CURRENT_MATERIAL_BASIS
     rows = []
     for line in lines:
         amount = line.get('material_amount', 0.0)
@@ -126,14 +176,22 @@ def _materials(lines, facts, day, start):
         due = curve(day)
         volume = _volume({'volume': line.get('material_volume')}, due,
                          got.get('material_volumes') or [], actual)
+        individual=_material_positions(line,got,due)
         unknown = amount is None or amount < 0 or actual is None
         ready = None if unknown else volume['fact']/volume['quantity'] if volume else _ratio(actual, amount)
+        if individual is not None:
+            volume=individual['volume']
+            ready=individual['readiness']
+            unknown=ready is None
         tol = _SHARE if volume else _ROUND/amount if amount else _SHARE
         state, lag, ahead, forecast = (('unknown', 0, 0, None) if ready is None else
                                       _measure(curve, ready, due, begin, finish, day, tol))
         finished = got.get('material_last') if state == 'done' else None
         rows.append({'code': line['code'], 'name': line['name'] + ' — поставка материалов',
             'component': 'material', 'supply_only': bool(line.get('supply_only')),
+            **({'component_contribution':individual['contribution'],
+                'known_component_contribution':individual['known_contribution'],
+                'component_positions':individual['positions'],'component_basis':CURRENT_MATERIAL_BASIS} if individual is not None else {}),
             'start': line['start'], 'finish': line['finish'], 'due': finish.isoformat(),
             'amount': amount, 'planned': amount*due if amount is not None else None,
             'fact': actual, 'volume': volume, 'basis': 'volume' if volume else 'money',
@@ -157,7 +215,8 @@ def _component(rows, amount_key, lines, day, start):
     amount = None if any(r.get(amount_key) is None for r in rows) else sum(r[amount_key] for r in rows)
     known = amount is not None and all(r.get('readiness') is not None and r[amount_key] >= 0 for r in rows)
     planned = sum(r[amount_key]*r['plan_share'] for r in rows) if amount is not None else None
-    counted = sum(r[amount_key]*(1.0 if r['state'] == 'done' else min(max(r['readiness'],0.0),1.0))
+    counted = sum(r['component_contribution'] if 'component_contribution' in r else
+                  r[amount_key]*(1.0 if r['state'] == 'done' else min(max(r['readiness'],0.0),1.0))
                   for r in rows) if known else None
     ready = counted/amount if known and amount else None
     result = {'amount': amount, 'planned': planned, 'counted': counted, 'readiness': ready,
@@ -227,7 +286,7 @@ def _operation_rows(line, got, day, start, physical_groups):
     return {'group': group, 'lines': result}
 
 
-def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, cut: str) -> dict:
+def _build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, cut: str) -> dict:
     """Natural plan and fact, percentages, lag, overdue and forecast of the edition in force on `cut`."""
     result = {"cut": cut, "assumption": ASSUMPTION, "weights": WEIGHTS, "note": "", "total": None, "lines": [],
               "behind": [], "ahead": [], "done": [], "overdue": [], "forecast": None, "left_out": _left_out(fact),
@@ -250,7 +309,11 @@ def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, 
     done_by_code = {x["code"]: x for x in fact.get("lines") or []}
     finishes = []
     work_lines = [line for line in current['lines'] if not line.get('supply_only')]
-    result['materials'] = _materials(current['lines'], done_by_code, day, start)
+    material_facts=done_by_code
+    if fact.get('material_ownership_unknown'):
+        material_facts={line['code']:{**done_by_code.get(line['code'],{'material_fact':None}),
+            'material_positions_unknown':True} for line in current['lines']}
+    result['materials'] = _materials(current['lines'], material_facts, day, start)
     for line in work_lines:
         got = done_by_code.get(line["code"]) or {"fact": 0.0, "work_fact": 0.0, "material_fact": 0.0,
                                                 "volumes": [], "last": None, "complete": False}
@@ -420,3 +483,10 @@ def _forecast(finishes, deadline, deadline_label, last, current, day):
     forecast["drivers"] = [row["code"] for f, row in sorted(finishes, key=lambda x: x[0], reverse=True)
                            if f > limit]
     return forecast
+
+
+def build(planned: dict, fact: dict, deadline: str | None, deadline_label: str, cut: str) -> dict:
+    result=_build(planned,fact,deadline,deadline_label,cut)
+    from developaid_contract_statement_components import summary
+    result['statement_summary']=summary(fact,result)
+    return result

@@ -160,6 +160,8 @@ class _Metadata:
     def __init__(self):
         self.bytes = 0
         self.files = 0
+        self.price_pdf_bytes = 0
+        self.price_pdf_files = 0
 
     def read(self, path, cap=4*1024*1024):
         raw = store.read_bytes(path, cap)
@@ -175,6 +177,14 @@ class _Metadata:
                 {'present': raw is not None, 'bytes': len(raw) if raw is not None else None,
                  'sha256': hashlib.sha256(raw).hexdigest() if raw is not None else None})
 
+    def price_pdf(self, path):
+        raw = store.read_bytes(path, 20*1024*1024)
+        self.price_pdf_files += 1
+        self.price_pdf_bytes += len(raw or b'')
+        if self.price_pdf_files > 64 or self.price_pdf_bytes > 64*1024*1024:
+            raise IdentityProblem('Объём проверки источников цены превышает предел одной сборки.', 413)
+        return raw
+
 
 def _time_status(value, absent):
     if value is None:
@@ -184,6 +194,15 @@ def _time_status(value, absent):
         return 'recorded'
     except IdentityProblem:
         return 'unknown'
+
+
+def document_evidence(record, sha):
+    """The unchanged six-field evidence of the native human source decision."""
+    return {'document_sha256': sha, 'price_sha256': store.digest(record.get('price')),
+            'binding_identity_sha256': store.digest(record.get('contract')),
+            'edition_sha256': store.digest([record.get('contract'), record.get('agreement')]),
+            'terms_sha256': store.digest(record.get('terms')),
+            'reader_version_sha256': store.digest(record.get('reader'))}
 
 
 def metadata_inventory(project, raw_ids, *, correction=False):
@@ -236,26 +255,30 @@ def metadata_inventory(project, raw_ids, *, correction=False):
                         raise IdentityProblem('Метаданные документа не подтверждены.', 503)
                     if record.get('scan') is not None and not isinstance(record['scan'], dict):
                         raise IdentityProblem('Подтверждение документа не прочитано.', 503)
-                    documents.append({'document_sha256': path.stem, 'metadata': pin,
-                        'reader_version_sha256': store.digest(record.get('reader')),
+                    document = {**document_evidence(record, path.stem), 'metadata': pin,
                         'withdrawal_marker_present': bool(record.get('removed_at')),
                         'withdrawal_status': _time_status(record.get('removed_at'), 'not_marked'),
                         'withdrawal_sha256': store.digest(record.get('removed_at')),
                         'scan_confirmation_sha256': store.digest((record.get('scan') or {}).get('confirmed_at')),
                         'scan_confirmation_status': _time_status((record.get('scan') or {}).get('confirmed_at'), 'unconfirmed'),
-                        'edition_sha256': store.digest([record.get('contract'), record.get('agreement')]),
-                        'terms_sha256': store.digest(record.get('terms')),
-                        'price_sha256': store.digest(record.get('price')),
-                        'scan_confirmation_present': bool((record.get('scan') or {}).get('confirmed_at')),
-                        'binding_identity_sha256': store.digest(record.get('contract'))})
+                        'scan_confirmation_present': bool((record.get('scan') or {}).get('confirmed_at'))}
+                    import developaid_contract_price_provenance as provenance
+                    if provenance.FIELD in record:
+                        pdf = _safe_path(project, 'contract_documents', identifier, path.stem+'.pdf')
+                        document[provenance.FIELD] = provenance.project(record, document, identifier,
+                            lambda pdf=pdf: read.price_pdf(pdf))
+                    documents.append(document)
         out.append({'raw_id': identifier, 'manual_term_present': term is not None,
                     'manual_term_sha256': store.digest(term) if term is not None else None,
                     'manual_deadline': store.day((term or {}).get('deadline')),
                     'manual_term_time_sha256': store.digest((term or {}).get('updated_at')),
                     'documents': documents, 'document_choices': choices, 'work_links': work})
-    return {'terms_file': terms_pin, 'work_links_file': links_pin, 'header_dates_file': header_pin, 'cards': out,
+    result = {'terms_file': terms_pin, 'work_links_file': links_pin, 'header_dates_file': header_pin, 'cards': out,
             'metadata_files_read': read.files, 'metadata_bytes_read': read.bytes,
             'old_choice_files_modified': False}
+    if read.price_pdf_files:
+        result.update(price_source_bytes_read=read.price_pdf_bytes, price_source_files_read=read.price_pdf_files)
+    return result
 
 
 @store.in_namespace
@@ -307,21 +330,20 @@ def _validate_members(project, members, canonical_number, anchor_id):
     return ids
 
 
-@contextlib.contextmanager
-def _binding_locks(project, raw_ids, *, correction=False):
-    """Use the existing native writers' locks, without migrating any data.
-
-    The identity lock is always outermost. No legacy writer takes that lock,
-    so native single-file writes cannot form a reverse lock order.
-    """
-    import fcntl
+def binding_lock_paths(project, raw_ids, *, correction=False):
+    """The complete native lock set in one global order, before reader pins."""
     paths = [('cumulative', '.lock'), ('cumulative_header_dates.lock',),
              ('cumulative_terms.lock',), ('.contract_links.lock',)]
     paths += [('contract_documents', value, '.lock') for value in (correction_ids(raw_ids) if correction else _ids(raw_ids))]
+    return [_safe_path(project, *parts) for parts in paths]
+
+
+@contextlib.contextmanager
+def _binding_path_locks(paths):
+    import fcntl
     with contextlib.ExitStack() as stack:
         held_paths = set(store._HELD_NATIVE_LOCKS.get())
-        for parts in paths:
-            path = _safe_path(project, *parts)
+        for path in paths:
             path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             handle = stack.enter_context(os.fdopen(fd, 'a+b'))
@@ -336,6 +358,25 @@ def _binding_locks(project, raw_ids, *, correction=False):
             yield
         finally:
             store._HELD_NATIVE_LOCKS.reset(token)
+
+
+@contextlib.contextmanager
+def _binding_locks(project, raw_ids, *, correction=False):
+    """Identity lock is outermost; acquire the entire native family before pins."""
+    with _binding_path_locks(binding_lock_paths(project, raw_ids, correction=correction)):
+        yield
+
+
+@contextlib.contextmanager
+def _binding_group_locks(project, groups):
+    """A bounded source batch acquires its union once, never expands held locks."""
+    groups = list(groups)
+    if not 1 <= len(groups) <= 20:
+        raise IdentityProblem('Проверка источников содержит слишком много групп.', 400)
+    all_paths = [binding_lock_paths(project, group, correction=True) for group in groups]
+    paths = all_paths[0][:4] + sorted({path for group in all_paths for path in group[4:]}, key=str)
+    with _binding_path_locks(paths):
+        yield
 
 
 @store.in_namespace

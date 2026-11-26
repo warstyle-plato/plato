@@ -1,6 +1,7 @@
 """XLSX presentation of an already completed, owner-bound contract card.
 
-No source readers, plan/fact calculations, client-provided amounts or formulas.
+Source values come from the snapshot; only trusted deviation formulas are added.
+No source readers or client-provided amounts/formulas are evaluated.
 Row tokens bind a canonical snapshot revision, ordinal and row digest.
 """
 from __future__ import annotations
@@ -20,7 +21,7 @@ from openpyxl.utils import get_column_letter
 from developaid_contract_rds import LAYOUT, FIELDS
 from developaid_contract_fact import _money
 
-SCHEMA = "contract-rds-plan-fact-export-v3"
+SCHEMA = "contract-rds-plan-fact-export-v8"
 MAX_ROWS = 10_000
 MAX_XLSX_BYTES = 8 * 1024 * 1024
 FILTERS = {"all": "Все работы и поставки", "behind": "Отстают от плана", "ahead": "Опережают план",
@@ -60,7 +61,11 @@ def bind_snapshot(project: str, cut: str, contract_id: str, result: dict, label:
                "label": label, "source_documents": documents}
     if result.get("source_correction"):
         context["source_correction"] = result["source_correction"]
-    revision = _sha({**context, 'rds': comparison,
+    if result.get('gpr'):
+        context['gpr_binding'] = {key: result['gpr'][key] for key in
+            ('project', 'contract_id', 'documents_raw_id', 'document_source_ids', 'guard', 'source')
+            if key in result['gpr']}
+    revision = _sha({"schema": SCHEMA, **context, 'rds': comparison,
                      'canonical': {key: result.get(key) for key in ('documents', 'plan', 'fact', 'comparison')}})
     return {"schema": SCHEMA, "layout": LAYOUT, "rows_count": len(rows), "scope": "all_active_rds",
             "available": True, **context, "revision": revision,
@@ -90,6 +95,13 @@ def select_snapshot(cached: dict, project: str, cut: str, contract_id: str,
 
 
 def require_current_sources(meta):
+    if meta.get('gpr_binding'):
+        import developaid_contract_gpr as gpr
+        import developaid_contract_files as files
+        try:
+            gpr.require_current(meta['gpr_binding'], verify_pdf=True)
+        except files.ContractFilesProblem as exc:
+            raise ExportProblem(str(exc)) from None
     correction = meta.get('source_correction')
     if not correction:
         return
@@ -229,10 +241,8 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
             if heading.get('quantity') is not None and heading.get('unit'):
                 heading_comment = 'Объём по заголовку РДС: '+format(_number(heading['quantity']), 'g').replace('.', ',')+' '+heading['unit']+'. Объёмы отдельных операций в него не складываются.'
             put(excel_row, 2, heading.get('name') or '', heading_comment)
-            for cell in sheet[excel_row]:
-                cell.fill = PatternFill('solid', fgColor='E8EFF7')
-                cell.font = Font(name='Calibri', size=10, bold=True)
-            sheet.row_dimensions[excel_row].height = 28
+            from developaid_contract_hierarchy import style_row
+            style_row(sheet, excel_row, heading.get('number'), corpus=not heading.get('number'))
         excel_row += 1
         for column, field in enumerate(FIELDS, 1):
             value = source.get(field)
@@ -256,11 +266,21 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
                 cell.number_format = '[Red]+0;-0;0'
             elif field == 'forecast_delay_days':
                 cell.number_format = '[Red]+0;-0;0'
+        for column,formula in {
+            10:f'=IF(COUNT(F{excel_row},H{excel_row})<2,"",H{excel_row}-F{excel_row})',
+            13:f'=IF(COUNT(K{excel_row},L{excel_row})<2,"",L{excel_row}-K{excel_row})',
+            16:f'=IF(OR(O{excel_row}="",E{excel_row}=""),"",O{excel_row}-E{excel_row})'
+        }.items():
+            sheet.cell(excel_row,column,formula)
+            if column in (10,13):
+                sheet.cell(excel_row,column).comment = Comment('Факт минус план, только когда оба числа подтверждены. Пустой факт не заменяется нулём; явно записанный числовой 0 сохраняется.','DevelopAid')
+        from developaid_contract_hierarchy import style_row
+        style_row(sheet, excel_row, source.get('number'))
         sheet.row_dimensions[excel_row].height = min(78, max(30, 14*(len(str(source.get('name') or ''))//48+1)))
     widths = (9, 58, 11, 13, 13, 14, 13, 14, 13, 15, 17, 17, 17, 14, 18, 16)
     for column, width in enumerate(widths, 1):
         sheet.column_dimensions[get_column_letter(column)].width = width
-    sheet.freeze_panes = 'D7'
+    sheet.freeze_panes = None
     sheet.auto_filter.ref = f'A6:P{excel_row}'
     sheet.print_title_rows = '5:6'
     sheet.print_options.horizontalCentered = True
@@ -268,11 +288,36 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     sheet.page_setup.paperSize = sheet.PAPERSIZE_A3
     sheet.page_setup.fitToWidth, sheet.page_setup.fitToHeight = 1, 0
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    statement=comparison.get('statement_summary') or {}
+    if statement:
+        excel_row+=2
+        raw=(statement.get('cash') or {}).get('source') or {}
+        put(excel_row,2,'Сверка исходной КС-6а — денежное закрытие, не оплата')
+        for key,label in (('work','Работы по исходной КС-6а'),('material','Материалы по исходной КС-6а'),('total','Всего по исходной КС-6а')):
+            excel_row+=1;put(excel_row,2,label)
+            put(excel_row,12,_number(raw.get(key)),statement.get('date_basis') or '').number_format='#,##0.00'
+        excel_row+=1;put(excel_row,2,'База той же ведомости')
+        put(excel_row,12,_number(statement.get('planned')),statement.get('ratio_basis') or '').number_format='#,##0.00'
+        put(excel_row,13,_number(statement.get('ratio')),statement.get('ratio_unknown_reason') or statement.get('ratio_basis') or '').number_format='0.00%'
+        historical=statement.get('historical') or {};current=statement.get('current') or {}
+        for label,value,reason in [('Оценка по редакциям периодов',historical.get('total'),historical.get('basis')),
+            ('Известная часть исторической оценки',historical.get('known_total'),historical.get('basis')),
+            ('Вклад текущей РДС в сопоставленной части',current.get('counted'),current.get('basis'))]:
+            excel_row+=1;put(excel_row,2,label);put(excel_row,12,_number(value),reason or '').number_format='#,##0.00'
+        excel_row+=1;put(excel_row,2,'База сопоставленной текущей РДС')
+        put(excel_row,12,_number(current.get('amount')),current.get('basis') or '').number_format='#,##0.00'
+        put(excel_row,13,_number(current.get('readiness')),'Готовность только сопоставленной части; не доля полной цены договора.').number_format='0.00%'
+        excel_row+=1
+        note='Данные ведомости: '+', '.join(statement.get('source_dates') or [])+'. '+(statement.get('notice') or '')
+        if statement.get('preliminary'):note+=' Даты части актов предварительные, получены из подписания.'
+        put(excel_row,2,note);sheet.merge_cells(start_row=excel_row,start_column=2,end_row=excel_row,end_column=16)
+        sheet.row_dimensions[excel_row].height=32
     sheet.print_area = f'A1:P{excel_row}'
     sheet.oddFooter.center.text = 'Страница &P из &N'
     output = io.BytesIO()
     book.save(output)
-    raw = output.getvalue()
+    from developaid_contract_builder_plan import cache_builder_formulas
+    raw = cache_builder_formulas(output.getvalue(),book)
     if len(raw) > MAX_XLSX_BYTES:
         raise ExportProblem('Файл слишком большой для выгрузки.')
     return raw

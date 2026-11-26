@@ -55,7 +55,10 @@ def test_excel_qualifies_document_totals_in_comments_and_preserves_all_sixteen_r
     original, original_header = table(xlsx(export_card_with_acts(no_gpr=no_gpr, unread=False)))
     cached = export_card_with_acts(no_gpr=no_gpr)
     before = copy.deepcopy(cached)
-    sheet, header = table(xlsx(cached))
+    raw = xlsx(cached)
+    sheet, header = table(raw)
+    values, values_header = table(raw, data_only=True)
+    assert values_header == header
     assert len(sheet.parent.worksheets) == 1 and sheet.max_column == 16
     assert cached['fact']['act_evidence']['total'] == 770
     assert cached['fact']['act_evidence']['count'] == 2
@@ -68,7 +71,10 @@ def test_excel_qualifies_document_totals_in_comments_and_preserves_all_sixteen_r
     assert sheet.cell(header+1, 8).value == 3
     assert sheet.cell(header+1, 12).value == 300  # Neither quoted total770 nor loaded position330.
     if no_gpr:
-        assert all(sheet.cell(header+1, column).value is None for column in (4,5,6,7,10,11,13,14,15,16))
+        # Guarded deviation formulas remain editable, but a missing plan must
+        # still download as unknown rather than as -fact or a fabricated zero.
+        assert all(values.cell(header+1, column).value is None for column in (4,5,6,7,10,11,13,14,15,16))
+        assert all(sheet.cell(header+1, column).data_type == 'f' for column in (10,13))
         assert all(sheet.cell(header+1, column).comment for column in (4,5,6,7,10,11,13,14,15,16))
     assert not any(value in ('Итого по документам', 'Количество актов', 'Сумма прочитанных итогов')
                    for row in sheet.values for value in row)
@@ -77,13 +83,19 @@ def test_excel_qualifies_document_totals_in_comments_and_preserves_all_sixteen_r
 
 def test_excel_does_not_promote_known_document_subtotal_to_full_value_fact():
     cached = export_card_with_acts(no_gpr=True, unknown_total=True)
-    sheet, header = table(xlsx(cached))
+    raw = xlsx(cached)
+    sheet, header = table(raw)
+    values, values_header = table(raw, data_only=True)
+    assert values_header == header
     assert cached['fact']['act_evidence']['total'] is None
     assert cached['fact']['act_evidence']['known_total'] == 330
     assert 'Итоги загруженных актов по самим документам:' not in sheet['L6'].comment.text
     assert '330,00 ₽' not in sheet['L6'].comment.text
     assert sheet.cell(header+1, 12).value == 300
-    assert sheet.cell(header+1, 11).value is None and sheet.cell(header+1, 13).value is None
+    assert sheet.cell(header+1, 11).value is None
+    assert sheet.cell(header+1, 13).data_type == 'f'
+    assert values.cell(header+1, 11).value is None and values.cell(header+1, 13).value is None
+    assert values.cell(header+1, 12).value == 300
     assert 'Полнота комплекта актов не подтверждена' in sheet['A3'].comment.text
 
 
@@ -121,7 +133,8 @@ def test_browser_shows_acts_without_a_plan_and_retains_unknown_execution(width):
         brief = page.locator(f'tr[data-contract-id="{BROWSER_CONTRACT}"] .contract-money .contract-act-evidence-brief')
         expect(brief).to_be_visible()
         expect(brief).to_contain_text('Итоги КС-2: 770')
-        expect(brief.locator('..')).to_contain_text('выполнение не подтверждено')
+        expect(brief.locator('..')).to_contain_text('Процент денежного закрытия не подтверждён')
+        assert brief.locator('..').locator('.contract-progress').count() == 0
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert not errors
 

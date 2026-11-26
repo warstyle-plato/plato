@@ -389,8 +389,15 @@ def test_native_monitor_axis_script_compiles_and_layout_preserves_anchors_and_li
         }
         assert.ok(counts[0]>counts[2]&&counts[2]>=2);
         assert.equal(counts[3],1);assert.equal(counts[4],1);
-        current=new Axis(400);const old=current;observeGanttAxis();const stale=[...frames.values()][0];const prior=observers.at(-1);
-        current=new Axis(240);observeGanttAxis();assert.equal(prior.active,false);assert.equal(frames.size,1);stale();assert.equal(old.dataset.axisLayout,undefined);flush();
+        const snapshot=axis=>JSON.stringify({dataset:axis.dataset,style:axis.style,
+          labels:[...axis.ticks,...axis.labels].map(e=>({style:e.style,hidden:e.hidden}))});
+        current=new Axis(400);const old=current;observeGanttAxis();
+        assert.equal(old.dataset.axisLayout,'ready');assert.equal(old.dataset.axisLayoutWidth,'400');
+        const oldLayout=snapshot(old),stale=[...frames.values()][0],prior=observers.at(-1);
+        // Initial layout is synchronous; a stale frame must not lay out its replaced axis again.
+        old.width=80;current=new Axis(240);observeGanttAxis();
+        assert.equal(current.dataset.axisLayout,'ready');assert.equal(current.dataset.axisLayoutWidth,'240');
+        assert.equal(prior.active,false);assert.equal(frames.size,1);stale();assert.equal(snapshot(old),oldLayout);flush();
         assert.equal(current.dataset.axisLayout,'ready');assert.equal(observers.filter(o=>o.active).length,1);
         current.width=600;window.emit('resize');details.emit('toggle');assert.equal(frames.size,1);flush();assert.equal(current.dataset.axisLayoutWidth,'600');
         window.emit('resize');clearGanttAxisLayout();assert.equal(frames.size,0);assert.equal(window.count(),0);assert.equal(details.count(),0);assert.equal(observers.filter(o=>o.active).length,0);

@@ -39,8 +39,8 @@ def xlsx(cached, tokens=None, **kwargs):
     return export.workbook(meta, table, rows, **kwargs)
 
 
-def table(raw):
-    sheet = load_workbook(io.BytesIO(raw), data_only=False).active
+def table(raw, *, data_only=False):
+    sheet = load_workbook(io.BytesIO(raw), data_only=data_only).active
     header = next(i for i, row in enumerate(sheet.values, 1) if row[0] == "№")
     return sheet, header
 
@@ -48,7 +48,7 @@ def table(raw):
 def test_native_known_values_zero_units_and_dates_survive_roundtrip():
     cached = native_card()
     before = copy.deepcopy(cached)
-    sheet, header = table(xlsx(cached))
+    sheet, header = table(xlsx(cached), data_only=True)
     assert len(sheet.parent.worksheets) == 1 and sheet.max_column == 16
     first, zero = cached['rds_comparison']['rows']
     assert [sheet.cell(header+1, i).value for i in (6,7,8,9,10,11,12,13,14)] == [10,.5,6,.3,-4,500,300,-200,2]
@@ -59,9 +59,9 @@ def test_native_known_values_zero_units_and_dates_survive_roundtrip():
     assert sheet.cell(6,14).value == 'Отставание на дату среза, дни'
     assert sheet.cell(header+1,14).number_format.startswith('[Red]+0')
     assert 'плюс — отставание' in sheet['N6'].comment.text
-    assert sheet.freeze_panes == 'D7' and sheet.auto_filter.ref.startswith('A6:P')
+    assert sheet.freeze_panes is None and sheet.auto_filter.ref.startswith('A6:P')
     assert sheet.page_setup.orientation == 'landscape' and str(sheet.page_setup.paperSize) == sheet.PAPERSIZE_A3
-    assert all(cell.data_type not in ('f','e') for row in sheet for cell in row)
+    assert all(cell.data_type!='e' for row in sheet for cell in row)
     assert cached == before
 
 
@@ -77,9 +77,11 @@ def test_remaining_start_source_and_missing_data_are_comments_not_extra_rows_or_
 
 
 def test_unknown_and_no_rds_are_not_zero_or_pseudo_estimate_rows():
-    sheet, header = table(xlsx(native_card(unknown=True)))
+    sheet, header = table(xlsx(native_card(unknown=True)), data_only=True)
     assert sheet.cell(header+1,6).value == 10
-    assert all(sheet.cell(header+1,i).value is None for i in (8,9,10,12,13,14,15,16))
+    assert all(sheet.cell(header+1,i).value is None for i in (8,9,12,14,15,16))
+    assert sheet.cell(header+1,10).value is None
+    assert sheet.cell(header+1,13).value is None
     assert 'не подтверждена' in sheet.cell(header+1,8).comment.text
     empty = native_card(empty=True)
     assert empty['comparison_export']['available'] is False
@@ -89,7 +91,7 @@ def test_unknown_and_no_rds_are_not_zero_or_pseudo_estimate_rows():
 
 def test_completed_row_has_signed_canonical_days_and_no_forecast_columns():
     cached=native_card(finished=True)
-    sheet,header=table(xlsx(cached))
+    sheet,header=table(xlsx(cached), data_only=True)
     canonical=cached['control']['lines'][0]
     assert sheet.cell(header+1,14).value == canonical['lag_days']-canonical['ahead_days']
     assert sheet.cell(header+1,15).value.date() == dt.date(2026,3,14)
@@ -142,11 +144,11 @@ def test_source_strings_remain_literal_without_formulas_macros_or_links(prefix):
     cached['comparison_export']=export.bind_snapshot(PROJECT,CUT,CONTRACT,cached,{'contract':prefix})
     raw=xlsx(cached);sheet,header=table(raw)
     assert sheet.cell(header+1,2).value==prefix
-    assert all(cell.data_type!='f' for row in sheet for cell in row)
+    assert all(cell.column in (10,13,16) for row in sheet for cell in row if cell.data_type=='f')
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         assert not any('externalLink' in name or 'vbaProject' in name for name in archive.namelist())
         assert not any(b'TargetMode="External"' in archive.read(name) for name in archive.namelist() if name.endswith('.rels'))
-        assert b'<f>' not in archive.read('xl/worksheets/sheet1.xml')
+        assert all(cell.column in (10,13,16) for row in sheet for cell in row if cell.data_type=='f')
 
 
 @pytest.mark.parametrize('name',['x'*32768,'bad\x01text'])
@@ -345,3 +347,22 @@ def test_sync_export_writer_is_offloaded_and_does_not_block_the_event_loop(route
         status, body = await running
         assert status == 200 and body.startswith(b"PK")
     asyncio.run(exercise())
+
+
+def test_previous_export_v4_schema_cannot_be_reused_as_current_snapshot():
+    cached=native_card();binding=cached['comparison_export']
+    assert binding['schema']==export.SCHEMA and export.SCHEMA!='contract-rds-plan-fact-export-v4'
+    cached['comparison_export']={**binding,'schema':'contract-rds-plan-fact-export-v4'}
+    with pytest.raises(export.ExportProblem,match='Версия таблицы изменилась'):
+        export.select_snapshot(cached,PROJECT,binding['cut'],CONTRACT,binding['revision'],binding['row_tokens'])
+
+
+@pytest.mark.parametrize('previous_schema',['contract-rds-plan-fact-export-v5','contract-rds-plan-fact-export-v6','contract-rds-plan-fact-export-v7'])
+def test_previous_runtime_export_is_rejected_even_with_unchanged_sources(monkeypatch,previous_schema):
+    cached=native_card()
+    schema=export.SCHEMA
+    monkeypatch.setattr(export,'SCHEMA',previous_schema)
+    cached['comparison_export']=export.bind_snapshot(PROJECT,CUT,CONTRACT,cached,{})
+    monkeypatch.setattr(export,'SCHEMA',schema)
+    with pytest.raises(export.ExportProblem,match='Версия'):
+        xlsx(cached)

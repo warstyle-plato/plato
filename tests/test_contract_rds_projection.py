@@ -179,7 +179,7 @@ def test_reader13_cache_refresh_preserves_all_source_headings_without_upload(mon
     old['estimates'][0].pop('structure')
     path.write_text(json.dumps(old,ensure_ascii=False))
     current,=files.listing('Учебный',contract['id'],'2026-02-04')['documents']
-    assert current['reader']==documents.READER_VERSION==14
+    assert current['reader']==documents.READER_VERSION and current['reader']>13
     headings=current['estimates'][0]['structure']
     assert [item['before_position'] for item in headings]==[0,0,3]
     assert [item['number'] for item in headings]==['','1','']

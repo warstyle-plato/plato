@@ -13,12 +13,14 @@ disk with the time of removal and can be returned. Authenticate first.
 from __future__ import annotations
 
 import contextlib
+import copy
 import datetime as dt
 import hashlib
 import json
 import logging
 import os
 import re
+import stat
 import tempfile
 import threading
 from pathlib import Path
@@ -39,6 +41,8 @@ import developaid_contract_stage_profile as stage_profile
 
 MAX_BYTES = 20 * 1024 * 1024
 CHOICES = "links.json"
+MAX_PARSE_REFRESH_FILES = 64
+MAX_PARSE_REFRESH_BYTES = 64 * 1024 * 1024
 
 
 class ContractFilesProblem(ValueError):
@@ -91,13 +95,21 @@ def _locked(folder: Path):
     if key in held:
         yield
         return
+    if folder.is_symlink() or folder.parent.is_symlink():
+        raise ContractFilesProblem('Происхождение каталога договора не подтверждено.')
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         import fcntl
     except ImportError:
         raise ContractFilesProblem("Сохранение в карточке договора недоступно в этой среде.") from None
-    descriptor = os.open(folder / ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        descriptor = os.open(folder / ".lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        raise ContractFilesProblem('Блокировка карточки договора недоступна.') from None
     with os.fdopen(descriptor, "a+b") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ContractFilesProblem('Блокировка карточки договора не подтверждена.')
         fcntl.flock(handle, fcntl.LOCK_EX)
         held.add(key)
         try:
@@ -150,7 +162,14 @@ def _record(sha: str, filename: str, content: bytes, uploaded_at: str) -> dict:
             "reader": documents.READER_VERSION, **read}
 
 
-def store(project: str, row: dict, filename: str, content: bytes) -> dict:
+def store(project: str, row: dict, filename: str, content: bytes, *, source_policy: dict | None = None) -> dict:
+    """Keep a PDF; optional automatic intake preserves existing source lifecycles."""
+    if source_policy is not None:
+        return _store_preserving_sources(project, row, filename, content, source_policy)
+    return _store_core(project, row, filename, content)
+
+
+def _store_core(project: str, row: dict, filename: str, content: bytes, *, allow_restore=True, before_write=None) -> dict:
     """Read and keep one PDF of the contract `row`; the same file twice is one file."""
     folder = _directory(project, row.get("id"))
     if not content or len(content) > MAX_BYTES:
@@ -164,6 +183,10 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
     with _locked(folder):
         existing = folder / f"{sha}.json"
         if existing.exists() and (folder / f"{sha}.pdf").exists():
+            if not allow_restore:
+                record = _preserved_record(folder, sha)
+                return {**_summary(record), "already": True, "restored": False,
+                        "preserved_removed": bool(record.get('removed_at'))}
             record = _current(folder, sha)
             restored = bool(record.pop("removed_at", None))
             if restored:
@@ -177,9 +200,100 @@ def store(project: str, row: dict, filename: str, content: bytes) -> dict:
             reason = _same_contract(record.get("contract"), row)
             if reason:
                 raise ContractFilesProblem(reason)
+        if (record.get('schedule') or {}).get('lines') and any(
+                (prior.get('schedule') or {}).get('lines') and not prior.get('removed_at')
+                for prior in _all_records(_folders(project, row['id'], row))):
+            # Existing saved graphs retain their provenance. A newly uploaded
+            # replacement needs explicit evidence of the signed current edition.
+            record['gpr_pending'] = True
+        if before_write is not None:
+            before_write(record)
         _write(folder / f"{sha}.pdf", content)
         _json(existing, record)
         return {**_summary(record), "already": False, "restored": False}
+
+
+def source_family(project: str, row: dict) -> list[str]:
+    folders = _folders(project, row['id'], row)
+    identifiers = [folder.name for folder in folders]
+    if not 1 <= len(identifiers) <= 8:
+        raise ContractFilesProblem('Состав исходных карточек требует отдельной сверки.')
+    return identifiers
+
+
+def source_preservation_guard(project: str, row: dict) -> dict:
+    import developaid_contract_identity as identity
+    import developaid_monitor_ledgers as ledgers
+    family = source_family(project, row)
+    return {'family': family,
+            'bindings_sha256': identity_store_digest(identity.metadata_inventory(project, family, correction=True)),
+            'archive_revision': ledgers.snapshot_inventory(project)['revision'],
+            'decision_head': namespace_decision_head(project)}
+
+
+def namespace_decision_head(project):
+    import developaid_contract_identity_store as namespace
+    return namespace.load(project)['head']
+
+
+def identity_store_digest(value):
+    import developaid_contract_identity_store as namespace
+    return namespace.digest(value)
+
+
+def _preserved_record(folder: Path, sha: str) -> dict:
+    import developaid_contract_identity_store as namespace
+    raw = namespace.read_bytes(folder/(sha+'.pdf'), MAX_BYTES)
+    metadata = namespace.read_bytes(folder/(sha+'.json'), 16*1024*1024)
+    if not raw or hashlib.sha256(raw).hexdigest() != sha or not metadata:
+        raise ContractFilesProblem('Сохранённый исходник не совпал с отпечатком; автоматический приём остановлен.')
+    record = namespace.strict_json(metadata)
+    if not isinstance(record, dict) or record.get('sha256') != sha:
+        raise ContractFilesProblem('Сохранённая карточка исходника не подтверждена.')
+    return record
+
+
+def _store_preserving_sources(project, row, filename, content, expected):
+    import developaid_contract_identity as identity
+    import developaid_contract_identity_store as namespace
+    if namespace._NAMESPACE.get() is None:
+        raise ContractFilesProblem('Для автоматического приёма пространство проекта должно быть закреплено.')
+    family = source_family(project, row)
+    if (not isinstance(expected, dict) or set(expected) != {'family','bindings_sha256','archive_revision','decision_head'}
+            or expected.get('family') != family
+            or any(not re.fullmatch(r'[0-9a-f]{64}', str(expected.get(key) or '')) for key in ('bindings_sha256','archive_revision','decision_head'))):
+        raise ContractFilesProblem('Проверка исходников относится к другому составу карточек.')
+    if not content or len(content) > MAX_BYTES or not content.startswith(b'%PDF'):
+        raise ContractFilesProblem('Выберите непустой PDF размером не больше 20 МБ.')
+    sha = hashlib.sha256(content).hexdigest()
+    # Identity/project lock is held by the caller. Acquire the complete family
+    # in native global order before choosing a storage target or pinning state.
+    import contextlib
+    wanted = {str(path) for path in identity.binding_lock_paths(project, family, correction=True)}
+    held = namespace._HELD_NATIVE_LOCKS.get()
+    if held and not wanted.issubset(held):
+        raise ContractFilesProblem('Неполная блокировка источников. Повторите приём через текущую карточку.')
+    lock = contextlib.nullcontext() if wanted.issubset(held) else identity._binding_locks(project, family, correction=True)
+    with lock:
+        folder = _document_folder(project, row['id'], sha, row)
+        if (folder/(sha+'.json')).exists() or (folder/(sha+'.pdf')).exists():
+            record = _preserved_record(folder, sha)
+            return {**_summary(record), 'already': True, 'restored': False,
+                    'preserved_removed': bool(record.get('removed_at')),
+                    'source_policy_guard': source_preservation_guard(project, row)}
+        if source_preservation_guard(project, row) != expected:
+            raise ContractFilesProblem('Состояние исходников изменилось. Повторите проверку перед применением.')
+        def before_write(record):
+            namespace.assert_namespace(project)
+            if source_preservation_guard(project, row) != expected:
+                raise ContractFilesProblem('Источники изменились во время разбора. Автоматический приём остановлен.')
+            header = record.get('contract')
+            if (not isinstance(header, dict) or not isinstance(header.get('number'), str)
+                    or not header['number'].strip() or namespace.day(header.get('date')) is None
+                    or _same_contract(header, row)):
+                raise ContractFilesProblem('В исходном PDF не подтверждены номер и дата этого договора.')
+        result = _store_core(project, row, filename, content, allow_restore=False, before_write=before_write)
+        return {**result, 'source_policy_guard': source_preservation_guard(project, row)}
 
 
 def _stored(path: Path) -> dict:
@@ -198,30 +312,215 @@ def _current(folder: Path, sha: str) -> dict:
     path = folder / f"{sha}.json"
     record = _stored(path)
     # A scan is not recognised again by a newer reader of text: its confirmed header stays as confirmed.
-    if record.get("reader") == documents.READER_VERSION or record.get("scan"):
+    if record.get("reader") == documents.READER_VERSION or record.get("scan") is not None:
         return record
     with _locked(folder):
         record = _stored(path)
-        if record.get("reader") == documents.READER_VERSION:
+        if record.get("reader") == documents.READER_VERSION or record.get("scan") is not None:
             return record
         return _reread(folder, sha, record)
 
 
-def _reread(folder: Path, sha: str, record: dict) -> dict:
+def _reread(folder: Path, sha: str, record: dict, verified_bytes: bytes | None = None,
+            price_provenance: dict | None = None, expected_metadata_sha256: str | None = None) -> dict:
     path, pdf = folder / f"{sha}.json", folder / f"{sha}.pdf"
     if not pdf.exists():
         record.setdefault("warnings", []).insert(
             0, "Файл документа не сохранился: показан прежний разбор, перечитать его нечем.")
         return record
     try:
-        fresh = _record(sha, record.get("filename", ""), pdf.read_bytes(), record.get("uploaded_at", ""))
+        import developaid_contract_identity_store as namespace
+        raw = verified_bytes if verified_bytes is not None else namespace.read_bytes(pdf, MAX_BYTES)
+        if raw is None or hashlib.sha256(raw).hexdigest() != sha:
+            raise ContractFilesProblem('Исходный PDF не соответствует сохранённому SHA256; разбор не использован.')
+        fresh = _record(sha, record.get("filename", ""), raw, record.get("uploaded_at", ""))
         if record.get("removed_at"):
             fresh["removed_at"] = record["removed_at"]
+        if record.get('gpr_pending'):
+            fresh['gpr_pending'] = True
+            if record.get('gpr_discovery'):
+                fresh['gpr_discovery'] = record['gpr_discovery']
+        if (not (record.get('schedule') or {}).get('lines')
+                and (fresh.get('schedule') or {}).get('lines')):
+            # Parser discovery is not evidence that a new signed edition has
+            # been accepted. Previously recognised legacy graphs keep their
+            # original unknown-signature status; only a newly found graph is
+            # held for the separate exact-source activation decision.
+            fresh['gpr_pending'] = True
+            fresh.setdefault('gpr_discovery', {'reason': 'new_graph_discovered_by_reader',
+                'from_reader': record.get('reader'), 'to_reader': documents.READER_VERSION,
+                'source_pdf_sha256': sha, 'previous_schedule_sha256': namespace.digest(record.get('schedule')),
+                'previous_metadata_sha256': hashlib.sha256(namespace.canonical(record)).hexdigest()})
+        if price_provenance:
+            import developaid_contract_price_provenance as provenance
+            marker = provenance.build(record, fresh, sha, folder.name, raw,
+                price_provenance['metadata_sha256'], price_provenance['event'], price_provenance['before'])
+            if marker is not None:
+                fresh[provenance.FIELD] = marker
     except ContractFilesProblem as exc:
         fresh = {**record, "reader": documents.READER_VERSION, "estimates": [], "schedule": None,
                  "warnings": [str(exc)]}
+    if expected_metadata_sha256:
+        current = namespace.read_bytes(path, 4*1024*1024)
+        if current is None or hashlib.sha256(current).hexdigest() != expected_metadata_sha256:
+            raise ContractFilesProblem('Исходные привязки изменились во время обновления разбора. Обновите реестр.')
     _json(path, fresh)
     return fresh
+
+
+def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]], budget: dict | None = None,
+                        approvals: dict | None = None) -> None:
+    """Refresh bounded derived caches BEFORE the first ownership binding pin.
+
+    The caller passes only already relevant native identity groups. Existing
+    metadata validation supplies the no-follow/size/file-count boundary; the
+    same sorted card locks serialize refresh and owner document mutations.
+    Nothing here refreshes, drops or approves a previously captured pin.
+    """
+    import developaid_contract_identity as identity
+    import developaid_contract_identity_store as namespace
+    budget = budget if budget is not None else {'files': 0, 'bytes': 0, 'metadata_files': 0, 'metadata_bytes': 0}
+    approvals = approvals or {}
+    groups = [(tuple(identity.correction_ids(list(members)) if correction else identity._ids(list(members))), correction)
+              for members, correction in groups]
+    identifiers = sorted({identifier for members, _ in groups for identifier in members})
+    folders = [identity._safe_path(project, 'contract_documents', identifier) for identifier in identifiers]
+
+    def cached(path):
+        raw = namespace.read_bytes(path, 4*1024*1024)
+        budget['metadata_files'] += raw is not None
+        budget['metadata_bytes'] += len(raw or b'')
+        if budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES:
+            raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
+        if raw is None:
+            raise ContractFilesProblem('Метаданные документа изменились до обновления разбора.')
+        value = namespace.strict_json(raw)
+        if not isinstance(value, dict):
+            raise ContractFilesProblem('Метаданные документа договора не подтверждены.')
+        return value, raw
+
+    # No writer lock is acquired from inside an existing single-card lock.
+    # First identify the complete groups that actually require an upgrade.
+    stale = set()
+    for folder in folders:
+        for path in sorted(folder.glob('*.json')):
+            if re.fullmatch(r'[0-9a-f]{64}\.json', path.name):
+                value, _ = cached(path)
+                if value.get('reader') != documents.READER_VERSION and value.get('scan') is None:
+                    stale.add(folder.name)
+    groups = [(members, correction) for members, correction in groups if stale.intersection(members)]
+    if not groups:
+        return
+    identifiers = sorted({identifier for members, _ in groups for identifier in members})
+    folders = [identity._safe_path(project, 'contract_documents', identifier) for identifier in identifiers]
+    held = {str(Path(value).absolute()) for value in _held.__dict__.get('folders', set())}
+    for value in namespace._HELD_NATIVE_LOCKS.get():
+        path = Path(value)
+        if path.name == '.lock' and path.parent.parent.name == 'contract_documents':
+            held.add(str(path.parent.absolute()))
+    if held and not {str(folder.absolute()) for folder in folders} <= held:
+        raise ContractFilesProblem('Для обновления разборов нужна полная блокировка исходных карточек. '
+                                   'Обновите реестр перед повторной операцией.')
+    with contextlib.ExitStack() as locks:
+        for folder in sorted(folders):
+            locks.enter_context(_locked(folder))
+        # Validate under native locks, before reading or writing derived data.
+        before_by_group = {}
+        for members, correction in groups:
+            inventory = identity.metadata_inventory(project, list(members), correction=correction)
+            before_by_group[members] = inventory
+            budget['metadata_files'] += inventory['metadata_files_read']
+            budget['metadata_bytes'] += inventory['metadata_bytes_read']
+            budget['files'] += inventory.get('price_source_files_read', 0)
+            budget['bytes'] += inventory.get('price_source_bytes_read', 0)
+            if budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES:
+                raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
+            if budget['files'] > MAX_PARSE_REFRESH_FILES or budget['bytes'] > MAX_PARSE_REFRESH_BYTES:
+                raise ContractFilesProblem('Объём проверки источников цены превышает предел одной сборки.')
+        candidates = []
+        for folder in folders:
+            for path in sorted(folder.glob('*.json')):
+                if not re.fullmatch(r'[0-9a-f]{64}\.json', path.name):
+                    continue
+                record, metadata = cached(path)
+                if record.get('reader') == documents.READER_VERSION or record.get('scan') is not None:
+                    continue
+                pdf = folder/(path.stem+'.pdf')
+                if not pdf.exists():
+                    raise ContractFilesProblem('Исходный PDF для обновления разбора не найден. Проверьте хранилище проекта.')
+                # The parser receives these exact no-follow descriptor bytes.
+                raw = namespace.read_bytes(pdf, MAX_BYTES)
+                if raw is None or hashlib.sha256(raw).hexdigest() != path.stem:
+                    raise ContractFilesProblem('Исходный PDF не соответствует сохранённому SHA256; обновление разбора отменено.')
+                # Reserve the second verified descriptor read before any
+                # writes, so source-validation budget failure is preflight.
+                budget['bytes'] += 2*len(raw)
+                budget['files'] += 2
+                provenance_context = None
+                for members, _ in groups:
+                    if folder.name not in members:
+                        continue
+                    before = before_by_group[members]
+                    card = next((card for card in before['cards'] if card['raw_id'] == folder.name), {})
+                    previous = next((doc for doc in card.get('documents') or [] if doc['document_sha256'] == path.stem), {})
+                    if (previous.get('metadata') or {}).get('sha256') != hashlib.sha256(metadata).hexdigest():
+                        raise ContractFilesProblem('Метаданные документа изменились до обновления разбора.')
+                    event = approvals.get(members)
+                    if event and ((event['payload'].get('price_document_evidence') or {}).get('document_sha256') == path.stem
+                                  and event['payload']['roles']['price_raw_id'] == folder.name):
+                        provenance_context = {'event': event, 'before': before,
+                                              'metadata_sha256': hashlib.sha256(metadata).hexdigest()}
+                budget['metadata_files'] += 1
+                budget['metadata_bytes'] += len(metadata)
+                if budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES:
+                    raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
+                candidates.append((folder, path.stem, record, raw, provenance_context, hashlib.sha256(metadata).hexdigest()))
+                if budget['files'] > MAX_PARSE_REFRESH_FILES or budget['bytes'] > MAX_PARSE_REFRESH_BYTES:
+                    raise ContractFilesProblem('Объём обновления разборов превышает предел одной сборки. Обновите документы отдельной операцией.')
+        own_writes = {}
+        for folder, sha, record, raw, provenance_context, previous_metadata in candidates:
+            fresh = _reread(folder, sha, record, raw, provenance_context, previous_metadata)
+            written = json.dumps(fresh, ensure_ascii=False, allow_nan=False).encode('utf-8')
+            own_writes[(folder.name, sha)] = (hashlib.sha256(written).hexdigest(),
+                                              'price_reader_provenance' in fresh)
+        for folder, sha, _, _, _, _ in candidates:
+            raw = namespace.read_bytes(folder/(sha+'.pdf'), MAX_BYTES)
+            if raw is None or hashlib.sha256(raw).hexdigest() != sha:
+                raise ContractFilesProblem('Исходный PDF изменился во время обновления разбора.')
+
+        def sealed(inventory, *, after=False):
+            observed = copy.deepcopy(inventory)
+            # Diagnostic read counters change with our new derived witness;
+            # the actual ReadContext still pins every field, including them.
+            for key in ('metadata_files_read', 'metadata_bytes_read',
+                        'price_source_files_read', 'price_source_bytes_read'):
+                observed.pop(key, None)
+            for card in observed['cards']:
+                for index, document in enumerate(card['documents']):
+                    key = (card['raw_id'], document['document_sha256'])
+                    if key not in own_writes:
+                        continue
+                    expected, price_witness = own_writes[key]
+                    if after and ((document.get('metadata') or {}).get('sha256') != expected
+                            or price_witness and (document.get('price_reader_provenance') or {}).get('state') != 'verified'):
+                        raise ContractFilesProblem('Исходные привязки изменились во время обновления разбора. Обновите реестр.')
+                    card['documents'][index] = {'document_sha256': key[1], 'own_refresh_sha256': expected}
+            return observed
+
+        # Only exact bytes written by this controlled refresh may differ.
+        # An owner deadline/links/header or any other metadata edit during
+        # parsing cannot be absorbed into the first ownership binding pin.
+        for members, correction in groups:
+            after = identity.metadata_inventory(project, list(members), correction=correction)
+            budget['metadata_files'] += after['metadata_files_read']
+            budget['metadata_bytes'] += after['metadata_bytes_read']
+            budget['files'] += after.get('price_source_files_read', 0)
+            budget['bytes'] += after.get('price_source_bytes_read', 0)
+            if (budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES
+                    or budget['files'] > MAX_PARSE_REFRESH_FILES or budget['bytes'] > MAX_PARSE_REFRESH_BYTES):
+                raise ContractFilesProblem('Общий объём проверки обновлённых разборов превышает предел одной сборки.')
+            if sealed(before_by_group[members]) != sealed(after, after=True):
+                raise ContractFilesProblem('Исходные привязки изменились во время обновления разбора. Обновите реестр.')
 
 
 def _edition(record: dict) -> tuple:
@@ -390,6 +689,17 @@ def document_prices(project: str, contract_id: str, cut: str, source_ids: list[s
 
 @stage_profile.stage('card_listing')
 def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = None) -> dict:
+    # One source/anchor snapshot across both workers, including projections and
+    # the exported read guard. Reads never combine old dates with a new graph.
+    folders = _folders(project, contract_id, acts)
+    with contextlib.ExitStack() as locks:
+        for folder in sorted(folders):
+            if folder.is_dir():
+                locks.enter_context(_locked(folder))
+        return _listing(project, contract_id, cut, acts)
+
+
+def _listing(project: str, contract_id: str, cut: str = "", acts: dict | None = None) -> dict:
     """Every document in the card with its links, the accumulated plan and fact on `cut` and the removed files.
 
     `acts` are the KS-6a works of the contract on `cut` (`fact.acts`); None when the register has none.
@@ -403,9 +713,12 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
                               "plan": plan.build([], cut), "fact": _fact([], None, acts, cut, performed),
                               "performed": performed}, acts, cut)
     every = _all_records(folders)
-    records = [r for r in every if not r.get("removed_at")]
+    import developaid_contract_gpr as gpr
+    history = sorted((event for folder in folders for event in gpr.events(folder)),
+                     key=lambda event: (event['recorded_at'], event['event_id']))
+    records = gpr.project_records([r for r in every if not r.get("removed_at")], history)
     # An unconfirmed scan is listed with its proposal; the plan, the fact and the act dates do not see it.
-    counted = [r for r in records if not awaits_confirmation(r)]
+    counted = gpr.counted([r for r in records if not awaits_confirmation(r)])
     acts = act_dates.resolve(acts, counted, cut)
     performed = acts_in_card.accumulated(counted, cut)
     performed['excluded'].extend({
@@ -443,10 +756,14 @@ def listing(project: str, contract_id: str, cut: str = "", acts: dict | None = N
                 "removed_at": r["removed_at"]} for r in every if r.get("removed_at")]
     editions = _editions(counted, chosen)
     planned = plan.build(editions, cut)
-    return _with_control({"contract_id": contract_id, "documents": records, "removed": removed, "plan": planned,
+    result = _with_control({"contract_id": contract_id, "documents": records, "removed": removed, "plan": planned,
                           "fact": _fact(editions, planned["in_force"], acts, cut, performed),
                           "performed": performed},
                          acts, cut)
+    result['gpr'] = gpr.view(project, contract_id, records, folders, cut)
+    result['gpr']['document_source_ids'] = (acts or {}).get('document_source_ids') or []
+    result['gpr']['staffing'] = gpr.staffing(result['gpr'].get('schedule'), date=cut)
+    return result
 
 
 _SCAN_FIELDS = (("contract", "number", "номер договора"), ("contract", "date", "дата договора"),
@@ -571,6 +888,8 @@ def _with_control(listed, acts, cut):
     # reach the register too: no rejected KS period does not mean all works
     # of the contract were matched to the estimate and its current scope.
     listed['control']['coverage'] = dict(listed['comparison']['coverage'])
+    if listed['control'].get('statement_summary'):
+        listed['control']['statement_summary']['current']['coverage']=dict(listed['comparison']['coverage'])
     if listed['control'].get('total') is not None:
         listed['control']['total']['incomplete'] = bool(
             listed['control']['total'].get('incomplete') or listed['comparison']['coverage']['partial'])
@@ -581,6 +900,7 @@ def _with_control(listed, acts, cut):
 def _schedule_identity(records, cut):
     """Unique eligible source document; unread dates do not erase its identity."""
     eligible = [r for r in records if not r.get('removed_at') and not r.get('act')
+                and r.get('gpr_status') not in {'pending_signed_confirmation', 'conflicting_edition'}
                 and not (r.get('scan') and not r['scan'].get('confirmed_at'))
                 and (r.get('schedule') or {}).get('lines') and _date(r) and _date(r) <= cut]
     if not eligible:
@@ -636,6 +956,7 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
             "source": found.get("source"), "preliminary": bool(found.get("preliminary")),
             "confirmation": found.get("confirmation"),
             'act_evidence': found.get('act_evidence'),
+            'statement_summary': found.get('statement_summary'),
             "left_out": found["left_out"],
             "coverage": found.get("coverage"),
             "components": found.get("components") or {},
@@ -644,6 +965,9 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
             "whole_contract_finish": forecast.get("whole_contract_finish"),
             **{k: forecast.get(k) for k in ("finish", "deadline", "from_register", "done", "threat", "days_over",
                                             "days_early", "passed")}}
+        if listed.get('gpr'):
+            row['schedule_control']['gpr_binding'] = {key: value for key, value in listed['gpr'].items()
+                if key in {'project', 'contract_id', 'guard', 'document_source_ids', 'source'}}
         if found.get('schedule_source'):
             row['schedule_control']['schedule_source'] = found['schedule_source']
     return register

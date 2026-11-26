@@ -33,10 +33,11 @@ from __future__ import annotations
 import bisect
 import datetime as dt
 import re
-from math import fsum
+import hashlib
+from math import ceil, floor, fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 14
+READER_VERSION = 16
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -580,6 +581,8 @@ def _schedule_page(page, page_number, schedule):
                 'bar': {'start': bar[0], 'finish': bar[1]} if bar else None,
                 'level': code.count('.')+1, 'parent': code.rsplit('.', 1)[0] if '.' in code else None,
                 'page': page_number}
+        if bar:
+            line['segments'] = _bar_segments(grid, index, fills, columns, dates, body=grid.rows[header+1])
         # A printed date the reader cannot take (a year of two figures) is kept as printed, never dropped.
         unread = {key: _space(text) for key, text, value in (('start', row[2], start), ('finish', row[3], finish))
                   if _space(text) and value is None}
@@ -631,6 +634,134 @@ CHART_INTERVALS_ASSUMPTION = (
     'Отдельных граф начала и окончания нет. Начало работы — первый день первого закрашенного интервала, '
     'окончание — последний день последнего. Месяцы, годы и границы интервалов взяты из шапки диаграммы. '
     'Это оценка по полосам графика, а не отдельно указанные даты начала и окончания работ.')
+
+RELATIVE_ASSUMPTION = ('В исходном ГПР указаны относительные недели или дни. Календарные даты рассчитываются '
+                       'только от вручную указанной даты передачи площадки. Границы недель — оценка по '
+                       'полосам, а юридический срок и условия начала работ проверяются отдельно.')
+
+
+def _relative_page(page, page_number, schedule):
+    """Ordinal week/day bars, including PDFs whose outer borders are not drawn.
+
+    Read physical coloured cells, not the printed duration or a continuous
+    envelope. A resource row retains its own label and category; a combined
+    «рабочих и ИТР» number is never silently split into two populations.
+    """
+    words, grid = _words(page), _Grid(page)
+    unit_re = re.compile(r'^(?:недел[яиь]|день|дня|дней)$', re.I)
+    groups = {}
+    for word in words:
+        if unit_re.fullmatch(word[4]):
+            peers = [w for w in words if w[5:7] == word[5:7] and re.fullmatch(r'\d{1,3}', w[4])]
+            if len(peers) == 1:
+                groups.setdefault(('week' if word[4].lower().startswith('недел') else 'day',
+                                   round((word[1]+word[3])/2 / 8)), []).append(
+                    (int(peers[0][4]), (word[0]+word[2])/2, min(word[1], peers[0][1]),
+                     max(word[3], peers[0][3])))
+    labels = max(groups.values(), key=len, default=[])
+    labels.sort(key=lambda value: value[1])
+    if len(labels) < 2 or [n for n, *_ in labels] != list(range(1, len(labels)+1)):
+        return False
+    unit = next(key[0] for key, value in groups.items() if value is labels)
+    step = 7 if unit == 'week' else 1
+    top, header_bottom = min(v[2] for v in labels), max(v[3] for v in labels)
+    across, down = _rules(page)
+    # Rules between adjacent centres are authoritative. Page-wide EDO rules
+    # outside the table cannot become an extra calendar column.
+    centers = [v[1] for v in labels]
+    bounds = []
+    for left, right in zip(centers, centers[1:]):
+        found = [x for x, y0, y1 in down if left < x < right and y0 <= header_bottom and y1 >= top]
+        bounds.append(min(found, key=lambda x: abs(x-(left+right)/2)) if found else (left+right)/2)
+    first = max((x for x, y0, y1 in down if x < centers[0] and y0 <= header_bottom and y1 >= top),
+                default=centers[0]-(bounds[0]-centers[0]))
+    ends = [x1 for y, x0, x1 in across if header_bottom <= y <= header_bottom+80
+            and x0 < first and x1 > centers[-1]]
+    last = min(ends) if ends else centers[-1]+(centers[-1]-bounds[-1])
+    bounds = [first, *bounds, last]
+    codes = sorted((w for w in words if _CODE.fullmatch(w[4]) and w[4].endswith('.')
+                    and w[2] < first and w[1] >= header_bottom), key=lambda w: w[1])
+    if not codes:
+        return False
+    code_x = min(w[0] for w in codes)
+    # A name column ends before duration. Only its actual header rules are
+    # considered, so stray vertical strokes through text do not truncate names.
+    duration_words = [w for w in words if re.search(r'длительн', w[4], re.I)
+                      and w[2] <= first+1 and w[1] < header_bottom]
+    duration_left = min((w[0] for w in duration_words), default=first)
+    name_right = max((x for x, y0, y1 in down if x < duration_left and x > code_x
+                      and y0 <= header_bottom and y1 >= top), default=duration_left)
+    fills = _fills(page)
+    columns = [{'period': i+1, 'label': f'{i+1} '+('неделя' if step == 7 else 'день'),
+                'start_day': i*step+1, 'finish_day': (i+1)*step} for i in range(len(labels))]
+    lines = []
+    for index, code in enumerate(codes):
+        cy = (code[1]+code[3])/2
+        row_ends = [y for y, x0, x1 in across if x0 <= code_x+5 <= x1 and y > cy]
+        bottom = min(row_ends, default=(codes[index+1][1] if index+1 < len(codes) else code[3]+2))
+        row_starts = [y for y, x0, x1 in across if x0 <= code_x+5 <= x1 and header_bottom <= y < cy]
+        row_top = max(row_starts, default=header_bottom)
+        row_words = [w for w in words if row_top <= (w[1]+w[3])/2 < bottom]
+        name = _space(' '.join(w[4] for w in sorted(row_words, key=lambda w: (w[1], w[0]))
+                               if code[2]+2 < (w[0]+w[2])/2 < name_right))
+        if not name:
+            continue
+        marked = sorted((max(first, rect.x0), min(last, rect.x1)) for colour, rect in fills
+                        if min(colour) < .97 and rect.y0-.6 <= cy <= rect.y1+.6
+                        and rect.x0 >= first-1 and rect.x1 <= last+2)
+        def offset(x):
+            near = min(bounds, key=lambda bound: abs(bound-x))
+            x = near if abs(near-x) <= 1 else x
+            for i, (left, right) in enumerate(zip(bounds, bounds[1:])):
+                if x <= right:
+                    return round((i+(x-left)/(right-left))*step, 6)
+            return len(labels)*step
+        segments = []
+        for left, right in marked:
+            begin, end = offset(left), offset(right)
+            if end <= begin:
+                continue
+            if segments and begin <= segments[-1]['end_offset']+.01:
+                segments[-1]['end_offset'] = max(end, segments[-1]['end_offset'])
+            else:
+                segments.append({'start_offset': begin, 'end_offset': end})
+        for segment in segments:
+            segment.update(start_day=floor(segment['start_offset'])+1, finish_day=ceil(segment['end_offset']))
+        duration = [w[4] for w in row_words if name_right <= (w[0]+w[2])/2 < first
+                    and re.fullmatch(r'\d+(?:[.,]\d+)?', w[4])]
+        number = code[4].rstrip('.')
+        lines.append({'code': number, 'name': name, 'start': None, 'finish': None, 'bar': None,
+                      'cells': {'start': None, 'finish': None}, 'corrected': False,
+                      'dates_from': {'start': 'relative_bar', 'finish': 'relative_bar'},
+                      'relative_segments': segments, 'relative_unit': unit,
+                      'duration_printed': _amount(duration[0]) if len(duration) == 1 else None,
+                      'level': number.count('.')+1, 'parent': number.rsplit('.', 1)[0] if '.' in number else None,
+                      'page': page_number, 'source': {'page': page_number, 'row': index+1}})
+    if not lines:
+        return False
+    schedule.update(calendar_basis='relative', relative_unit=unit, columns=columns, assumption=RELATIVE_ASSUMPTION)
+    schedule['lines'].extend(lines)
+    schedule['warnings'].append(RELATIVE_ASSUMPTION)
+    # Resource values are read in their own printed row, not inferred from bars.
+    resource_labels = [w for w in words if re.search(r'количество|численность', w[4], re.I)
+                       and w[1] >= codes[-1][1]]
+    resources = schedule.setdefault('resources', [])
+    for label in resource_labels:
+        same = [w for w in words if w[5:7] == label[5:7]]
+        title = _space(' '.join(w[4] for w in same))
+        if not re.search(r'рабоч|итр|персонал|человек', title, re.I):
+            continue
+        cy = (label[1]+label[3])/2
+        values = []
+        for i in range(len(labels)):
+            found = [w[4] for w in words if abs((w[1]+w[3])/2-cy) <= 8 and
+                     bounds[i] <= (w[0]+w[2])/2 < bounds[i+1] and re.fullmatch(r'\d+', w[4])]
+            values.append({'period': i+1, 'value': int(found[0]) if len(found) == 1 else None})
+        resources.append({'name': title, 'category': 'workers_and_itr' if re.search(r'рабоч', title, re.I)
+                          and re.search(r'итр', title, re.I) else 'itr' if re.search(r'итр', title, re.I) else 'workers',
+                          'values': values, 'period_basis': 'relative_explicit_period',
+                          'source': {'page': page_number}})
+    return True
 
 
 def _dated_bar_page(page, page_number, schedule):
@@ -822,6 +953,8 @@ def _weekly_page(page, page_number, schedule, layout=None):
         if not _CODE.match(code):
             warnings.append(f'Стр. {page_number}: у строки графика «{name[:80]}» нет номера.')
             continue
+        if _resource_row(schedule, row, name, page_number, index, layout):
+            continue
         bar = _bar(grid, index, fills, grid.columns, layout['dates'], first, body)
         parent, prefix = None, code
         while '.' in prefix:
@@ -836,6 +969,8 @@ def _weekly_page(page, page_number, schedule, layout=None):
                 'bar': {'start': bar[0], 'finish': bar[1]} if bar else None,
                 'level': code.count('.')+1, 'parent': parent, 'section': schedule.get('section'),
                 'page': page_number}
+        if bar:
+            line['segments'] = _bar_segments(grid, index, fills, grid.columns, layout['dates'], first, body)
         if layout.get('date_precision'):
             line['date_precision'] = layout['date_precision']
         if layout.get('metadata'):
@@ -843,9 +978,56 @@ def _weekly_page(page, page_number, schedule, layout=None):
             if _space(row[3]) and line['quantity'] is None:
                 line['quantity_text'] = _space(row[3])
                 warnings.append(f'Стр. {page_number}: у строки {code} количество «{line["quantity_text"]}» не прочитано.')
+        for column in range(first,len(row)):
+            literal = _space(row[column])
+            count = re.fullmatch(r'(\d+)\s*[-–—]\s*(\d+)\s*чел\.?',literal,re.I)
+            if not count or int(count[1]) > int(count[2]):
+                continue
+            period = (layout.get('dates') or {}).get(column)
+            schedule.setdefault('personnel_annotations',[]).append({
+                'literal':literal,'minimum':int(count[1]),'maximum':int(count[2]),
+                'category':'people_unspecified','scope':'one_operation_period_unallocated',
+                'operation':code,'name':name,'section':schedule.get('section'),
+                'start':period[0].isoformat() if period else None,
+                'finish':period[1].isoformat() if period else None,
+                'source':{'page':page_number,'row':index+1,'column':column+1,
+                    'bbox':[grid.columns[column],grid.rows[index],grid.columns[column+1],grid.rows[index+1]]}})
         lines.append(line)
         by_code.setdefault(code, line)
     return layout
+
+
+def _resource_row(schedule, row, name, page_number, row_index, layout):
+    """Resource observations retain literal ticks, ranges and missing cells.
+
+    A preceding work heading is a scope hint, never proof that an object-wide
+    ITR row belongs to that work alone. Repeated resource rows remain separate.
+    """
+    itr = bool(re.search(r'\bитр\b|инженерно[-\s]техническ', name, re.I))
+    workers = bool(re.search(r'рабочи[хе]|монтажник[иов]*', name, re.I))
+    if not (itr or workers) or not layout.get('dates'):
+        return False
+    metadata = ' '.join(row[2:layout['first']])
+    if not re.search(r'чел|количеств|численност', name+' '+metadata, re.I):
+        return False
+    category = 'workers_and_itr' if itr and workers else 'itr' if itr else 'workers'
+    columns = []
+    values = []
+    for period, (column, (begin, end)) in enumerate(sorted(layout['dates'].items()), 1):
+        raw = _space(row[column]) if column < len(row) else ''
+        ranged = re.fullmatch(r'(\d+(?:[.,]\d+)?)\s*[-–—]\s*(\d+(?:[.,]\d+)?)', raw)
+        value = ({'min': _amount(ranged[1]), 'max': _amount(ranged[2]), 'raw': raw} if ranged else
+                 _amount(raw) if raw else None)
+        columns.append({'period': period, 'label': begin.strftime('%d.%m.%Y'),
+                        'start': begin.isoformat(), 'finish': end.isoformat()})
+        values.append({'period': period, 'value': value, 'raw': raw, 'value_present': bool(raw),
+                       'start': begin.isoformat(), 'finish': end.isoformat()})
+    schedule.setdefault('columns', columns)
+    schedule.setdefault('resources', []).append({'name': name, 'category': category, 'values': values,
+        'period_basis': 'literal_date' if all(c['start'] == c['finish'] for c in columns) else 'explicit_interval',
+        'scope': None, 'scope_hint': schedule.get('section'), 'scope_state': 'requires_confirmation',
+        'source': {'page': page_number, 'row': row_index+1}})
+    return True
 
 
 def _apart(cell, bar):
@@ -894,6 +1076,12 @@ def _bar(grid, row, fills, columns, dates, first=4, body=0.0):
 
     Several bars of one line (stages of one work) give one span, from the first to the last. `body` is
     the top of the table under its header: a fill of the header is never a bar."""
+    found = _bar_segments(grid, row, fills, columns, dates, first, body)
+    return (found[0]['start'], found[-1]['finish']) if found else None
+
+
+def _bar_segments(grid, row, fills, columns, dates, first=4, body=0.0):
+    """Physical occupied intervals; uncoloured gaps never turn into work days."""
     if not dates:
         return None
     top, bottom = grid.band(row)
@@ -908,9 +1096,16 @@ def _bar(grid, row, fills, columns, dates, first=4, body=0.0):
              if colour not in background and min(colour) < 0.97 and rect.x0 >= left-1.0 and rect.x1 <= right+1.0]
     if not marks:
         return None
-    x0, x1 = min(r.x0 for r in marks), max(r.x1 for r in marks)
-    covered = [days for column, days in dates.items() if x0 <= (columns[column]+columns[column+1])/2 <= x1]
-    return (min(d[0] for d in covered).isoformat(), max(d[1] for d in covered).isoformat()) if covered else None
+    covered = sorted((column, *days) for column, days in dates.items() if any(
+        rect.x0 <= (columns[column]+columns[column+1])/2 <= rect.x1 for rect in marks))
+    segments, previous = [], None
+    for column, begin, end in covered:
+        if segments and column == previous+1:
+            segments[-1] = (segments[-1][0], max(segments[-1][1], end))
+        else:
+            segments.append((begin, end))
+        previous = column
+    return [{'start': begin.isoformat(), 'finish': end.isoformat()} for begin, end in segments]
 
 
 def _repeat_code(number, count):
@@ -1313,6 +1508,10 @@ def _read(document, data: bytes = b'') -> dict:
                 estimate, out['schedule'] = None, schedule
                 schedule['pages'].append(number)
                 continue
+            if _relative_page(page, number, schedule):
+                estimate, out['schedule'] = None, schedule
+                schedule['pages'].append(number)
+                continue
             weekly = _weekly_page(page, number, schedule) or _dated_bar_page(page, number, schedule)
             if weekly is not None:
                 estimate, out['schedule'] = None, schedule
@@ -1351,6 +1550,9 @@ def _read(document, data: bytes = b'') -> dict:
     if out['schedule']:
         out['schedule'].pop('section', None)
         _check_schedule(out['schedule'])
+        source_sha = hashlib.sha256(data).hexdigest()
+        for annotation in out['schedule'].get('personnel_annotations') or []:
+            annotation['source']['sha256'] = source_sha
         if not out['schedule']['lines']:
             out['schedule']['warnings'].append('В графике не найдено ни одной строки работ.')
     if 'estimate' in mentioned and not out['estimates']:
@@ -1372,6 +1574,17 @@ def _read(document, data: bytes = b'') -> dict:
         condition_texts[number-1] = ' '.join(w[4] for w in _words(page)
             if grid.rows and not grid.rows[0] <= (w[1]+w[3])/2 <= grid.rows[-1])
     out['terms'] = terms.read(condition_texts)
+    # Printed operator stamps are evidence of what is visible in the PDF,
+    # never a cryptographic certificate validation.
+    observed = []
+    for number, text in enumerate(texts, 1):
+        if 'ДОКУМЕНТ ПОДПИСАН ЭЛЕКТРОННОЙ ПОДПИСЬЮ' in text.upper():
+            stamp = text[text.upper().index('ДОКУМЕНТ ПОДПИСАН ЭЛЕКТРОННОЙ ПОДПИСЬЮ'):]
+            observed.append({'page': number, 'quote': stamp[:3500],
+                             'sent_mark': bool(re.search(r'ОТПРАВЛЕНО', stamp)),
+                             'approved_mark': bool(re.search(r'УТВЕРЖДЕНО', stamp))})
+    out['signature_evidence'] = {'method': 'visible_edo_text', 'cryptographically_validated': False,
+                                 'state': 'observed' if observed else 'unknown', 'observations': observed}
     out['price'] = price.read(condition_texts)
     out['warnings'].extend(out['terms']['warnings'])
     out['warnings'].extend(out['price']['warnings'])
