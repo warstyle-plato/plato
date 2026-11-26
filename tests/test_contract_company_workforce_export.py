@@ -32,12 +32,24 @@ def test_single_company_observation_preserves_presence_and_never_fills_plan_or_c
     before=copy.deepcopy(state);book=Workbook();sheet=export.write_company_workforce(book,state)
     assert state==before and state['available'] is False
     assert sheet.title=='Численность подрядчика' and sheet.freeze_panes is None
-    assert [sheet.cell(5,c).value for c in range(2,8)]==[None,8,None,None,2,None]
-    assert [sheet.cell(6,c).value for c in range(2,8)]==[None,0,None,None,None,None]
+    from developaid_contract_builder_plan import BuilderEvaluator
+    evaluator=BuilderEvaluator(book)
+    assert [evaluator.cell(sheet.title,sheet.cell(5,c).coordinate) for c in range(2,8)]==[None,8,'',None,2,'']
+    assert [evaluator.cell(sheet.title,sheet.cell(6,c).coordinate) for c in range(2,8)]==[None,0,'',None,None,'']
     assert 'По договорам повторно не суммировать' in sheet['H5'].value
     assert 'ИТР: категория не подтверждена' in sheet['H6'].value
     assert json.loads(sheet['H5'].comment.text)['contract_fact'] is False
     assert not any('/private/report' in str(cell.value) for row in sheet for cell in row)
+
+
+def test_unread_reports_preserve_a_company_sheet_without_zero_people_or_a_fake_report_date():
+    state={'available':False,'cut':'2026-11-24','contractor':'ООО Учебный','report_input_status':'not_loaded',
+           'report_status_note':'Сводки не загружены; фактическая численность не проверена.','rows':[]}
+    book=Workbook();sheet=export.write_company_workforce(book,state)
+    assert sheet.title=='Численность подрядчика' and sheet.freeze_panes is None
+    assert [sheet.cell(5,c).value for c in (1,2,3,5,6)]==[None]*5
+    assert sheet['D5'].data_type==sheet['G5'].data_type=='f'
+    assert 'не проверена' in sheet['H5'].value
 
 
 @pytest.mark.parametrize('other',[

@@ -20,8 +20,8 @@ import developaid_contract_workforce as workforce
 import developaid_contract_gpr_reporting as reporting
 from developaid_contract_rds import LAYOUT
 
-SCHEMA = 'contract-gpr-performance-xlsx-v9'
-PRESENTATION_SCHEMA = 'contract-gpr-known-state-v8'
+SCHEMA = 'contract-gpr-performance-xlsx-v10'
+PRESENTATION_SCHEMA = 'contract-gpr-known-state-v9'
 COLORS = reporting.COLORS
 LEGEND = reporting.LEGEND
 
@@ -387,6 +387,9 @@ def company_workforce_rows(projection):
 
 def write_company_workforce(book,projection):
     rows = company_workforce_rows(projection)
+    if not rows and projection.get('report_input_status') == 'not_loaded':
+        rows = [{'date':None,'workers':None,'itr':None,'candidates':[],
+                 'reason':projection.get('report_status_note') or workforce.REPORTS_NOT_LOADED}]
     if not rows:
         return None
     sheet = book.create_sheet('Численность подрядчика')
@@ -406,6 +409,8 @@ def write_company_workforce(book,projection):
             cell=sheet.cell(index,column,rds_export._text(value) if isinstance(value,str) else value)
             if isinstance(value,str):cell.data_type='s'
         sheet.cell(index,1).number_format='dd.mm.yyyy'
+        for target,planned,actual in (('D','B','C'),('G','E','F')):
+            sheet[target+str(index)]='=IF(COUNT('+planned+str(index)+':'+actual+str(index)+')=2,'+actual+str(index)+'-'+planned+str(index)+',"")'
         sheet.cell(index,8).comment=Comment(json.dumps({'scope':'contractor_unallocated','contract_fact':False,
             'plan':None,'delta':None,'date':item['date'],'candidates':item['candidates']},ensure_ascii=False),'DevelopAid')
         sheet.row_dimensions[index].height=62
@@ -703,7 +708,8 @@ def workbook(meta, cached):
         sheet.merge_cells(start_row=row+1, start_column=1, end_row=row+1, end_column=6)
         sheet.row_dimensions[row+1].height = 44
         row += 1
-    if workforce.write_sheet(book, state.get('workforce') or {}) is None:
+    if (workforce.write_sheet(book, state.get('workforce') or {}) is None
+            or (state.get('workforce') or {}).get('report_input_status') == 'not_loaded'):
         write_company_workforce(book,state.get('workforce') or {})
     for page in book:
         page.freeze_panes = None
