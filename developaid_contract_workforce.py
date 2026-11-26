@@ -15,7 +15,8 @@ import re
 import stat
 from contextlib import nullcontext
 
-SCHEMA = 'contract-workforce-v1'
+SCHEMA = 'contract-workforce-v2'
+REPORTS_NOT_LOADED = 'Сводки бота не загружены; наличие отчёта и фактическая численность не проверены.'
 CATEGORIES = ('workers', 'itr')
 HEADERS = ('Дата', 'Рабочие: план', 'Рабочие: факт', 'Отклонение, чел.',
            'ИТР: план', 'ИТР: факт', 'Отклонение, чел.', 'Источники и пояснение')
@@ -398,11 +399,15 @@ def _binding(person, category, row, source, plans, peers, bindings, schedule):
 def project(schedule, reports, row, register, cut, *, source=None, existing_bindings=()):
     """Pure snapshot projection. No project-wide total or daily interpolation."""
     cut = _day(cut)
+    reports_loaded = reports is not None
+    reports = reports or ()
     source = source or (schedule or {}).get('source_identity') or {}
     result = {'schema': SCHEMA, 'cut': cut, 'contract_id': row.get('id'),
         'contract': row.get('contract'), 'contractor': row.get('contractor'),
         'plan_source': source, 'rows': [], 'note': NOTE, 'available': False,
-        'report_sources_revision': reports_revision(reports, cut),
+        'report_input_status': 'loaded' if reports_loaded else 'not_loaded',
+        'report_status_note': '' if reports_loaded else REPORTS_NOT_LOADED,
+        'report_sources_revision': reports_revision(reports, cut) if reports_loaded else None,
         'bindings_revision': digest(existing_bindings),
         'coverage': {'dates': 0, 'workers_pairs': 0, 'itr_pairs': 0, 'project_total': False}}
     if not cut or not _plan_bound(row, source):
@@ -460,7 +465,8 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
             item['combined_plan'] = plans['workers_and_itr']
             item['reasons'].append('В ГПР рабочие и ИТР объединены; раздельный план не выдуман.')
         if not by_date.get(date):
-            item['reasons'].append('На эту дату нет подходящей строки численности в сохранённых отчётах.')
+            item['reasons'].append('На эту дату нет подходящей строки численности в сохранённых отчётах.'
+                                   if reports_loaded else REPORTS_NOT_LOADED)
         if not plans:
             item['reasons'].append('На эту дату в ГПР нет подтверждённого календарного показателя численности; даты не интерполированы.')
         edition_date = (source.get('edition') or {}).get('date')
@@ -472,7 +478,8 @@ def project(schedule, reports, row, register, cut, *, source=None, existing_bind
     result['available'] = any(any(r.get(category + '_plan_sources') or r.get(category + '_fact') is not None
                                  for category in CATEGORIES) or r.get('combined_plan') for r in result['rows'])
     if not result['available']:
-        result['reason'] = ('В ГПР нет календарных строк численности; записи подрядчика в отчётах есть, '
+        result['reason'] = (REPORTS_NOT_LOADED if not reports_loaded else
+            'В ГПР нет календарных строк численности; записи подрядчика в отчётах есть, '
             'но состав по этому договору не распределён.' if by_date else
             'В ГПР нет календарных строк численности и в сохранённых отчётах нет применимого состава этого договора.')
     result['coverage']['dates'] = len(result['rows'])
