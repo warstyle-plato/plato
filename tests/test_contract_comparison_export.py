@@ -355,3 +355,13 @@ def test_previous_export_v4_schema_cannot_be_reused_as_current_snapshot():
     cached['comparison_export']={**binding,'schema':'contract-rds-plan-fact-export-v4'}
     with pytest.raises(export.ExportProblem,match='Версия таблицы изменилась'):
         export.select_snapshot(cached,PROJECT,binding['cut'],CONTRACT,binding['revision'],binding['row_tokens'])
+
+
+def test_previous_runtime_export_is_rejected_even_with_unchanged_sources(monkeypatch):
+    cached=native_card()
+    schema=export.SCHEMA
+    monkeypatch.setattr(export,'SCHEMA','contract-rds-plan-fact-export-v5')
+    cached['comparison_export']=export.bind_snapshot(PROJECT,CUT,CONTRACT,cached,{})
+    monkeypatch.setattr(export,'SCHEMA',schema)
+    with pytest.raises(export.ExportProblem,match='Версия'):
+        xlsx(cached)

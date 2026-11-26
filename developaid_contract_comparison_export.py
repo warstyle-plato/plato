@@ -1,6 +1,7 @@
 """XLSX presentation of an already completed, owner-bound contract card.
 
-No source readers, plan/fact calculations, client-provided amounts or formulas.
+Source values come from the snapshot; only trusted deviation formulas are added.
+No source readers or client-provided amounts/formulas are evaluated.
 Row tokens bind a canonical snapshot revision, ordinal and row digest.
 """
 from __future__ import annotations
@@ -20,7 +21,7 @@ from openpyxl.utils import get_column_letter
 from developaid_contract_rds import LAYOUT, FIELDS
 from developaid_contract_fact import _money
 
-SCHEMA = "contract-rds-plan-fact-export-v5"
+SCHEMA = "contract-rds-plan-fact-export-v6"
 MAX_ROWS = 10_000
 MAX_XLSX_BYTES = 8 * 1024 * 1024
 FILTERS = {"all": "Все работы и поставки", "behind": "Отстают от плана", "ahead": "Опережают план",
@@ -64,7 +65,7 @@ def bind_snapshot(project: str, cut: str, contract_id: str, result: dict, label:
         context['gpr_binding'] = {key: result['gpr'][key] for key in
             ('project', 'contract_id', 'documents_raw_id', 'document_source_ids', 'guard', 'source')
             if key in result['gpr']}
-    revision = _sha({**context, 'rds': comparison,
+    revision = _sha({"schema": SCHEMA, **context, 'rds': comparison,
                      'canonical': {key: result.get(key) for key in ('documents', 'plan', 'fact', 'comparison')}})
     return {"schema": SCHEMA, "layout": LAYOUT, "rows_count": len(rows), "scope": "all_active_rds",
             "available": True, **context, "revision": revision,
