@@ -80,7 +80,8 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         second = page.locator(f'tr[data-contract-id="{OTHER}"]')
         assert second.locator('.contract-main-money').all_text_contents() == ['—']
         expect(second).to_contain_text('полная сумма не подтверждена')
-        expect(second).to_contain_text('выполнение не подтверждено')
+        expect(second).to_contain_text('Процент денежного закрытия не подтверждён')
+        assert second.locator('.contract-money .contract-progress').count() == 0
         expect(second).to_contain_text('Указать срок договора')
         expect(second).to_contain_text('Работы не указаны')
         expect(second).not_to_contain_text('просрочен')
