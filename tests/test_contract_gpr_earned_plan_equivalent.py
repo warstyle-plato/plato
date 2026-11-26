@@ -43,9 +43,9 @@ def view(quantity=40, events=(), cut='2026-11-24', finish='2026-11-30', source_d
 def test_initial_source_plan_is_grey_without_physical_report():
     row=export.presentation({'lines':[{'code':'G','name':'Работа','start':'2026-11-01',
         'finish':'2026-12-31'}]},{},'2026-11-24')['rows'][0]
-    assert row['bars']==[{'start':0,'end':61,'state':'unknown'}]
+    assert row['bars']==[{'start':0,'end':24,'state':'unknown'}, {'start':24,'end':61,'state':'plan'}]
     assert row['reporting']['bars']==[]
-    assert export.COLORS['plan']==export.COLORS['unknown']=='D9D9D9'
+    assert export.COLORS['plan']=='D9D9D9' and export.COLORS['unknown']!='D9D9D9'
 
 
 def test_yellow_old_period_survives_green_catchup_and_future_never_green():
@@ -55,7 +55,7 @@ def test_yellow_old_period_survives_green_catchup_and_future_never_green():
     assert first['history_available'] and latest['history_available']
     assert latest['checkpoints'][0]==first['checkpoints'][0]
     assert [p['state'] for p in latest['checkpoints']]==['warning','fact']
-    assert [(bar['start'],bar['end'],bar['state']) for bar in latest['bars']]==[(0,10,'warning'),(10,20,'fact')]
+    assert [(bar['start'],bar['end'],bar['state']) for bar in latest['bars']]==[(0,9,'warning'),(9,19,'warning'),(19,24,'fact')]
     assert all(bar['end']<=24 for bar in latest['bars'])
     assert latest['current']['delta_pp']==pytest.approx(0)
 
@@ -63,15 +63,18 @@ def test_yellow_old_period_survives_green_catchup_and_future_never_green():
 def test_overdue_is_red_only_after_dated_postdeadline_evidence():
     row=view(40,[event(40,'2026-11-15','2026-11-01')],finish='2026-11-10')
     red=[bar for bar in row['reporting']['bars'] if bar['state']=='overdue']
-    assert red and max(bar['end'] for bar in red)==15
+    assert red and max(bar['end'] for bar in red)==24
+    assert min(bar['start'] for bar in red)==10
+    assert {day for bar in red for day in range(bar['start'],bar['end'])}==set(range(10,24))
+    assert any(bar['range_kind']=='retrospective_overdue_assessment' for bar in red)
     assert red[-1]['range_kind']=='overdue_extension'
     stale=view(40,finish='2026-11-20',source_dates=['2026-11-18'])
-    assert stale['deadline_status']['state']=='deadline_passed_unconfirmed'
-    assert stale['reporting']['current']['state']=='closure_unconfirmed'
+    assert stale['deadline_status']['state']=='overdue_incomplete'
+    assert stale['reporting']['current']['state']=='overdue'
     assert not any(bar['state']=='overdue' for bar in stale['reporting']['bars'])
     fresh=view(40,finish='2026-11-20',source_dates=['2026-11-23'])
     assert fresh['deadline_status']['state']=='overdue_incomplete'
-    assert max(bar['end'] for bar in fresh['reporting']['bars'])==23
+    assert max(bar['end'] for bar in fresh['reporting']['bars'])==24
     assert fresh['deadline_status']['days_after_planned_finish']==4
 
 
@@ -85,9 +88,13 @@ def test_equal_deadline_is_yellow_and_complete_has_no_on_time_claim():
     assert 'actual_finish' not in complete['reporting'] and 'on_time' not in complete['reporting']
 
 
-def test_document_date_without_report_start_is_only_one_point_not_smeared_interval():
+def test_document_observation_stays_a_point_but_its_quantity_persists_forward():
     row=view(80,[event(10,'2026-11-10'),event(70,'2026-11-20',label='КС-2 № 2')])
-    assert [(bar['start'],bar['end']) for bar in row['reporting']['bars']]==[(9,10),(19,20)]
+    assert [(bar['start'],bar['end']) for bar in row['reporting']['bars']]==[(0,9),(9,19),(19,24)]
+    assert all(p['start']==p['date'] for p in row['reporting']['checkpoints'])
+    assert all(b['not_actual_dates'] for b in row['reporting']['bars'])
+    assert row['reporting']['bars'][0]['range_kind']=='retrospective_report_assessment'
+    assert row['reporting']['bars'][0]['carried_forward'] is False
     assert all(p['date_basis']=='document_observation' for p in row['reporting']['checkpoints'])
 
 
@@ -95,7 +102,8 @@ def test_latest_total_without_increments_cannot_reconstruct_previous_reports():
     row=view(81.5,source_dates=['2026-11-18'])
     model=row['reporting']
     assert not model['history_available']
-    assert [(b['start'],b['end'],b['range_kind']) for b in model['bars']]==[(17,18,'source_snapshot')]
+    assert [(b['start'],b['end'],b['range_kind']) for b in model['bars']]==[(0,17,'retrospective_report_assessment'),(17,24,'known_state')]
+    assert model['last_confirmed_at']=='2026-11-18' and model['age_days']==6
     assert model['checkpoints'][0]['planned_fraction']==.6
     assert model['current']['planned_fraction']==.8
     assert model['checkpoints'][0]['date']=='2026-11-18'
@@ -107,7 +115,7 @@ def test_known_zero_is_yellow_but_missing_quantity_is_grey():
     zero=view(0,[event(0,'2026-11-10','2026-11-01')])['reporting']
     assert zero['history_available'] and zero['checkpoints'][0]['state']=='warning'
     missing=reporting.project({'finish':'2026-11-10'},None,[(0,10)],'2026-11-01','2026-11-24')
-    assert not missing['bars'] and missing['current'] is None
+    assert missing['bars'][0]['state']=='overdue_unclosed' and missing['current'] is None
 
 
 def test_duplicates_not_double_counted_and_conflicting_id_is_not_history():

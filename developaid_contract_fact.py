@@ -94,6 +94,7 @@ def acts(row: dict | None) -> dict | None:
                            "plan_quantity": item.get("plan_quantity"),
                            "reported_quantity": item.get("reported_completed_quantity"),
                            "periods": [{"label": p.get("label") or "", "quantity": p.get("quantity"),
+                                        "physical_quantity_basis":p.get("quantity_basis") or "explicit_quantity",
                                         "material_quantity": p.get('material_quantity'),
                                         "amount_split": p.get('amount_split') is True,
                                         "work_amount": p.get('work_amount'), "material_amount": p.get('material_amount'),
@@ -112,6 +113,7 @@ def acts(row: dict | None) -> dict | None:
             observation = {"number": item.get("position") or "", "name": item.get("name") or "",
                           "unit": item.get("unit") or "", "quantity": quantity,
                           "basis": period_basis,
+                          'physical_quantity_basis':period.get('quantity_basis') or 'explicit_quantity',
                           "quantity_material": period.get('material_quantity'),
                           "amount_components": {'work': period.get('work_amount'),
                                                 'material': period.get('material_amount'), 'total': period.get('amount')},
@@ -131,6 +133,11 @@ def acts(row: dict | None) -> dict | None:
     return {"acts": found, "unread": unread, "works": len(works), "items": works, "period_amounts": sums,
             'document_source_ids': row.get('document_source_ids') or [],
             'physical_groups': groups, 'source_positions':source_positions,
+            'physical_source_rows': [{key:item[key] for key in (
+                'position','name','unit','plan_quantity','source','snapshot_date',
+                'reported_completed_quantity','completed_quantity','reported_material_quantity','material_quantity',
+                'periods','undated_periods') if key in item} for item in row.get('physical_items') or []
+                if not item.get('is_group') and not item.get('is_duplicate')],
             'statement_sources':[{k:x[k] for k in ('source','source_date','period_year','completed',
                 'completed_materials','completed_works','financial_complete','period_dates_known',
                 'planned','planned_materials','planned_works','monetary_comparable','parts_monetary_comparable',
@@ -347,6 +354,7 @@ def _rds_observation(records, current, act, components, edition):
             ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
         event = {**witness, 'id': event_id, 'quantity_kind': 'increment',
                  'work_quantity': components['work_quantity'],
+                 'physical_quantity_basis':act.get('physical_quantity_basis') or 'explicit_quantity',
                  'date_basis': 'document_observation' if act.get('preliminary') or not act.get('start')
                                else 'reported_period',
                  'preliminary': bool(act.get('preliminary'))}
@@ -490,7 +498,8 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
               "materials": [], 'rds_positions': [], 'rds_unread': [],
               "component_gaps": [], 'material_statement': statement_materials(found, cut),
               'physical_groups': (found or {}).get('physical_groups') or [],
-              'act_evidence': (performed or {}).get('evidence')}
+              'act_evidence': (performed or {}).get('evidence'),
+              'physical_source_rows': (found or {}).get('physical_source_rows') or []}
     result['reconciliation'] = reconcile(performed, None if (found or {}).get('problem') else found, cut)
     result['confirmation'] = confirmation(performed, found, cut, result['reconciliation'])
     act_rows = from_acts(performed)

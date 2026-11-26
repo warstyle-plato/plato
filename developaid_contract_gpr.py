@@ -540,6 +540,8 @@ def physical_overlays(listed, rds):
             continue
         code = targets[0]['code']
         collected.setdefault(code, []).append(row)
+    observations={(item.get('estimate'),item.get('index')):item for item in (listed.get('fact') or {}).get('rds_positions') or []
+                  if item.get('estimate_sha256')==rds.get('estimate_sha256')}
     result = {}
     for code, rows in collected.items():
         row = rows[0]
@@ -555,6 +557,11 @@ def physical_overlays(listed, rds):
                         'planned_fraction': min(max(planned, 0), 1) if isinstance(planned, (int, float)) else None,
                         'fact_quantity': row['fact_quantity'], 'contract_quantity': row['contract_quantity'],
                         'unit': row['unit'], 'lag_days': max(row['day_deviation'], 0),
+                        'reporting_events':copy.deepcopy((observations.get((row.get('estimate'),row.get('index'))) or {}).get('reporting_events') or []),
+                        'reporting_plan_start':current.get('start'),
+                        'source_dates':sorted({value for entry in (observations.get((row.get('estimate'),row.get('index'))) or {}).get('sources') or []
+                            for value in [((entry.get('source') or {}).get('source_date') if rds.get('source')=='ks6a' else entry.get('end'))]
+                            if value and value<=rds['cut']}),
                         'source': rds.get('source'), 'basis': 'cumulative_quantity_at_cut',
                         'note': 'Накопленный физический объём на дату среза. '
                                 'Он не подтверждает даты или непрерывность производства работ.'}
@@ -578,13 +585,20 @@ def position_projections(listed, rds, schedule):
     counts = Counter(line['code'] for line in source_lines)
     source = {line['code']: line for line in source_lines}
     identities = Counter((r.get('estimate'), r.get('index')) for r in rds.get('rows') or [])
-    headings = {h['before_position']: h['name'] for h in rds.get('headings') or [] if not h.get('number')}
-    result, section = [], ''
+    headings = {}
+    for heading in rds.get('headings') or []:
+        if not heading.get('number') or re.fullmatch(r'\d+',str(heading.get('number'))):
+            headings.setdefault(heading['before_position'],[]).append(heading['name'])
+    result, section, previous_estimate = [], '', None
     observations = {(item.get('estimate'), item.get('index')): item
                     for item in (listed.get('fact') or {}).get('rds_positions') or []
                     if item.get('estimate_sha256') == rds.get('estimate_sha256')}
     for index, row in enumerate(rds.get('rows') or []):
-        section = headings.get(index, section)
+        if row.get('estimate') != previous_estimate:
+            section = ''
+        previous_estimate = row.get('estimate')
+        for heading in headings.get(index,[]):
+            section = heading
         identity = (row.get('estimate'), row.get('index'))
         binding = (bindings.get(identity) or {}) if binding_counts[identity] == 1 else {}
         targets = binding.get('lines') or [] if binding.get('status') in ('confirmed', 'proposed') else []
@@ -604,6 +618,10 @@ def position_projections(listed, rds, schedule):
         observation = observations.get(identity) or {}
         line['reporting_events'] = copy.deepcopy(observation.get('reporting_events') or [])
         line['reporting_plan_start'] = current.get('start')
+        dates = [(item.get('source') or {}).get('source_date') if rds.get('source') == 'ks6a' else item.get('end')
+                 for item in observation.get('sources') or []]
+        line['source_dates'] = sorted({value for value in dates if value and value <= rds['cut']})
+        line['physical_audit'] = copy.deepcopy(row.get('physical_audit'))
         if (known and parent and row.get('unit') and numeric(row.get('day_deviation')) and identities[identity] == 1 and
                 day(row.get('start')) and day(row.get('finish')) and
                 (row['start'], row['finish']) == (parent.get('start'), parent.get('finish'))):

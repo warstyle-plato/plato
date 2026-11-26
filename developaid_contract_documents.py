@@ -33,10 +33,11 @@ from __future__ import annotations
 import bisect
 import datetime as dt
 import re
+import hashlib
 from math import ceil, floor, fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 15
+READER_VERSION = 16
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -977,6 +978,20 @@ def _weekly_page(page, page_number, schedule, layout=None):
             if _space(row[3]) and line['quantity'] is None:
                 line['quantity_text'] = _space(row[3])
                 warnings.append(f'Стр. {page_number}: у строки {code} количество «{line["quantity_text"]}» не прочитано.')
+        for column in range(first,len(row)):
+            literal = _space(row[column])
+            count = re.fullmatch(r'(\d+)\s*[-–—]\s*(\d+)\s*чел\.?',literal,re.I)
+            if not count or int(count[1]) > int(count[2]):
+                continue
+            period = (layout.get('dates') or {}).get(column)
+            schedule.setdefault('personnel_annotations',[]).append({
+                'literal':literal,'minimum':int(count[1]),'maximum':int(count[2]),
+                'category':'people_unspecified','scope':'one_operation_period_unallocated',
+                'operation':code,'name':name,'section':schedule.get('section'),
+                'start':period[0].isoformat() if period else None,
+                'finish':period[1].isoformat() if period else None,
+                'source':{'page':page_number,'row':index+1,'column':column+1,
+                    'bbox':[grid.columns[column],grid.rows[index],grid.columns[column+1],grid.rows[index+1]]}})
         lines.append(line)
         by_code.setdefault(code, line)
     return layout
@@ -1535,6 +1550,9 @@ def _read(document, data: bytes = b'') -> dict:
     if out['schedule']:
         out['schedule'].pop('section', None)
         _check_schedule(out['schedule'])
+        source_sha = hashlib.sha256(data).hexdigest()
+        for annotation in out['schedule'].get('personnel_annotations') or []:
+            annotation['source']['sha256'] = source_sha
         if not out['schedule']['lines']:
             out['schedule']['warnings'].append('В графике не найдено ни одной строки работ.')
     if 'estimate' in mentioned and not out['estimates']:

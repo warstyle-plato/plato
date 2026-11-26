@@ -84,7 +84,7 @@ def test_native_unallocated_company_export_is_guarded_even_though_contract_avail
     response=client.post('/monitor/contracts/gpr.xlsx',json=download)
     assert response.status_code==200
     book=load_workbook(io.BytesIO(response.content))
-    assert book.sheetnames==['ГПР','Выполнение','Численность подрядчика']
+    assert book.sheetnames==['ГПР','Выполнение','Аудит физобъёмов','Физфакт строителей','Численность подрядчика']
     assert book['Численность подрядчика']['C5'].value==8 and book['Численность подрядчика']['F5'].value==2
     reports[0]['text']='ООО Учебный ИТР 2, рабочие 9'
     monkeypatch.setattr(contracts,'build',lambda *a,**k:pytest.fail('Synchronous export must not rebuild the register.'))
