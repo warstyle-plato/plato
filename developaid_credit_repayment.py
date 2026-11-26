@@ -728,6 +728,8 @@ class _Loan:
         f = facts["data"]
         self.start = _day(facts["as_of"])
         self.principal, self.drawn = f["debt"], f["drawn"]
+        # Остаток на конец дня, включая даты выдач без платежа этой НКЛ.
+        self.principal_timeline = {self.start.isoformat(): self.principal}
         self.deferral_end = deferral_end
         self.availability_end = _day(loan["availability_end"])
         self.maturity = _day(loan["maturity"])
@@ -915,6 +917,12 @@ def _simulate(preset: dict[str, Any], datasets: dict[str, Any], scenario: dict[s
             _disclose(live, day, disclosed[day], split_rule)
         for st in live:
             _settle(st, day)
+            previous = st.principal_timeline[next(reversed(st.principal_timeline))]
+            payment = st.out["payments"].get(day.isoformat())
+            principal = (payment["debt_after"] if payment else
+                         st.principal if previous is not None else None)
+            if principal != previous:
+                st.principal_timeline[day.isoformat()] = principal
             if day in mark_days:
                 seg = st.segment_interest()[0]
                 st.marks[day.isoformat()] = {
@@ -935,6 +943,7 @@ def _simulate(preset: dict[str, Any], datasets: dict[str, Any], scenario: dict[s
                    interest_total=_sum(st.interest_total, None if st.iod is None
                                        else st.iod_total),
                    segments=st.segments, marks=st.marks, start=st.start.isoformat(),
+                   principal_timeline=st.principal_timeline,
                    debt_now=datasets[f"facts.{st.loan['id']}"]["data"]["debt"],
                    facts_as_of=datasets[f"facts.{st.loan['id']}"]["as_of"],
                    facts_source=datasets[f"facts.{st.loan['id']}"]["source"])
@@ -1340,7 +1349,15 @@ def _cover(loans: list[dict[str, Any]], escrow: dict[str, Any], datasets: dict[s
 
 
 def _debt_between(loan: dict[str, Any], key: str) -> float | None:
-    """Долг НКЛ на дату, в которую ей платить нечего: после её прошлой даты."""
+    """Условный долг на конец даты, включая выдачи между платежами НКЛ."""
+    if "principal_timeline" in loan:
+        timeline = loan["principal_timeline"]
+        past = [d for d in timeline if d <= key]
+        return timeline[max(past)] if past else None
+    # Совместимость со старыми сохранёнными прогнозами без дневной истории.
+    # Факты более поздней даты не означают известный долг в прошлом.
+    if loan.get("facts_as_of") and key < loan["facts_as_of"]:
+        return None
     past = [d for d in loan["payments"] if d < key]
     if past:
         return loan["payments"][max(past)]["debt_after"]
