@@ -208,7 +208,28 @@ def test_reported_cash_summary_is_shared_by_card_register_and_native_workbook(mo
     sheet=wb.active
     label=next(c for row in sheet for c in row if c.value=='Материалы по исходной КС-6а')
     assert sheet.cell(label.row,12).value==300 and sheet.cell(label.row,12).data_type=='n'
-    assert not any(c.data_type in ('e','f') for row in sheet for c in row)
+    values=openpyxl.load_workbook(io.BytesIO(raw),data_only=True).active
+    assert not any(c.data_type=='e' for book_sheet in wb for row in book_sheet for c in row)
+    assert values.cell(label.row,12).value==300
+    formulas=[c for row in sheet for c in row if c.data_type=='f']
+    assert formulas
+    for cell in formulas:
+        assert cell.column in (10,13,16)  # Trusted quantity, money and finish-date deviations.
+        if cell.column==16:
+            planned_finish=values.cell(cell.row,5).value
+            actual_finish=values.cell(cell.row,15).value
+            expected=(actual_finish-planned_finish).days if actual_finish is not None and planned_finish is not None else None
+            assert values.cell(cell.row,16).value==expected
+            continue
+        planned_column,fact_column=(6,8) if cell.column==10 else (11,12)
+        planned_value=values.cell(cell.row,planned_column).value
+        fact_value=values.cell(cell.row,fact_column).value
+        cached=values.cell(cell.row,cell.column)
+        assert cached.data_type!='e'
+        if all(isinstance(value,(int,float)) for value in (planned_value,fact_value)):
+            assert cached.value==pytest.approx(fact_value-planned_value)
+        else:
+            assert cached.value is None
 
 
 def test_unknown_basis_never_produces_a_reported_cash_percentage():
