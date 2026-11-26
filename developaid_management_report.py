@@ -949,6 +949,110 @@ def _fact(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "price_flats": flats["price_per_sqm"] or None}
 
 
+def _all_time_escrow(contracts: dict[str, Any], end: datetime.date) -> dict[str, Any]:
+    """Накопленные поступления действующих договоров из одного среза ЦФ.
+
+    График поступлений и прогноз раскрытия здесь не участвуют. Дата загрузки
+    не заменяет бизнес-дату, а legacy-ноль не заменяет наблюдение ячейки.
+    """
+    from market_search.sales_followups import identity
+
+    raw_date = contracts.get("as_of")
+    try:
+        as_of = (datetime.date.fromisoformat(raw_date)
+                 if isinstance(raw_date, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", raw_date)
+                 else None)
+    except ValueError:
+        as_of = None
+    dated_source = as_of is not None and contracts.get("as_of_provenance") == "uploader_declared"
+    cutoff = min(end, as_of) if dated_source else end
+    rows, undated, cancelled, drafts, future, unknown_status = [], 0, 0, 0, 0, 0
+    # У штатного читателя нет фильтра статуса: он сохраняет строки листа.
+    # Для нового полного итога неизвестный статус не доказывает действующий
+    # договор. Полные подписи исключают совпадение «не подписан» с «подписан».
+    active = {"зарегистрирован", "договор зарегистрирован", "подписан", "договор подписан",
+              "заключен", "договор заключен", "действует", "действующий", "действующий договор",
+              "исполнен", "договор исполнен", "на регистрации", "регистрация", "не расторгнут"}
+    for row in contracts.get("rows") or []:
+        status = " ".join(str(row.get("state") or "").casefold().replace("ё", "е").split())
+        if (not re.search(r"\bне\s+(?:расторг\w*|расторж\w*|аннулир\w*|отмен\w*)", status)
+                and re.search(r"\b(?:расторг\w*|расторж\w*|аннулир\w*|отмен\w*)", status)):
+            cancelled += 1
+            continue
+        if re.search(r"\b(?:бронь\w*|бронир\w*|черновик\w*|проект|заявка)\b|\bне подписан\b", status):
+            drafts += 1
+            continue
+        day = _signed(row)
+        if day is None:
+            undated += 1
+        elif day > cutoff:
+            future += 1
+        elif status not in active:
+            unknown_status += 1
+        else:
+            rows.append(row)
+
+    keys = [identity(row) for row in rows]
+    identified = [bool(key["contract"] and key["product"] and key["unit"]) for key in keys]
+    counts: dict[str, int] = {}
+    for key, known in zip(keys, identified):
+        if known:
+            token = json.dumps(key, sort_keys=True, ensure_ascii=False)
+            counts[token] = counts.get(token, 0) + 1
+    duplicates = sum(n for n in counts.values() if n > 1)
+    unique = [row for row, key, known in zip(rows, keys, identified)
+              if known and counts[json.dumps(key, sort_keys=True, ensure_ascii=False)] == 1]
+
+    def number(value: Any) -> bool:
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and value >= 0)
+
+    observed = [row for row in unique if row.get("escrow_observed") is True
+                and number(row.get("escrow_paid"))]
+    unidentified = identified.count(False)
+    scope_known = bool(rows) and not (undated or unknown_status or duplicates or unidentified)
+    amounts_known = all(number(row.get("amount")) and row["amount"] > 0 for row in rows)
+    paid_known = scope_known and len(observed) == len(rows)
+    same_cut = dated_source and as_of <= end
+    paid = sum(row["escrow_paid"] for row in observed) if paid_known and same_cut else None
+    overpaid = sum(max(0.0, row["escrow_paid"] - row["amount"]) for row in observed
+                   if number(row.get("amount")) and row["amount"] > 0)
+    expected = (sum(row["amount"] - row["escrow_paid"] for row in rows)
+                if paid is not None and amounts_known and overpaid == 0 else None)
+    reasons = []
+    if not dated_source:
+        reasons.append("дата состояния эскроу в источнике не подтверждена")
+    elif as_of > end:
+        reasons.append("срез поступлений позже даты сводки; прошлый срез не восстановлен")
+    if not rows:
+        reasons.append("нет подтверждённых действующих договоров с датой в этом срезе")
+    if undated:
+        reasons.append(f"у {undated} строк нет даты договора")
+    if unknown_status:
+        reasons.append(f"действующий статус не подтверждён для {unknown_status} строк")
+    if unidentified:
+        reasons.append(f"у {unidentified} строк не определены договор, продукт или лот")
+    if duplicates:
+        reasons.append(f"повторная привязка договора к тому же лоту у {duplicates} строк")
+    if len(observed) < len(rows):
+        reasons.append(f"поступления наблюдаются для {len(observed)} из {len(rows)} действующих строк")
+    if rows and not amounts_known:
+        reasons.append("не все суммы договоров подтверждены")
+    if overpaid > 0:
+        reasons.append("поступления отдельных договоров превышают их сумму; ожидание не сверено")
+    return {"state": "ok" if expected is not None else "partial",
+            "as_of": as_of.isoformat() if dated_source else None,
+            "as_of_provenance": contracts.get("as_of_provenance") if dated_source else None,
+            "report_end": end.isoformat(), "stale": bool(same_cut and as_of < end),
+            "contracts": len(rows), "contract_amount": sum(r["amount"] for r in rows)
+            if scope_known and amounts_known else None,
+            "paid": paid, "known_paid": sum(r["escrow_paid"] for r in observed) if observed else None,
+            "observed": len(observed), "expected": expected, "overpaid": overpaid,
+            "undated": undated, "duplicates": duplicates, "unidentified": unidentified,
+            "cancelled": cancelled, "drafts": drafts, "future": future,
+            "unknown_status": unknown_status, "reason": "; ".join(reasons)}
+
+
 def sales(sales_project: str, kind: str, end: Any,
           data_dir: Path | None = None) -> dict[str, Any]:
     """Продажи за период и с начала квартала против плана ФМ и банка."""
@@ -1021,6 +1125,7 @@ def sales(sales_project: str, kind: str, end: Any,
         # Договоры, подписанные после загрузки контрактации, сводке не видны.
         "stale": bool(uploaded) and uploaded[:10] < bounds["end"].isoformat(),
         "undated": undated,
+        "all_time_escrow": _all_time_escrow(contracts, bounds["end"]),
         "period": _fact(between(bounds["start"])),
         "previous": _fact(between(previous["start"], previous["end"])),
         "products": _by_product(between(bounds["start"]), between(datetime.date(1900, 1, 1)),
@@ -3622,6 +3727,8 @@ def render_text(report: dict[str, Any]) -> str:
 
     lines += ["", "<b>Продажи</b>"]
     block = report.get("sales") or {}
+    all_time_tile = _all_time_escrow_tile(block)
+    lines.append(esc(f"{all_time_tile['label']}: {all_time_tile['value']}. {all_time_tile['note']}"))
     if block.get("state") == "ok":
         lines.append(_sales_line(f"За {PERIODS[report['kind']]}", block["period"]))
         month = block["month"]
@@ -4300,6 +4407,40 @@ def _month_shift_up(month: datetime.date, ahead: int) -> datetime.date:
     return datetime.date(index // 12, index % 12 + 1, 1)
 
 
+def _all_time_escrow_tile(sales_block: dict[str, Any]) -> dict[str, str]:
+    """Общее представление одного DTO для экрана, HTML/PDF и текста."""
+    block = sales_block.get("all_time_escrow") or {}
+    note = f"Срез на {_day(block['as_of'])}. " if block.get("as_of") else ""
+    if block.get("paid") is not None:
+        if block.get("expected") is not None:
+            note += (f"Ещё ожидается {_rub(block['expected'])} по договорам "
+                     f"на {_rub(block['contract_amount'])}. ")
+        else:
+            note += "Сколько ещё ожидается от покупателей, не определено. "
+    else:
+        if block.get("known_paid") is not None:
+            note += f"Наблюдаемая часть — {_rub(block['known_paid'])}. "
+        note += "Полный итог и ожидаемые платежи не определены. "
+    if block:
+        note += f"Охват поступлений: {block.get('observed', 0)} из {block.get('contracts', 0)} действующих строк. "
+    if block.get("reason"):
+        note += str(block["reason"]).capitalize() + ". "
+    elif not block:
+        note += ("В сохранённой сводке нет общего среза поступлений из контрактации. "
+                 if sales_block.get("state") == "ok" else
+                 str(sales_block.get("reason") or "Контрактация не подключена.").rstrip(".") + ". ")
+    if block.get("stale"):
+        note += f"Изменения после этого среза до {_day(block['report_end'])} не учтены. "
+    note += "Это накопленные поступления, не остаток банка после раскрытий."
+    return {"label": "Поступило на эскроу с начала продаж",
+            "value": _rub(block["paid"]) if block.get("paid") is not None else "нет данных",
+            "note": note, "tone": "" if block.get("state") == "ok" else "missing",
+            "hint": "Источник: лист «Контрактация», столбец «оплачено эскроу всего». "
+                    "Все виды продуктов по действующим договорам на один срез. "
+                    "Сумма договора минус поступления по нему — ещё ожидаемый платёж. "
+                    "Графики будущих поступлений и раскрытий в расчёте не участвуют."}
+
+
 def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     """Плитки первой страницы: главное число блока и тон отклонения.
 
@@ -4408,6 +4549,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                else ", оплачено полностью"))
     elif quarter:
         add("На эскроу по продажам квартала", None, "договоров в квартале нет")
+
+    out.append(_all_time_escrow_tile(block))
 
     # Деньги стройки — пятью плашками подряд (владелец, 21.10.2026: «в
     # плашках сверху должен быть ещё бюджет утверждённый, лимит банка,
