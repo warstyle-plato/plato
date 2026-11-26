@@ -20,7 +20,7 @@ import developaid_contract_workforce as workforce
 import developaid_contract_gpr_reporting as reporting
 from developaid_contract_rds import LAYOUT
 
-SCHEMA = 'contract-gpr-performance-xlsx-v10'
+SCHEMA = 'contract-gpr-performance-xlsx-v11'
 PRESENTATION_SCHEMA = 'contract-gpr-known-state-v9'
 COLORS = reporting.COLORS
 LEGEND = reporting.LEGEND
@@ -712,9 +712,8 @@ def workbook(meta, cached):
         sheet.merge_cells(start_row=row+1, start_column=1, end_row=row+1, end_column=6)
         sheet.row_dimensions[row+1].height = 44
         row += 1
-    if (workforce.write_sheet(book, state.get('workforce') or {}) is None
-            or (state.get('workforce') or {}).get('report_input_status') == 'not_loaded'):
-        write_company_workforce(book,state.get('workforce') or {})
+    workforce.write_sheet(book, state.get('workforce') or {})
+    write_company_workforce(book,state.get('workforce') or {})
     for page in book:
         page.freeze_panes = None
         page.sheet_view.topLeftCell = 'A1'
