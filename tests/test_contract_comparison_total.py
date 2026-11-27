@@ -70,10 +70,12 @@ def test_full_scope_column_is_visible_in_the_real_page_and_selected_excel(width,
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.locator('#contractComparisonSearch').fill('нулевой полный')
         with page.expect_download() as got:
-            page.locator('#contractComparisonExport').click()
+            page.locator('#contractGprDownload').click()
         target = tmp_path / 'selected-total.xlsx'
         got.value.save_as(target)
-        sheet, header = table(target.read_bytes())
+        from openpyxl import load_workbook
+        sheet = load_workbook(target)['Выполнение']
+        header = next(row[0].row for row in sheet if any(cell.value == 'Работа из РДС' for cell in row))
         assert [sheet.cell(header+i,2).value for i in (1,2)] == ['Кладка стен','Работа с нулевым фактом']
         assert sheet.cell(header+2,8).value == 0 and sheet.max_column == 16
         assert not errors
