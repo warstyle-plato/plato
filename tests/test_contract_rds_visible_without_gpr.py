@@ -111,6 +111,30 @@ def test_only_typed_backend_credited_zero_can_override_unknown_physical_fact(sch
         assert not result['fallback']
 
 
+def test_credited_rds_view_does_not_claim_a_nonempty_gpr_table_is_empty():
+    cached=native_card(unknown=True)
+    assert cached['comparison']['lines'] and cached['comparison']['lines'][0]['planned'] is not None
+    row=cached['rds_comparison']['rows'][0]
+    row['ks_reporting']={'schema':'rds-loaded-ks-reporting-v1','basis':'loaded_ks2','state':'unreported_zero',
+        'fact_quantity':0,'fact_quantity_ratio':0,'quantity_deviation':-10,'fact':0,'deviation':-500,
+        'physical_quantity_confirmed':False,'comments':{}}
+    prelude='const source='+json.dumps(cached,ensure_ascii=False)+';\n'+r"""
+const before=JSON.stringify(source),nodes={};let contractComparisonState=null;
+function $(id){return nodes[id]||(nodes[id]={textContent:'',innerHTML:'',value:'',selectedOptions:[{text:'Все'}],setAttribute(){},querySelector(){return null},querySelectorAll(){return[]}})};
+$('cut').value=source.comparison.cut;$('contractComparisonFilter').value='all';
+function contractKs2ConfirmationHtml(){return ''};function contractActEvidenceHtml(){return ''};function contractMaterialFactHtml(){return ''};
+function contractComparisonPlanAudit(){return ''};function contractComponentHtml(){return ''};function contractFactAuditHtml(){return ''};function contractLabelCells(){};
+"""
+    out=page_blocks.run_json(prelude,r"""
+renderContractComparison(source.comparison,source.control,source.fact,source.rds_comparison);
+console.log(JSON.stringify({same:before===JSON.stringify(source),notice:$('contractComparisonInfo').textContent,
+fact:contractComparisonState.lines[0].rds.fact_quantity,delta:contractComparisonState.lines[0].rds.quantity_deviation}));
+""",page=MONITOR_PAGE)
+    assert out['same'] and out['fact']==0 and out['delta']==-10
+    assert 'Показаны позиции действующей РДС' in out['notice']
+    assert 'не содержит сопоставленных строк' not in out['notice']
+
+
 def test_wrong_cut_or_missing_rds_does_not_admit_a_foreign_projection():
     cached=native_card();cached['comparison']['lines']=[]
     cached['rds_comparison']['cut']='2027-01-01'
