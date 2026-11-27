@@ -3621,6 +3621,8 @@ def render_text(report: dict[str, Any]) -> str:
     lines.extend(esc(line) for line in report_gantt.text_lines(report.get("gantt") or {}))
 
     lines += ["", "<b>Продажи</b>"]
+    escrow_total = _escrow_total_tile(report)
+    lines.append(esc(f"{escrow_total['label']}: {escrow_total['value']}. {escrow_total['note']}"))
     block = report.get("sales") or {}
     if block.get("state") == "ok":
         lines.append(_sales_line(f"За {PERIODS[report['kind']]}", block["period"]))
@@ -4300,6 +4302,62 @@ def _month_shift_up(month: datetime.date, ahead: int) -> datetime.date:
     return datetime.date(index // 12, index % 12 + 1, 1)
 
 
+def _escrow_total_tile(report: dict[str, Any]) -> dict[str, str]:
+    """Present the existing financing pair; never recalculate buyer cash here."""
+    funding = report.get("funding") or {}
+    track = funding.get("escrow_track") or {}
+    notes = []
+
+    def known(value):
+        return (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and math.isfinite(value) and value >= 0)
+
+    try:
+        end = _date(report.get("end"))
+    except (TypeError, ValueError):
+        end = None
+    month = str(track.get("data_month") or "")
+    month_known = contracting._valid_month(month)
+    uploaded = (report.get("sales") or {}).get("uploaded")
+    try:
+        uploaded_at = datetime.datetime.fromisoformat(str(uploaded).replace("Z", "+00:00"))
+        if uploaded_at.tzinfo is not None:
+            uploaded_at = uploaded_at.astimezone(datetime.timezone(datetime.timedelta(hours=3)))
+        uploaded_day = uploaded_at.date()
+    except (TypeError, ValueError):
+        uploaded_day = None
+
+    current = funding.get("state") == "ok" and track.get("state") == "ok"
+    if not current:
+        notes.append(str(track.get("reason") or funding.get("reason")
+                         or "Расчёт наполнения эскроу не подключён."))
+    elif not month_known or end is None:
+        current = False
+        notes.append("Не удалось сопоставить месяц учтённых поступлений с датой сводки.")
+    elif month > end.strftime("%Y-%m") or uploaded_day is not None and uploaded_day > end:
+        current = False
+        notes.append("Последние загруженные данные позже даты сводки; исторический срез не подтверждён.")
+
+    paid = track.get("paid_now") if current and known(track.get("paid_now")) else None
+    owed = track.get("owed") if current and known(track.get("owed")) else None
+    notes.append(f"Ещё ожидается {_rub(owed)} по загруженным договорам." if owed is not None
+                 else "Сколько ещё ожидается от покупателей, не определено.")
+    if paid is None:
+        notes.append("Оплаченная сумма не определена.")
+    if month_known:
+        notes.append(f"Последний месяц учтённых поступлений — {_months_label(month)}.")
+    notes.append(f"Источник загружен {_day(uploaded_day)}." if uploaded_day
+                 else "Дата загрузки источника не указана.")
+    notes.append("Оплата по загруженной контрактации всех периодов, с учётом отражённых возвратов; "
+                 "это не остаток банка после раскрытий.")
+    return {"label": "Оплачено на эскроу всего",
+            "value": _rub(paid) if paid is not None else "нет данных",
+            "note": " ".join(notes), "tone": "" if paid is not None and owed is not None else "missing",
+            "hint": "Те же оплаченная сумма и остаток к оплате, что в расчёте наполнения эскроу "
+                    "отчёта о продажах. Период сводки не ограничивает их одним месяцем или кварталом. "
+                    "Дата загрузки не является датой состояния банковских счетов."}
+
+
 def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     """Плитки первой страницы: главное число блока и тон отклонения.
 
@@ -4408,6 +4466,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
                else ", оплачено полностью"))
     elif quarter:
         add("На эскроу по продажам квартала", None, "договоров в квартале нет")
+
+    out.append(_escrow_total_tile(report))
 
     # Деньги стройки — пятью плашками подряд (владелец, 21.10.2026: «в
     # плашках сверху должен быть ещё бюджет утверждённый, лимит банка,

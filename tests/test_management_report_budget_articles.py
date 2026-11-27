@@ -203,11 +203,29 @@ def test_months_without_data_are_not_zero():
     assert "нет данных" in row and "0 ₽" not in row
 
 
+def _assert_total_escrow_and_existing_tiles(built, items, *, quarter_escrow=False):
+    # A new card must not replace or duplicate any of the existing decisions.
+    total = [item for item in items if item['label'] == 'Оплачено на эскроу всего']
+    assert total == [report._escrow_total_tile(built)]
+    summary = report._report_gpr_summary(built)
+    expected = [summary['label'], summary['forecast_label'],
+                'Рабочих в среднем в день', 'Продажи квартала к плану финмодели',
+                'Продажи квартала к плану банка']
+    if quarter_escrow:
+        expected.append('На эскроу по продажам квартала')
+    expected += ['Утверждённый бюджет', 'Лимит банка', 'Выбрано у банка',
+                 'Оплачено с начала проекта', 'Осталось по смете после всех оплат',
+                 'Расчётная потребность в допфинансировании', 'Эскроу на платежи по НКЛ',
+                 'Бюджет стройки за месяц', 'Бюджет коммерции за месяц']
+    previous = [item for item in items if item is not total[0]]
+    assert [item['label'] for item in previous] == expected
+
+
 def test_the_tiles_lead_the_first_page():
     built = _setup()
     items = report.tiles(built)
     # Canonical readiness and its scoped end estimate are separate tiles.
-    assert len(items) == 14  # The paid-source card remains visible without a usable FM.
+    _assert_total_escrow_and_existing_tiles(built, items)
     summary = report._report_gpr_summary(built)
     assert len(summary['source_sha256']) == 64
     assert summary['source_sha256'] == built['gantt']['readiness']['source_sha256']

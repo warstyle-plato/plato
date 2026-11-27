@@ -2,6 +2,7 @@
 import ast
 import copy
 import datetime as dt
+import math
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
@@ -12,15 +13,21 @@ import pytest
 
 @pytest.fixture
 def cover(monkeypatch):
+    from market_search import contracting
+
     # Execute the exact pure presentation functions without importing the app,
     # starting background services or loading any saved project sources.
     source = Path(__file__).resolve().parents[1] / "developaid_management_report.py"
     names = {"tiles", "_rub", "_payment_total_gap_note", "_payment_observation_note",
-             "_report_uses_owner"}
+             "_report_uses_owner", "_escrow_total_tile", "_date", "_day", "_months_label"}
     nodes = [node for node in ast.parse(source.read_text()).body
-             if isinstance(node, ast.FunctionDef) and node.name in names]
+             if (isinstance(node, ast.FunctionDef) and node.name in names)
+             or (isinstance(node, ast.Assign) and any(
+                 isinstance(target, ast.Name) and target.id == "_MONTHS"
+                 for target in node.targets))]
     scope = {
-        "Any": Any, "_date": dt.date.fromisoformat, "PERIODS": {"week": "week"},
+        "Any": Any, "datetime": dt, "math": math, "contracting": contracting,
+        "PERIODS": {"week": "week"},
         "_report_gpr_summary": lambda _: None, "_quarter_elapsed": lambda _: 0.5,
         "admin_cash": SimpleNamespace(funding_base_for_limit=lambda *_: None),
         "_funding_cash_summary": lambda *_: {
@@ -54,6 +61,31 @@ def test_known_rss_payments_survive_an_unreadable_model(cover, paid, available):
     tiles = {tile["label"]: tile for tile in cover["tiles"](report)}
     assert tiles["Оплачено с начала проекта"]["value"] == cover["_rub"](paid)
     assert tiles["Осталось по смете после всех оплат"]["value"] == cover["_rub"](available)
+    assert tiles["Утверждённый бюджет"]["value"] == "нет данных"
+    need = tiles["Потребность в допфинансировании"]
+    assert need["value"] == "нет данных" and need["tone"] == "missing"
+    assert "Единицы ФМ не указаны" in need["note"]
+    assert report == before
+
+
+@pytest.mark.parametrize("paid,available,escrow_paid,owed", [
+    (None, None, 250, 750), (0, 1000, 0, 0)])
+def test_all_time_escrow_coexists_with_unknown_or_zero_rss_payments(
+        cover, paid, available, escrow_paid, owed):
+    report = report_case(paid, available)
+    report["funding"]["escrow_track"] = {
+        "state": "ok", "paid_now": escrow_paid, "owed": owed, "data_month": "2026-03"}
+    report["sales"] = {"uploaded": "2026-03-12T14:00:00+00:00"}
+    before = copy.deepcopy(report)
+    tiles = {tile["label"]: tile for tile in cover["tiles"](report)}
+    escrow = tiles["Оплачено на эскроу всего"]
+    assert escrow["value"] == cover["_rub"](escrow_paid) and escrow["tone"] == ""
+    assert f"Ещё ожидается {cover['_rub'](owed)}" in escrow["note"]
+    assert "март 2026" in escrow["note"]
+    assert "Источник загружен 12.03.2026" in escrow["note"]
+    for label, amount in (("Оплачено с начала проекта", paid),
+                          ("Осталось по смете после всех оплат", available)):
+        assert tiles[label]["value"] == ("нет данных" if amount is None else cover["_rub"](amount))
     assert tiles["Утверждённый бюджет"]["value"] == "нет данных"
     need = tiles["Потребность в допфинансировании"]
     assert need["value"] == "нет данных" and need["tone"] == "missing"
