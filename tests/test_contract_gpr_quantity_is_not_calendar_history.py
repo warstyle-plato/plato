@@ -83,7 +83,9 @@ def test_excel_quantity_scale_and_dynamic_today_are_outside_calendar_cells(card)
     listed['gpr'].update(schedule={'lines':[line]},overlays={'4.4.1':overlay})
     listed['rds_comparison'] = {'available':False,'detail':'Учебная РДС не передавалась.'}
     meta = export.bind_snapshot(PROJECT,'2026-11-24',ROW['id'],listed,ROW)
-    book = load_workbook(io.BytesIO(export.workbook(meta,listed)))
+    raw = export.workbook(meta,listed)
+    book = load_workbook(io.BytesIO(raw))
+    assert book.sheetnames == ['ГПР','Выполнение','Численность подрядчика']
     sheet = book['ГПР'];row = next(row for row in sheet if row[1].value == line['name'])
     assert row[4].value == overlay['fact_fraction'] and row[4].number_format == '0.0%'
     assert not any(cell.fill.fgColor.rgb in {'0070AD47','00E06666'} for cell in row[6:])
@@ -91,8 +93,13 @@ def test_excel_quantity_scale_and_dynamic_today_are_outside_calendar_cells(card)
     assert any(area == row[4].coordinate and rule.type == 'dataBar' for area,rule in rules)
     assert all(area.startswith('E') for area,rule in rules if rule.type == 'dataBar')
     assert any(rule.type == 'expression' and 'TODAY()' in ''.join(rule.formula) for _,rule in rules)
-    formulas = [cell.value for page in book for cells in page for cell in cells if cell.data_type == 'f']
+    formulas = [cell.value for cells in sheet for cell in cells if cell.data_type == 'f']
     assert len(formulas) == 1 and 'TODAY()' in formulas[0] and 'DATE(2026,11,24)' in formulas[0]
+    # The required staffing sheet has its own guarded deviation formulas;
+    # absent staffing does not become a zero in their cached values.
+    staffing = load_workbook(io.BytesIO(raw),data_only=True)['Численность подрядчика']
+    assert all(staffing.cell(5,column).value is None for column in range(2,8))
+    assert staffing['H5'].value
     assert any(cell.border.left and cell.border.left.color and cell.border.left.color.rgb == '00111111' for cell in row[6:])
     assert all(cell.border.bottom.style == 'thin' for cell in row[6:])
     assert all(page.freeze_panes is None for page in book)
