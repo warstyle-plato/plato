@@ -6,11 +6,12 @@ Provisional ratios are presentation-only and never feed readiness or cashflows.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import math
 import re
 
-SCHEMA = 'contract-register-display-v1'
+SCHEMA = 'contract-register-display-v2'
 _BASES = {'with_vat', 'without_vat', 'unspecified'}
 _UNSAFE = {'annual_evidence_conflict', 'source_qualification_conflict',
            'position_source_unverified', 'source_positions_missing',
@@ -89,6 +90,80 @@ def qualified_statements(row, cut):
             for key, g in groups.items()]
 
 
+def _reported_summary_reference(row, cut):
+    """Retain the source's qualified printed ratio without rebinding its price."""
+    summary = row.get('summary_progress') or {}
+    value = summary.get('reported_observation') or {}
+    progress = row.get('progress') or {}
+    source = value.get('source') or {}
+    choice = row.get('source_correction') or {}
+    stale = bool(choice.get('warning'))
+    execution = (choice.get('provenance') or {}).get('execution') or {}
+    roles, freshness = choice.get('roles') or {}, choice.get('role_freshness') or {}
+    execution_current = (stale and _prior_choice_proven(row)
+        and freshness.get('execution') is True and freshness.get('price') is False
+        and choice.get('source_policy') == 'follow_selected_native_v1'
+        and execution.get('raw_id') == roles.get('execution_raw_id')
+        and execution.get('token') == roles.get('execution_token')
+        and execution.get('source_snapshot_id') == progress.get('snapshot_id'))
+    ownership = row.get('logical_ownership') or {}
+    owned_choice = (isinstance(ownership, dict) and execution_current
+        and ownership.get('resolution_kind') == 'source_correction'
+        and ownership.get('decision_id') == choice.get('decision_id')
+        and ownership.get('financial_acceptance_required') is False)
+    first, second = _basis(value.get('planned_amount_basis')), _basis(value.get('completed_amount_basis'))
+    if (row.get('logical_ownership') and not owned_choice or stale and not execution_current
+            or value.get('state') != 'known' or value.get('requires_reconciliation') is not False
+            or value.get('basis') != 'closing_summary_contract'
+            or value.get('origin') != 'closing_summary_statement'
+            or not _compatible(first, second)
+            or not _ratio(value.get('ratio'), value.get('completed'), value.get('planned'))):
+        return None
+    scope = value.get('scope_fingerprint')
+    signature = value.get('basis_signature')
+    if (not isinstance(scope, str) or not re.fullmatch(r'[a-f0-9]{64}', scope)
+            or scope != summary.get('scope_fingerprint') or scope != progress.get('scope_fingerprint')
+            or not isinstance(signature, str) or not re.fullmatch(r'[a-f0-9]{64}', signature)):
+        return None
+    expected = hashlib.sha256(json.dumps(['closing_summary_contract', value['planned'], first, second],
+        ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    if signature != expected:
+        return None
+    fields = ('filename', 'sheet', 'row', 'planned_amount_cell', 'completed_amount_cell')
+    if (not all(source.get(key) == (summary.get('source') or {}).get(key)
+                == (progress.get('source') or {}).get(key) for key in fields)
+            or not all(isinstance(source.get(key), str) and source[key] for key in ('filename', 'sheet'))
+            or type(source.get('row')) is not int or source['row'] <= 0
+            or not all(isinstance(source.get(key), str) and re.fullmatch(r'[A-Z]{1,3}'+str(source['row']), source[key])
+                       for key in ('planned_amount_cell', 'completed_amount_cell'))):
+        return None
+    observed = _day(progress.get('observation_date'))
+    snapshot = progress.get('snapshot_id')
+    if (not observed or not cut or observed > cut or progress.get('date_basis') != 'snapshot'
+            or not isinstance(snapshot, str) or not re.fullmatch(observed+r'-[a-f0-9]{64}', snapshot)
+            or snapshot != row.get('summary_source_snapshot_id')
+            or observed != row.get('summary_source_date')):
+        return None
+    witnesses = {item.get('file_sha256') for item in row.get('sources') or []
+        if item.get('filename') == source['filename'] and item.get('sheet') == source['sheet']
+        and item.get('snapshot_id') == snapshot and item.get('source_date') == observed
+        and isinstance(item.get('file_sha256'), str) and re.fullmatch(r'[a-f0-9]{64}', item['file_sha256'])}
+    if len(witnesses) != 1:
+        return None
+    tax = ' НДС не сверён.' if 'unspecified' in (first, second) else ''
+    choice_note = ' Подтверждение текущей цены устарело; показана прежняя база сводной.' if stale else ''
+    return {'state': 'reference', 'ratio': value['ratio'], 'scope': 'source',
+            'planned': value['planned'], 'completed': value['completed'],
+            'basis_label': 'денежное закрытие по исходной сводной КС-2',
+            'reference_label': 'Справочно по сводной на '+observed+'.'+tax+choice_note+' Доля полной цены договора не подтверждена.',
+            'caveat': 'Сохранён процент исходной сводной; её база не заменена ценой действующего договора. '
+                      'Дата сводной не является датой выполнения.',
+            'why': 'Источник: '+source['filename']+' · '+source['sheet']+' · '
+                   +source['planned_amount_cell']+'/'+source['completed_amount_cell'],
+            'source': dict(source), 'snapshot_id': snapshot, 'source_file_sha256': next(iter(witnesses)),
+            'scope_fingerprint': scope, 'basis_signature': signature}
+
+
 def completion(row, cut):
     """Use accepted ratios first; label an unspecified-tax quotient explicitly."""
     empty = {'state': 'unknown', 'ratio': None, 'scope': None,
@@ -157,6 +232,10 @@ def completion(row, cut):
                 'caveat': 'Предварительно: НДС не сверён. Показатель не используется в финансовых расчётах.',
                 'why': 'Числитель — известный итог датированных неповторяющихся периодов КС; знаменатель — известная полная цена. '
                        'У одного из них основание НДС не указано.'}
+    if history.get('state') != 'unknown' and not (problems & _UNSAFE):
+        reported = _reported_summary_reference(row, cut)
+        if reported:
+            return reported
     groups = qualified_statements(row, cut)
     values = [g['value'] for g in groups if not g['conflict']]
     if values:
