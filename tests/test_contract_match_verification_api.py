@@ -143,8 +143,12 @@ def test_explicit_source_bound_payload_accepts_false_verify_without_rebuilding(a
     flags={}
     if mode!='ordinary':payload['diagnostics']=stages.PURPOSE;flags['profile_stages']=True
     if mode=='off':payload['matching_cache']=cache.DISABLED_PURPOSE;flags['profile_matching_cache_off']=True
-    store.start(owner,family,payload,lambda:{'ok':True,'register':{'rows':[]}},'a'*32,
-                result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES,context=context)
+    # This is a current calculation with an older diagnostics request shape;
+    # seed the producer's current output policy instead of a legacy money DTO.
+    stored={'ok':True,'register':{'rows':[]},'contract_calculation_revision':control.CALCULATION_REVISION}
+    store.start(owner,family,payload,lambda:stored,'a'*32,
+                result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES,context=context,
+                result_revision=control.CALCULATION_REVISION)
     response=poll(client,'a'*32);assert response.status_code==200
     expected=response.json();before=store._meta('a'*32)
     monkeypatch.setattr(core,'_monitor_cumulative_execute',lambda *a:pytest.fail('Legacy ticket rebuilt'))
@@ -172,9 +176,11 @@ def test_v1_verify_ticket_is_immutable_and_cannot_be_readmitted_as_v2(api,monkey
              'diagnostics':stages.PURPOSE,'matching_cache':'contract-pure-matching-hit-verify-v1'}
     def legacy():
         if failed:raise ValueError('synthetic legacy failure')
-        return {'ok':True,'register':{'rows':[]},'diagnostics':{
+        # VERIFY-v1 is the diagnostic format, not an older financial method.
+        return {'ok':True,'register':{'rows':[]},'contract_calculation_revision':control.CALCULATION_REVISION,'diagnostics':{
             'matching_cache_verification':{'purpose':'contract-pure-matching-hit-verify-v1'}}}
-    store.start(owner,family,payload,legacy,'a'*32,result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES,context=context)
+    store.start(owner,family,payload,legacy,'a'*32,result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES,context=context,
+                result_revision=control.CALCULATION_REVISION)
     expected=poll(client,'a'*32);assert expected.status_code==(500 if failed else 200)
     before=store._meta('a'*32)
     monkeypatch.setattr(core,'_monitor_cumulative_execute',lambda *a:pytest.fail('Legacy VERIFY rebuilt'))

@@ -996,8 +996,12 @@ def _monitor_contract_gpr_current(value):
     import developaid_contract_gpr as gpr
     import developaid_contract_files as files
     import developaid_management_report_jobs as jobs
+    import developaid_contract_control as contract_control
     if value.get('pending') or value.get('ok') is not True:
         return
+    if contract_control.is_calculation_result(value):
+        if value.get('contract_calculation_revision') != contract_control.CALCULATION_REVISION:
+            raise jobs.JobProblem(409, jobs.CALCULATION_CHANGED_DETAIL, code='calculation_changed')
     if value.get('gpr'):
         import developaid_contract_gpr_export as gpr_export
         if (value['gpr'].get('presentation') or {}).get('schema') != gpr_export.PRESENTATION_SCHEMA:
@@ -1039,7 +1043,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                            context_validator=_job_ledgers.validate_snapshot_job_context)
         if not operation:
             if family == "contracts" and getattr(req, "offset", None) is not None:
-                result = store.poll_part(req.ticket, owner, profile, req.offset, accept_gzip=req.accept_gzip)
+                import developaid_contract_control as contract_control
+                result = store.poll_part(req.ticket, owner, profile, req.offset, accept_gzip=req.accept_gzip,
+                                         required_result_revision=contract_control.CALCULATION_REVISION)
                 part = result.get('result_part') or {}
                 # The DTO is immutable. Seal its source/anchor at admission of
                 # the first piece and again before the final assembly piece;
@@ -1194,12 +1200,21 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             def build():
                 _job_ledgers.validate_snapshot_job_context(source_context)
                 value = build_raw()
+                # Stamp only a newly executed business calculation, before the
+                # job store persists it. Polling must never bless an older DTO.
+                if family == 'contracts':
+                    import developaid_contract_control as contract_control
+                    if value.get('ok') is True and contract_control.is_calculation_result(value):
+                        value = {**value, 'contract_calculation_revision': contract_control.CALCULATION_REVISION}
                 _job_ledgers.validate_snapshot_job_context(source_context)
                 return value
             # Only the ordinary register transports its complete history/rows.
             # Source review/audit/index operations retain the default budget.
             result_policy = ({"result_limit_bytes": jobs.MAX_EXTENDED_RESULT_BYTES}
                              if operation == "view" else {})
+            if family == 'contracts':
+                import developaid_contract_control as contract_control
+                result_policy['result_revision'] = contract_control.CALCULATION_REVISION
             if operation == "view" and getattr(req, "chunked", False):
                 result_policy["include_result"] = False
                 result_policy["compress_result"] = True
@@ -1225,7 +1240,10 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
         }
         if exc.code:
             private["X-Monitor-Job-Error"] = exc.code
-        raise HTTPException(exc.status, jobs.SOURCE_CHANGED_DETAIL if exc.code == "source_changed" else messages.get(exc.status, "Не удалось завершить операцию. Повторите запрос."),
+        detail = (jobs.CALCULATION_CHANGED_DETAIL if exc.code == 'calculation_changed' else
+                  jobs.SOURCE_CHANGED_DETAIL if exc.code == "source_changed" else
+                  messages.get(exc.status, "Не удалось завершить операцию. Повторите запрос."))
+        raise HTTPException(exc.status, detail,
                             headers=private) from None
     except Exception as exc:
         logging.getLogger("developaid.monitor").error("Cumulative operation unavailable (%s)", type(exc).__name__)
@@ -1446,6 +1464,7 @@ def monitor_contract_gpr_xlsx(req: MonitorContractGprExport) -> Response:
         raise HTTPException(exc.status, str(exc), headers=private) from None
     except jobs.JobProblem as exc:
         raise HTTPException(409 if exc.status in (400, 404, 409) else 503,
+                            jobs.CALCULATION_CHANGED_DETAIL if exc.code == 'calculation_changed' else
                             'Сохранённая карточка изменилась. Откройте её заново перед выгрузкой.', headers=private) from None
     except Exception as exc:
         logging.getLogger('developaid.monitor').error('Contract GPR export unavailable (%s)', type(exc).__name__)
@@ -1482,6 +1501,7 @@ def monitor_contract_comparison_xlsx(req: MonitorContractComparisonExport) -> Re
         store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs",
                            context_validator=_job_ledgers.validate_snapshot_job_context)
         cached = store.poll(req.ticket, owner, profile)
+        _monitor_contract_gpr_current(cached)
         meta, comparison, rows = comparison_export.select_snapshot(
             cached, project, cut, req.contract_id, req.revision, req.selected_tokens)
         comparison_export.require_current_sources(meta)
@@ -1493,7 +1513,8 @@ def monitor_contract_comparison_xlsx(req: MonitorContractComparisonExport) -> Re
         raise HTTPException(exc.status, str(exc), headers=private) from None
     except jobs.JobProblem as exc:
         status = 409 if exc.status in (400, 404, 409) else 503
-        raise HTTPException(status, "Сохранённая карточка недоступна. Откройте её заново перед выгрузкой.",
+        raise HTTPException(status, jobs.CALCULATION_CHANGED_DETAIL if exc.code == 'calculation_changed' else
+                            "Сохранённая карточка недоступна. Откройте её заново перед выгрузкой.",
                             headers=private) from None
     except Exception as exc:
         logging.getLogger("developaid.monitor").error("Contract comparison export unavailable (%s)", type(exc).__name__)
