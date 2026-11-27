@@ -44,6 +44,12 @@ def retained(monkeypatch, tmp_path, groups, document_count):
                   'contract': {'number': 'SYNTHETIC', 'date': '2026-01-01'},
                   'price': None, 'terms': {'deadline': None}}
         (folder/(sha+'.json')).write_text(json.dumps(record))
+    if document_count >= 65:
+        (root/'cumulative_terms.json').write_text('{}')
+        (root/'contract_links.json').write_text(json.dumps({'version': 1, 'links': {}}))
+        (root/'cumulative_header_dates.json').write_text(json.dumps({'schema': 1, 'confirmations': {}}))
+        for identifier in identifiers:
+            (root/'contract_documents'/identifier/'links.json').write_text('{"choices": {}}')
     for i in range(groups):
         pair = sorted([by_number[f'G{i}-OLD'], by_number[f'G{i}-NEW']])
         pairs.append(pair)
@@ -56,16 +62,22 @@ def retained(monkeypatch, tmp_path, groups, document_count):
     return root, pairs
 
 
-@pytest.mark.parametrize(('groups', 'count'), [(7, 42), (8, 64)])
+@pytest.mark.parametrize(('groups', 'count'), [(7, 42), (8, 64), (7, 65), (7, 96), (7, 128)])
 def test_native_view_history_keeps_complete_register_with_unchanged_io_cap(monkeypatch, tmp_path, groups, count):
     import main
+    import developaid_contract_metadata_budget as proof
     root, pairs = retained(monkeypatch, tmp_path, groups, count)
     journal = (root/store.LOG).read_bytes()
     approved = [identity.metadata_inventory(PROJECT, pair) for pair in pairs]
     native, reads = store.read_bytes, []
+    constructor, budgets = proof.MetadataBudget.__init__, []
+    def budget_created(self, totals):
+        constructor(self, totals)
+        budgets.append(self)
+    monkeypatch.setattr(proof.MetadataBudget, '__init__', budget_created)
     def observed(path, *args, **kwargs):
         raw = native(path, *args, **kwargs)
-        if raw is not None and path.suffix == '.json' and 'contract_documents' in path.parts:
+        if raw is not None and path.suffix == '.json' and len(path.stem) == 64 and 'contract_documents' in path.parts:
             reads.append((path, len(raw)))
         return raw
     monkeypatch.setattr(store, 'read_bytes', observed)
@@ -74,9 +86,13 @@ def test_native_view_history_keeps_complete_register_with_unchanged_io_cap(monke
     register = result['register']
     assert len(register['rows']) == 34-groups
     assert len(contracts.raw_rows(register)) == 34
-    assert len(reads) == 4*count <= identity.MAX_FILES
+    assert len(reads) == 4*count <= proof.MAX_PHASES*identity.MAX_FILES
     assert len({path for path, _ in reads}) == count
-    assert sum(size for _, size in reads) <= identity.MAX_METADATA_BYTES
+    assert sum(size for _, size in reads) <= proof.MAX_PHASES*identity.MAX_METADATA_BYTES
+    assert len(budgets) == 1 and budgets[0].phases == 4
+    assert len(budgets[0].paths) <= identity.MAX_FILES
+    assert budgets[0].corpus_bytes <= identity.MAX_METADATA_BYTES
+    assert budgets[0].totals['metadata_files'] <= proof.MAX_PHASES*identity.MAX_FILES
     # Read accounting is never written into an old source decision/preimage.
     assert (root/store.LOG).read_bytes() == journal
     assert [identity.metadata_inventory(PROJECT, pair) for pair in pairs] == approved
@@ -87,7 +103,7 @@ def test_native_view_history_keeps_complete_register_with_unchanged_io_cap(monke
 
 def test_distinct_native_reads_still_obey_aggregate_cap(monkeypatch, tmp_path):
     import main
-    root, _ = retained(monkeypatch, tmp_path, 8, 65)
+    root, _ = retained(monkeypatch, tmp_path, 8, 257)
     journal = (root/store.LOG).read_bytes()
     result = main.core._monitor_cumulative_execute('view', {'project': PROJECT, 'cut': CUT})
     assert not result['ok']
@@ -153,3 +169,60 @@ def test_late_lazy_refresh_is_refused_before_parsing_or_writing(monkeypatch, tmp
     assert 'привязки изменились' in result['detail']
     assert all(path.read_bytes() == raw for path, raw in changed)
     assert (root/store.LOG).read_bytes() == journal
+
+
+@pytest.mark.parametrize('old_count', [1, 64])
+def test_mixed_128_document_cohort_prepares_finitely_then_native_view_succeeds(monkeypatch, tmp_path, old_count):
+    import main
+    import developaid_contract_files as files
+    import developaid_contract_parse_refresh as preparation
+    from test_contract_documents_are_read_from_their_tables import schedule_pdf
+    root, pairs = retained(monkeypatch, tmp_path, 7, 128)
+    register = contracts.build(PROJECT, CUT, include_history=False)
+    row = contracts.find_raw_row(register, pairs[0][0])
+    existing = sorted(path for path in (root/'contract_documents').glob('*/*.json') if len(path.stem) == 64)
+    for path in existing[:old_count]:
+        path.unlink()
+    pdfs = {}
+    for index in range(old_count):
+        raw = schedule_pdf(title=(f'к Договору подряда № {row["contract"]} от 01.01.2026',
+                                  f'График производства работ {index}'))
+        sha = files.store(PROJECT, row, f'synthetic-old-{index}.pdf', raw)['sha256']
+        pdfs[sha] = raw
+    # Keep the installed reader current while adding to a mixed card: a
+    # simulated downgrade must not bypass the future-reader refusal.
+    for sha in pdfs:
+        path = root/'contract_documents'/row['id']/(sha+'.json')
+        files._json(path, {**files._stored(path), 'reader': 11})
+    journal = (root/store.LOG).read_bytes()
+    before = {path: path.read_bytes() for path in (root/'contract_documents').glob('*/*.json')}
+    native, parsed = documents.read, []
+    def read(raw):
+        assert ownership._CONTEXT.get() is None, 'Standalone preparation must not install ownership pins.'
+        parsed.append(hashlib.sha256(raw).hexdigest())
+        return native(raw)
+    monkeypatch.setattr(documents, 'read', read)
+    plan = preparation.prepare(PROJECT, CUT)
+    assert plan['remaining'] == old_count and plan['processed'] == 0 and not parsed
+    original_guard = plan['guard']
+    for index in range(old_count):
+        plan = preparation.prepare(PROJECT, CUT, plan['guard'])
+        assert plan['processed'] == 1 and plan['remaining'] == old_count-index-1
+        assert len(parsed) == index+1
+        if index == 0:
+            current_bytes = {path: path.read_bytes() for path in before}
+            with pytest.raises(preparation.PreparationChanged, match='изменились'):
+                preparation.prepare(PROJECT, CUT, original_guard)
+            assert all(path.read_bytes() == raw for path, raw in current_bytes.items())
+    assert plan['done'] and preparation.prepare(PROJECT, CUT)['remaining'] == 0
+    assert len(set(parsed)) == old_count
+    assert (root/store.LOG).read_bytes() == journal
+    for path, raw in before.items():
+        if path.stem not in pdfs:
+            assert path.read_bytes() == raw
+    for sha, raw in pdfs.items():
+        assert (root/'contract_documents'/row['id']/(sha+'.pdf')).read_bytes() == raw
+    result = main.core._monitor_cumulative_execute('view', {'project': PROJECT, 'cut': CUT})
+    assert result['ok'], result
+    assert len(result['register']['rows']) == 27
+    assert len(contracts.raw_rows(result['register'])) == 34
