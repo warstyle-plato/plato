@@ -552,15 +552,15 @@ def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]]
             passes = (4+any(not correction for _, correction in groups)
                       if _future_price_passes is None else _future_price_passes)
             _proof_budget.reserve_price_proofs(future_pdfs, passes, after_pdfs)
-            for folder, sha, _, _, _, _ in candidates:
-                raw = namespace.read_bytes(folder/(sha+'.pdf'), MAX_BYTES)
+            for folder, sha, _, verified, _, _ in candidates:
+                raw = namespace.read_bytes(folder/(sha+'.pdf'), len(verified))
                 if raw is None or hashlib.sha256(raw).hexdigest() != sha:
                     raise ContractFilesProblem('Исходный PDF изменился во время обновления разбора.')
             for path, fresh, previous_metadata in staged:
                 _publish_reread(path, fresh, previous_metadata, write_read)
         else:
-            for folder, sha, _, _, _, _ in candidates:
-                raw = namespace.read_bytes(folder/(sha+'.pdf'), MAX_BYTES)
+            for folder, sha, _, verified, _, _ in candidates:
+                raw = namespace.read_bytes(folder/(sha+'.pdf'), len(verified))
                 if raw is None or hashlib.sha256(raw).hexdigest() != sha:
                     raise ContractFilesProblem('Исходный PDF изменился во время обновления разбора.')
 

@@ -156,3 +156,31 @@ def test_nested_capture_reserves_first_pin_before_refresh_can_publish(pair, monk
             contracts.build(PROJECT, CUT, include_history=False)
     assert all(path.read_bytes() == raw for path, raw in before.items())
     assert store.load(PROJECT) == state
+
+
+def test_parser_window_pdf_growth_is_bounded_by_original_verified_length_before_publish(pair, monkeypatch):
+    folder, _, state = source_set(pair, monkeypatch, count=2)
+    before = {path: path.read_bytes() for path in folder.glob('*.json')}
+    native_record, native_read, grown, caps = files._record, store.read_bytes, [], []
+    def record(sha, *args, **kwargs):
+        fresh = native_record(sha, *args, **kwargs)
+        if not grown:
+            path = folder/(sha+'.pdf')
+            raw = path.read_bytes()
+            path.write_bytes(raw+b'x')
+            grown.append((path, len(raw)))
+        return fresh
+    def read(path, cap):
+        if grown and path == grown[0][0]:
+            caps.append(cap)
+        return native_read(path, cap)
+    monkeypatch.setattr(files, '_record', record)
+    monkeypatch.setattr(store, 'read_bytes', read)
+    monkeypatch.setattr(files, '_json', lambda *args: pytest.fail('A grown source cannot publish parsed JSON.'))
+    found = budget()
+    with pytest.raises(store.IdentityProblem):
+        files.refresh_parse_cache(PROJECT, [(tuple(sorted([pair['old'], pair['new']])), True)],
+                                  found.totals, _proof_budget=found)
+    assert grown and caps == [grown[0][1]]
+    assert all(path.read_bytes() == raw for path, raw in before.items())
+    assert store.load(PROJECT) == state
