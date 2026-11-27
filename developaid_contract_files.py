@@ -49,6 +49,10 @@ class ContractFilesProblem(ValueError):
     """A controlled, safe message that may be returned to an authenticated user."""
 
 
+class ParseRefreshRequired(ContractFilesProblem):
+    """The bounded register must prepare its old derived reads separately."""
+
+
 def _directory(project: str, contract_id: str) -> Path:
     if not re.fullmatch(r"[0-9a-f]{64}", str(contract_id or "")):
         raise ContractFilesProblem("Выберите договор из списка.")
@@ -303,6 +307,16 @@ def _stored(path: Path) -> dict:
         raise ContractFilesProblem("Сохранённый документ договора не прочитан; проверьте хранилище проекта.") from None
 
 
+def _requires_refresh(record: dict) -> bool:
+    if record.get('reader') == documents.READER_VERSION or record.get('scan') is not None:
+        return False
+    reader = record.get('reader')
+    if isinstance(reader, int) and not isinstance(reader, bool) and reader > documents.READER_VERSION:
+        raise ContractFilesProblem('Версия сохранённого разбора новее установленной. '
+                                   'Документ не изменён; требуется проверка версии приложения.')
+    return True
+
+
 def _current(folder: Path, sha: str) -> dict:
     """The stored read, read again from the PDF when the reader has changed since.
 
@@ -312,11 +326,11 @@ def _current(folder: Path, sha: str) -> dict:
     path = folder / f"{sha}.json"
     record = _stored(path)
     # A scan is not recognised again by a newer reader of text: its confirmed header stays as confirmed.
-    if record.get("reader") == documents.READER_VERSION or record.get("scan") is not None:
+    if not _requires_refresh(record):
         return record
     with _locked(folder):
         record = _stored(path)
-        if record.get("reader") == documents.READER_VERSION or record.get("scan") is not None:
+        if not _requires_refresh(record):
             return record
         return _reread(folder, sha, record)
 
@@ -369,7 +383,8 @@ def _reread(folder: Path, sha: str, record: dict, verified_bytes: bytes | None =
 
 
 def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]], budget: dict | None = None,
-                        approvals: dict | None = None) -> None:
+                        approvals: dict | None = None, *, selected_documents: frozenset | None = None,
+                        _metadata_snapshots: tuple | None = None) -> dict | None:
     """Refresh bounded derived caches BEFORE the first ownership binding pin.
 
     The caller passes only already relevant native identity groups. Existing
@@ -381,15 +396,24 @@ def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]]
     import developaid_contract_identity_store as namespace
     budget = budget if budget is not None else {'files': 0, 'bytes': 0, 'metadata_files': 0, 'metadata_bytes': 0}
     approvals = approvals or {}
+    if _metadata_snapshots is not None and (selected_documents is None or len(_metadata_snapshots) != 2):
+        raise ContractFilesProblem('Снимки проверки разрешены только для отдельного обновления документа.')
+    before_read, after_read = _metadata_snapshots if _metadata_snapshots is not None else (None, None)
     groups = [(tuple(identity.correction_ids(list(members)) if correction else identity._ids(list(members))), correction)
               for members, correction in groups]
+    if selected_documents is not None and (len(selected_documents) != 1 or any(
+            not isinstance(item, tuple) or len(item) != 2
+            or not all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value) for value in item)
+            or not any(item[0] in members for members, _ in groups) for item in selected_documents)):
+        raise ContractFilesProblem('Состав отдельного обновления документа не подтверждён.')
     identifiers = sorted({identifier for members, _ in groups for identifier in members})
     folders = [identity._safe_path(project, 'contract_documents', identifier) for identifier in identifiers]
 
     def cached(path):
-        raw = namespace.read_bytes(path, 4*1024*1024)
-        budget['metadata_files'] += raw is not None
-        budget['metadata_bytes'] += len(raw or b'')
+        raw = before_read.read(path) if before_read is not None else namespace.read_bytes(path, 4*1024*1024)
+        if before_read is None:
+            budget['metadata_files'] += raw is not None
+            budget['metadata_bytes'] += len(raw or b'')
         if budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES:
             raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
         if raw is None:
@@ -405,8 +429,10 @@ def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]]
     for folder in folders:
         for path in sorted(folder.glob('*.json')):
             if re.fullmatch(r'[0-9a-f]{64}\.json', path.name):
+                if selected_documents is not None and (folder.name, path.stem) not in selected_documents:
+                    continue
                 value, _ = cached(path)
-                if value.get('reader') != documents.READER_VERSION and value.get('scan') is None:
+                if _requires_refresh(value):
                     stale.add(folder.name)
     groups = [(members, correction) for members, correction in groups if stale.intersection(members)]
     if not groups:
@@ -427,12 +453,14 @@ def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]]
         # Validate under native locks, before reading or writing derived data.
         before_by_group = {}
         for members, correction in groups:
-            inventory = identity.metadata_inventory(project, list(members), correction=correction)
+            inventory = identity.metadata_inventory(project, list(members), correction=correction,
+                _read=before_read.inventory() if before_read is not None else None)
             before_by_group[members] = inventory
-            budget['metadata_files'] += inventory['metadata_files_read']
-            budget['metadata_bytes'] += inventory['metadata_bytes_read']
-            budget['files'] += inventory.get('price_source_files_read', 0)
-            budget['bytes'] += inventory.get('price_source_bytes_read', 0)
+            if before_read is None:
+                budget['metadata_files'] += inventory['metadata_files_read']
+                budget['metadata_bytes'] += inventory['metadata_bytes_read']
+                budget['files'] += inventory.get('price_source_files_read', 0)
+                budget['bytes'] += inventory.get('price_source_bytes_read', 0)
             if budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES:
                 raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
             if budget['files'] > MAX_PARSE_REFRESH_FILES or budget['bytes'] > MAX_PARSE_REFRESH_BYTES:
@@ -442,8 +470,10 @@ def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]]
             for path in sorted(folder.glob('*.json')):
                 if not re.fullmatch(r'[0-9a-f]{64}\.json', path.name):
                     continue
+                if selected_documents is not None and (folder.name, path.stem) not in selected_documents:
+                    continue
                 record, metadata = cached(path)
-                if record.get('reader') == documents.READER_VERSION or record.get('scan') is not None:
+                if not _requires_refresh(record):
                     continue
                 pdf = folder/(path.stem+'.pdf')
                 if not pdf.exists():
@@ -476,7 +506,7 @@ def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]]
                     raise ContractFilesProblem('Метаданные обновления разборов превышают предел одной сборки.')
                 candidates.append((folder, path.stem, record, raw, provenance_context, hashlib.sha256(metadata).hexdigest()))
                 if budget['files'] > MAX_PARSE_REFRESH_FILES or budget['bytes'] > MAX_PARSE_REFRESH_BYTES:
-                    raise ContractFilesProblem('Объём обновления разборов превышает предел одной сборки. Обновите документы отдельной операцией.')
+                    raise ParseRefreshRequired('Объём обновления разборов превышает предел одной сборки. Обновите документы отдельной операцией.')
         own_writes = {}
         for folder, sha, record, raw, provenance_context, previous_metadata in candidates:
             fresh = _reread(folder, sha, record, raw, provenance_context, previous_metadata)
@@ -511,16 +541,19 @@ def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]]
         # An owner deadline/links/header or any other metadata edit during
         # parsing cannot be absorbed into the first ownership binding pin.
         for members, correction in groups:
-            after = identity.metadata_inventory(project, list(members), correction=correction)
-            budget['metadata_files'] += after['metadata_files_read']
-            budget['metadata_bytes'] += after['metadata_bytes_read']
-            budget['files'] += after.get('price_source_files_read', 0)
-            budget['bytes'] += after.get('price_source_bytes_read', 0)
+            after = identity.metadata_inventory(project, list(members), correction=correction,
+                _read=after_read.inventory() if after_read is not None else None)
+            if after_read is None:
+                budget['metadata_files'] += after['metadata_files_read']
+                budget['metadata_bytes'] += after['metadata_bytes_read']
+                budget['files'] += after.get('price_source_files_read', 0)
+                budget['bytes'] += after.get('price_source_bytes_read', 0)
             if (budget['metadata_files'] > identity.MAX_FILES or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES
                     or budget['files'] > MAX_PARSE_REFRESH_FILES or budget['bytes'] > MAX_PARSE_REFRESH_BYTES):
                 raise ContractFilesProblem('Общий объём проверки обновлённых разборов превышает предел одной сборки.')
             if sealed(before_by_group[members]) != sealed(after, after=True):
                 raise ContractFilesProblem('Исходные привязки изменились во время обновления разбора. Обновите реестр.')
+        return own_writes
 
 
 def _edition(record: dict) -> tuple:
