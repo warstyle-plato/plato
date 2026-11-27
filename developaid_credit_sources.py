@@ -334,15 +334,17 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     # без него — плановая дата из условий.
     terms = credit.PRESETS[preset_id]["terms"]
     if commissioning and commissioning.get("date"):
-        when, words = commissioning["date"][:10], f"срок ввода — {commissioning['source']}"
+        when = commissioning["date"][:10]
+        disclosure_source = f"срок ввода — {commissioning['source']}"
         # Та же дата — «плановая дата раскрытия» проверки достаточности (А п. 8.2.60):
         # проценты до раскрытия считаются до утверждённого ввода, а не до даты условий.
-        datasets["terms.project"] = _set("terms.project", as_of, words, {
-            "planned_disclosure": {"value": when, "source": f"{words}: раскрытие эскроу "
+        datasets["terms.project"] = _set("terms.project", as_of, disclosure_source, {
+            "planned_disclosure": {"value": when, "source": f"{disclosure_source}: раскрытие эскроу "
                                    "в дату ввода"}})
     else:
         when = terms["planned_disclosure"]["value"]
-        words = "утверждённого срока ввода нет — плановая дата раскрытия из условий (допущение)"
+        disclosure_source = ("утверждённого срока ввода нет — плановая дата раскрытия "
+                             "из условий (допущение)")
 
     # Эскроу: поступило — графики договоров (то, что случилось); дальше — тот же
     # прогноз, что «Эскроу по кварталам» и «к вводу» сводки (`keeping_at`):
@@ -400,7 +402,7 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
                                      "подписания, равномерно до ввода (как в «Эскроу по "
                                      "кварталам» сводки)", {"payments": ahead["sales"]})
 
-    datasets["disclosure"] = _set("disclosure", as_of, f"{words}; раскрытие всего эскроу в "
+    datasets["disclosure"] = _set("disclosure", as_of, f"{disclosure_source}; раскрытие всего эскроу в "
                                   "дату ввода (допущение: регистрация может сдвинуть позже)",
                                   {"items": [{"date": when, "amount": None, "confirmed": False,
                                               "final": True}]})
@@ -419,7 +421,7 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     notes.append("Аккредитивы не учтены: остатков на них по кредитам нет ни в РСС, ни в "
                  "финмодели. По договору деньги на аккредитивах идут по пониженной ставке, "
                  "поэтому проценты здесь оценены сверху.")
-    notes.append(f"Раскрытие эскроу принято в дату ввода {credit.ddmmyyyy(when)} ({words}). "
+    notes.append(f"Раскрытие эскроу принято в дату ввода {credit.ddmmyyyy(when)} ({disclosure_source}). "
                  "На деле банк раскрывает эскроу после регистрации, это может быть позже — "
                  "тогда платежи до раскрытия потребуют больше денег вне эскроу.")
     if shift and shift.get("date") and shift["date"][:10] > when:

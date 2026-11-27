@@ -1499,7 +1499,8 @@ def covenants(result: dict[str, Any], datasets: dict[str, Any]) -> list[dict[str
     escrow_check = {"name": "Наполнение эскроу против бизнес-плана",
                     "clause": f"{_A}, п. 8.2.57",
                     "rule": "нарушение — отставание остатка эскроу от бизнес-плана на дату "
-                            "тестирования на 25 % и более"}
+                            "тестирования на 25 % и более; в расчёте проверка — до первого "
+                            "раскрытия эскроу, без даты раскрытия"}
     sales_check = {"name": "Продажи по ДДУ за два квартала против бизнес-плана",
                    "clause": f"{_A}, п. 7.1.8.16; {_B}, SP_15.18",
                    "rule": "нарушение — сумма цен ДДУ за два календарных квартала подряд ниже "
@@ -1518,6 +1519,10 @@ def covenants(result: dict[str, Any], datasets: dict[str, Any]) -> list[dict[str
         history[escrow["as_of"]] = escrow["opening"]
         stop = _day(first_disclosure) if first_disclosure else _day(series[-1]["date"])
         for day in _test_days(_day(series[0]["date"]), stop):
+            # Остаток после раскрытия уже уменьшен на платёж банку. Он не
+            # измеряет наполнение до раскрытия (А п. 8.2.57).
+            if first_disclosure and day >= stop:
+                continue
             planned = [i["amount"] for i in series if _day(i["date"]) <= day]
             if not planned:
                 continue
@@ -2036,16 +2041,26 @@ def _covenants_html(result: dict[str, Any]) -> str:
         detail = check.get("text") or "; ".join(
             f"{i['date'] if ' ' in i['date'] else ddmmyyyy(i['date'])}: план {mln(i['plan'])}, "
             f"{i['kind']} {mln(i['actual'])}"
-            + (f", отставание {i['gap'] * 100:.0f} %".replace(".", ",") if i["gap"] is not None
-               else "")
+            + (f", {'опережение' if i['gap'] < 0 else 'отставание'} "
+               f"{abs(i['gap']) * 100:.0f} %".replace(".", ",") if i["gap"]
+               else ", по плану" if i["gap"] == 0 else "")
             for i in check["items"])
         tone = " class='neg'" if check["state"] == "breach" else ""
         rows.append(f"<tr><td>{_esc(check['name'])}</td><td>{_esc(check['clause'])}</td>"
                     f"<td{tone}>{words[check['state']]}</td><td>{_esc(check['rule'])}. "
                     f"{_esc(detail)}</td></tr>")
-    return ("<h3>Проверки по кредитным договорам</h3><table class='credit-covenants'><tr>"
+    plan = next((d for d in result["base"]["datasets"] if d["name"] == "business_plan"), {})
+    basis = (f" Источник плана: {plan['source']}." if plan.get("source") else "")
+    return ("<h3>Проверки по кредитным договорам — базовый сценарий</h3>"
+            "<p class='note'>Для наполнения эскроу план — остаток по бизнес-плану на дату "
+            "проверки. Прогноз — текущий остаток плюс ожидаемые поступления за вычетом "
+            "возвратов к той же дате. Если прогноз выше плана, это опережение. Для "
+            "договорной проверки требуется согласованный с банком бизнес-план."
+            f"{_esc(basis)}</p><div class='credit-covenants-scroll' tabindex='0' role='region' "
+            "aria-label='Проверки кредитных договоров. Таблицу можно прокручивать'>"
+            "<table class='credit-covenants'><tr>"
             "<th>Проверка</th><th>Договор</th><th>Результат</th><th>Пояснение</th></tr>"
-            + "".join(rows) + "</table>")
+            + "".join(rows) + "</table></div>")
 
 
 def _months_html(result: dict[str, Any]) -> str:
@@ -2122,15 +2137,25 @@ def _reference_html(preset: str) -> str:
 def _stress_html(result: dict[str, Any]) -> str:
     p = result["stress_params"]
     base, hard = result["base"]["top"], result["stress"]["top"]
-    rows = [("Дефицит за прогноз", base["deficit_total"]["value"], hard["deficit_total"]["value"]),
-            ("Максимальный дефицит одной даты", base["max_deficit"]["value"],
+    rows = [("Дефицит за прогноз, млн ₽", base["deficit_total"]["value"], hard["deficit_total"]["value"]),
+            ("Максимальный дефицит одной даты, млн ₽", base["max_deficit"]["value"],
              hard["max_deficit"]["value"]),
-            ("Проценты и комиссии за прогноз", base["interest_cost"]["value"],
+            ("Проценты и комиссии за прогноз, млн ₽", base["interest_cost"]["value"],
              hard["interest_cost"]["value"])]
     body = "".join(f"<tr><td>{label}</td><td>{mln(a)}</td><td>{mln(b)}</td></tr>"
                    for label, a, b in rows)
     first = (f"<tr><td>Первая дата дефицита</td><td>{ddmmyyyy(base['first_deficit']['date'])}"
              f"</td><td>{ddmmyyyy(hard['first_deficit']['date'])}</td></tr>")
+    def dates(scenario: dict[str, Any]) -> str:
+        return "; ".join(ddmmyyyy(e["date"]) for e in scenario["escrow"].get("events") or []
+                         if e["kind"] == "disclosure") or NO_DATA
+
+    disclosure = ("<tr><td>Даты раскрытия эскроу</td>"
+                  f"<td>{dates(result['base'])}</td><td>{dates(result['stress'])}</td></tr>")
+    source = next((d for d in result["base"]["datasets"] if d["name"] == "disclosure"), {})
+    basis = (f"<p class='note'>Основание дат раскрытия в базовом сценарии: "
+             f"{_esc(source['source'])} (данные на {ddmmyyyy(source.get('as_of'))}).</p>"
+             if source.get("source") else "")
     def num(value: float) -> str:
         return f"{float(value):g}".replace(".", ",")
 
@@ -2139,8 +2164,11 @@ def _stress_html(result: dict[str, Any]) -> str:
              f"{num(p['key_rate_pp'])} п. п.")
     return ("<h3>Базовый и стрессовый сценарии</h3>"
             f"<p class='note'>Стресс: {_esc(words)}</p>"
-            "<table><tr><th>Показатель</th><th>Базовый, млн ₽</th><th>Стресс, млн ₽</th></tr>"
-            + body + first + "</table>" + _status_html(result["stress_status"], "Статус в стрессе"))
+            "<div class='credit-comparison-scroll' tabindex='0' role='region' "
+            "aria-label='Сравнение сценариев. Таблицу можно прокручивать'>"
+            "<table><tr><th>Показатель</th><th>Базовый сценарий</th><th>Стрессовый сценарий</th></tr>"
+            + disclosure + body + first + "</table></div>" + basis
+            + _status_html(result["stress_status"], "Статус в стрессе"))
 
 
 def _gaps_html(result: dict[str, Any]) -> str:
