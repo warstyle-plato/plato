@@ -1,6 +1,7 @@
 """The native card shows the calendar on phones without hiding execution below it."""
 import contextlib
 import copy
+import datetime as dt
 
 import pytest
 from playwright.sync_api import expect
@@ -121,4 +122,48 @@ def test_print_has_no_clipped_calendar_or_scroll_height_limit(width):
         plot = page.locator('.contract-gpr-scroll')
         assert plot.evaluate('(e)=>getComputedStyle(e).maxHeight') == 'none'
         assert plot.evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
+        assert not errors
+
+
+@pytest.mark.parametrize('width', [390, 1440])
+@pytest.mark.parametrize('basis', ['relative-unanchored', 'relative-anchored', 'absolute'])
+def test_date_markers_need_a_calendar_origin_and_keep_a_known_zero_offset(width, basis):
+    state = gpr_state()
+    relative = basis.startswith('relative')
+    anchored = basis != 'relative-unanchored'
+    origin = '2026-11-27' if anchored else None
+    row = {'number': '1', 'code': 'relative-work', 'name': 'Учебная работа по неделям',
+           'bars': [{'state': 'plan', 'start': 0, 'end': 21}],
+           'start': origin, 'finish': '2026-12-17' if anchored else None}
+    columns = [{'start_day': i * 7 + 1, 'finish_day': (i + 1) * 7,
+                'label': f'{i + 1} нед.'} for i in range(3)]
+    state['schedule'] = {'calendar_basis': 'relative' if relative else 'calendar',
+                         'columns': columns, 'anchor': {'handover_date': origin} if anchored and relative else {}}
+    state['presentation'] = {'start': origin, 'length': 21, 'rows': [row],
+                             'ticks': columns if relative and not anchored else [
+                                 {'start': origin, 'finish': '2026-12-17', 'label': '27.11 — 17.12'}]}
+    with gpr_page(width) as (page, _, errors):
+        page.clock.install(time=dt.datetime(2026, 11, 27, 12, tzinfo=dt.timezone.utc))
+        assert page.evaluate('(value)=>{const before=JSON.stringify(value);renderContractGpr(value);return before===JSON.stringify(value)}', state)
+        plan = page.locator('[data-track="source-plan"] rect[fill="#D9D9D9"]')
+        expect(plan).to_have_count(1)
+        expect(plan).to_have_attribute('x', '0')
+        expect(plan).to_have_attribute('width', '1000')
+        markers = page.locator('.contract-gpr-date-marker')
+        if anchored:
+            # The origin date has legitimate offset zero; the data cut is drawn
+            # at the end of that day, exactly as on an ordinary calendar.
+            expect(markers).to_have_count(1)
+            expect(markers).to_have_attribute('data-date', '2026-11-27')
+            assert float(markers.get_attribute('x1')) == pytest.approx(1000 / 21)
+        else:
+            expect(markers).to_have_count(0)
+            local_axis = page.locator('.contract-gpr-local-axis')
+            expect(local_axis.locator('span').first).to_have_text('1 нед.')
+            expect(local_axis.locator('span').last).to_have_text('3 нед.')
+            if width == 390:
+                expect(local_axis).to_be_visible()
+            expect(page.locator('.contract-gpr-markers')).to_contain_text('после подтверждения начала ГПР')
+            assert page.evaluate('contractGprState.presentation.start') is None
+            assert page.evaluate('Object.keys(contractGprState.schedule.anchor).length') == 0
         assert not errors
