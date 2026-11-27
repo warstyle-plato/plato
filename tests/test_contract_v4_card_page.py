@@ -57,3 +57,23 @@ def test_card_shared_projection_distinguishes_calendar_risk_and_shows_unallocate
         assert len(ids)==len(set(ids))
         assert not errors,errors
     assert state==before
+
+
+@pytest.mark.parametrize('width',[390,1440])
+def test_card_keeps_each_latest_company_direction_beside_an_available_resource_plan(width):
+    state=source_state();crew=state['workforce']
+    first=copy.deepcopy(crew['company_rows'][0]);second=copy.deepcopy(first)
+    second['workers']=15;second['candidates'][0]['party']='Исполнитель (кладка)'
+    second['candidates'][0]['personnel_key']='e'*64
+    crew.update(available=True,company_rows=[first,second])
+    dto={'ok':True,'pending':False,'ticket':'a'*32,'contract_id':CONTRACT,'documents':[],
+         'gpr':state,'gpr_export':{'available':True,'revision':'d'*64,'filename':'Fixture.xlsx'}}
+    with browser_page(width) as (page,responses,errors):
+        page.route('**/monitor/contracts/documents',lambda route:route.fulfill(json=dto))
+        page.locator('#contractsTab').click();page.locator('tr[data-contract-id="'+CONTRACT+'"] .contract-open').click()
+        latest=page.locator('[data-company-latest="2026-01-24"]')
+        expect(latest).to_have_count(2)
+        assert '82' in latest.nth(0).inner_text() and '15' in latest.nth(1).inner_text()
+        assert 'кровля' in latest.nth(0).inner_text() and 'кладка' in latest.nth(1).inner_text()
+        assert page.locator('[data-company-date]').count()==2
+        assert not errors,errors

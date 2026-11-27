@@ -21,6 +21,31 @@ def test_calendar_overdue_is_continuous_from_deadline_to_cut_with_separate_evide
     assert forecast['finish']=='2026-12-16'
 
 
+def test_dated_act_history_supplies_confirmation_without_a_dated_snapshot():
+    row=view(53,[event(53,'2026-11-15')],finish='2026-11-10',source_dates=[])
+    assert row['progress']['last_confirmed_at']=='2026-11-15'
+    assert row['progress']['age_days']==9
+    assert row['progress']['source_dates']==[]  # no source snapshot date invented
+    assert row['deadline_status']['observed_at']=='2026-11-15'
+    assert 'дата не подтверждена' not in row['deadline_status']['text']
+
+
+def test_known_unplanned_work_keeps_quantity_and_confirmation_without_invented_calendar():
+    import developaid_contract_gpr_export as export
+    line={'code':'U','name':'Дополнительная услуга','quantity':{'fact_quantity':30,
+          'contract_quantity':100,'unit':'час','fraction':.3},
+          'reporting_events':[event(10,'2026-11-05'),event(20,'2026-11-15',label='второй')]}
+    row=export.presentation({'lines':[line]}, {},'2026-11-24')['rows'][0]
+    model=row['reporting']
+    assert model['current']['fact_quantity']==30 and model['current']['planned_fraction'] is None
+    assert model['last_confirmed_at']=='2026-11-15' and model['age_days']==9
+    assert [p['fact_quantity'] for p in model['checkpoints']]==[10,30]
+    assert model['bars']==[] and model['forecast'] is None and row['deadline_status'] is None
+    assert row['progress']['last_confirmed_at']=='2026-11-15'
+    assert 'Нет подтверждённого физического объёма' not in model['note']
+    assert row['start'] is row['finish'] is None
+
+
 def test_confirmed_period_pace_is_preferred_to_an_assumed_plan_start():
     value=view(53,[event(53,'2026-11-15','2026-11-06')],finish='2026-11-10')['reporting']
     forecast=value['forecast']

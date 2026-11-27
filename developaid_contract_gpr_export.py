@@ -20,8 +20,8 @@ import developaid_contract_workforce as workforce
 import developaid_contract_gpr_reporting as reporting
 from developaid_contract_rds import LAYOUT
 
-SCHEMA = 'contract-gpr-performance-xlsx-v9'
-PRESENTATION_SCHEMA = 'contract-gpr-known-state-v8'
+SCHEMA = 'contract-gpr-performance-xlsx-v11'
+PRESENTATION_SCHEMA = 'contract-gpr-known-state-v9'
 COLORS = reporting.COLORS
 LEGEND = reporting.LEGEND
 
@@ -203,6 +203,8 @@ def deadline_status(line, progress, cut):
         return {'state':'overdue_unclosed', 'days_after_planned_finish':days,
                 'text':'Срок истёк; физфакт не подтверждён. '+str(days)+' кал. дн. после срока ГПР. Это календарный риск незакрытия КС, а не подтверждённый нулевой объём.'}
     observed_dates = [gpr.day(value) for value in progress.get('source_dates') or []]
+    if gpr.day(progress.get('last_confirmed_at')):
+        observed_dates.append(gpr.day(progress['last_confirmed_at']))
     observed_dates = [value for value in observed_dates if value and value <= date]
     if progress['planned_fraction'] is None:
         return {'state':'deadline_comparison_unconfirmed','days_after_planned_finish':days,
@@ -296,6 +298,11 @@ def presentation(schedule, overlays, cut, positions=(), *, statement=None, sourc
                 parts.append((begin, end))
         overlay = overlays.get(line['code'])
         progress = physical_progress(line,overlay,cut,source_dates)
+        model = reporting.project({**{key:overlay[key] for key in ('reporting_events','reporting_plan_start')
+                                      if overlay and key in overlay},**line},progress,parts,
+                                  first.isoformat() if first else None,cut)
+        if progress and model.get('last_confirmed_at'):
+            progress = {**progress,'last_confirmed_at':model['last_confirmed_at'],'age_days':model['age_days']}
         bars = []
         boundary = (gpr.day(cut)-first).days+1 if first and gpr.day(cut) else None
         for begin, end in parts:
@@ -309,7 +316,7 @@ def presentation(schedule, overlays, cut, positions=(), *, statement=None, sourc
                      'duration_printed': line.get('duration_printed'), 'relative_unit': line.get('relative_unit'),
                      'page': line.get('page'), 'bars': bars, 'physical': overlay,
                      'progress': progress, 'deadline_status': deadline_status(line,progress,cut),
-                     'reporting': reporting.project({**{key:overlay[key] for key in ('reporting_events','reporting_plan_start') if overlay and key in overlay},**line},progress,parts,first.isoformat() if first else None,cut),
+                     'reporting': model,
                      **{key: line[key] for key in ('number', 'section', 'position_key', 'gpr_code', 'quantity', 'note', 'physical_audit') if key in line}})
     projected = (presentation({**schedule, 'lines': positions}, position_overlays, cut, source_dates=source_dates, _ticks=ticks)['rows']
                  if positions else [])
@@ -351,6 +358,9 @@ def company_workforce_rows(projection):
 
 def write_company_workforce(book,projection):
     rows = company_workforce_rows(projection)
+    if not rows and projection.get('report_input_status') == 'not_loaded':
+        rows = [{'date':None,'workers':None,'itr':None,'candidates':[],
+                 'reason':projection.get('report_status_note') or workforce.REPORTS_NOT_LOADED}]
     if not rows:
         return None
     sheet = book.create_sheet('Численность подрядчика')
@@ -366,20 +376,22 @@ def write_company_workforce(book,projection):
         cell.font=Font(name='Calibri',size=10,bold=True,color='FFFFFF')
     for index,item in enumerate(rows,5):
         annotations = [a for a in projection.get('plan_annotations') or [] if
-            gpr.day(a.get('start')) and gpr.day(a.get('finish')) and a['start'] <= item['date'] <= a['finish']]
+            gpr.day(item.get('date')) and gpr.day(a.get('start')) and gpr.day(a.get('finish')) and a['start'] <= item['date'] <= a['finish']]
         reason = item['reason']
         if annotations:
             reason += ' В ГПР на эту дату: '+', '.join(dict.fromkeys(a['literal'] for a in annotations))+'. Это подписи отдельных операций; рабочие и ИТР не разделены, бригады не суммируются.'
-        elif projection.get('plan_annotations'):
+        elif projection.get('plan_annotations') and gpr.day(item.get('date')):
             reason += ' На эту дату в исходном ГПР нет подписи численности; прежние диапазоны не перенесены.'
         edition = (projection.get('plan_source') or {}).get('edition') or {}
-        if edition.get('date') and item['date'] < edition['date']:
+        if edition.get('date') and gpr.day(item.get('date')) and item['date'] < edition['date']:
             reason += ' Дата предшествует текущей редакции ГПР; её историческое действие не подтверждено.'
         values=(gpr.day(item['date']),None,item['workers'],None,None,item['itr'],None,reason)
         for column,value in enumerate(values,1):
             cell=sheet.cell(index,column,rds_export._text(value) if isinstance(value,str) else value)
             if isinstance(value,str):cell.data_type='s'
         sheet.cell(index,1).number_format='dd.mm.yyyy'
+        for target,planned,actual in (('D','B','C'),('G','E','F')):
+            sheet[target+str(index)]='=IF(COUNT('+planned+str(index)+':'+actual+str(index)+')=2,'+actual+str(index)+'-'+planned+str(index)+',"")'
         sheet.cell(index,8).comment=Comment(json.dumps({'scope':'contractor_unallocated','contract_fact':False,
             'plan':None,'delta':None,'date':item['date'],'candidates':item['candidates'],
             'plan_annotations':annotations,'plan_source':projection.get('plan_source')},ensure_ascii=False),'DevelopAid')
@@ -459,7 +471,7 @@ def workbook(meta, cached):
     text_rows = ['ГПР · '+(label.get('contract') or 'Договор')+' · '+(label.get('contractor') or ''),
         'Проект: '+meta['project']+' · Редакция ГПР: '+_edition_label(source),
         'Срез: '+gpr.day(meta['cut']).strftime('%d.%m.%Y')+' · Источник выполнения: '+_fact_source_label(comparison),
-        'Серый — будущий план; сиреневый — нет подтверждения. Зелёный — план выполнен; жёлтый — отставание; красный — подтверждённая незавершённость после срока.']
+        reporting.SHORT_LEGEND]
     statement = statement_projection(comparison)
     if statement:
         text_rows[3:3] = ['\n'.join(statement_text(statement))]
@@ -476,7 +488,8 @@ def workbook(meta, cached):
         put(row, 1, text)
         sheet.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
         sheet.row_dimensions[row].height = (max(42, 6+14*sum(max(1, math.ceil(len(line)/110))
-            for line in statement_text(statement))) if statement and row == 4 else 30)
+            for line in statement_text(statement))) if statement and row == 4 else
+            max(30,14*(1+math.ceil(len(text)/110))))
     sheet['A1'].comment = Comment(rds_export._text('Источник SHA256: '+source['sha256']+
         '\nРедакция: '+str(source['edition'])+'\nОснование начала: '+str(schedule.get('anchor') or {})+
         '\nПодписание: '+str(state.get('signature_evidence') or {})), 'DevelopAid')
@@ -699,8 +712,8 @@ def workbook(meta, cached):
         sheet.merge_cells(start_row=row+1, start_column=1, end_row=row+1, end_column=6)
         sheet.row_dimensions[row+1].height = 44
         row += 1
-    if workforce.write_sheet(book, state.get('workforce') or {}) is None:
-        write_company_workforce(book,state.get('workforce') or {})
+    workforce.write_sheet(book, state.get('workforce') or {})
+    write_company_workforce(book,state.get('workforce') or {})
     for page in book:
         page.freeze_panes = None
         page.sheet_view.topLeftCell = 'A1'

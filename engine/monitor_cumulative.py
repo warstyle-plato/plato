@@ -68,6 +68,11 @@ class MonitorContractRegisterBuild(MonitorContractsBuild):
     profile_matching_verify: bool = _CumulativeField(default=False, strict=True)
 
 
+class MonitorContractParseRefresh(MonitorContractsBuild):
+    model_config = {'extra': 'forbid', 'strict': True}
+    expected_guard: str = _CumulativeField(default='', pattern=r'^([0-9a-f]{64})?$')
+
+
 class MonitorContractsTerm(MonitorContractsBuild):
     view: str = _CumulativeField(default="raw", pattern=r"^(raw|operational)$")
     correction_id: str = _CumulativeField(default="", pattern=r"^([0-9a-f]{64})?$")
@@ -372,7 +377,7 @@ _PDF_INTAKE_PATHS = frozenset('/monitor/contracts/pdf-intake/'+name for name in 
 _CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS | frozenset({
     '/monitor/schedule/version-preview', '/monitor/schedule/version-approve',
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
-    "/monitor/cumulative/list", "/monitor/contracts/build",
+    "/monitor/cumulative/list", "/monitor/contracts/build", "/monitor/contracts/parse-refresh",
     "/monitor/contracts/disk/scan", "/monitor/contracts/disk/stage", "/monitor/contracts/disk/apply", "/monitor/contracts/disk/result",
     "/monitor/contracts/result", "/monitor/contracts/result-part", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
     "/monitor/contracts/source-review",
@@ -398,7 +403,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PAT
 
 @app.middleware("http")
 async def monitor_cumulative_private_headers(request: Request, call_next):
-    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS | _CONTRACT_DISK_PATHS or request.url.path in {"/monitor/contracts/comparison.xlsx", "/monitor/contracts/gpr.xlsx", "/monitor/contracts/gpr-change"}) and request.method == 'POST':
+    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS | _CONTRACT_DISK_PATHS or request.url.path in {"/monitor/contracts/comparison.xlsx", "/monitor/contracts/gpr.xlsx", "/monitor/contracts/gpr-change", "/monitor/contracts/parse-refresh"}) and request.method == 'POST':
         private = {"Cache-Control": "private, no-store"}
         cap = 1024*1024 if request.url.path == "/monitor/contracts/comparison.xlsx" else 64*1024
         if request.url.path in _PDF_INTAKE_PATHS - {'/monitor/contracts/pdf-intake/result'}:
@@ -769,6 +774,9 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                 result["contracts"] = contracts.archive_summary(payload["project"], payload["taken_at"])
             except (contracts.ContractProblem, ledgers.LedgerProblem) as exc:
                 result["contracts"] = {"error": str(exc)}
+        elif operation == 'parse-refresh':
+            import developaid_contract_parse_refresh as parse_refresh
+            result = {'parse_refresh': parse_refresh.prepare(**payload)}
         elif operation == "view":
             register = contracts.build(payload["project"], payload["cut"])
             register = links.enrich(payload["project"], register, payload["cut"])
@@ -920,7 +928,8 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
     except (contracts.ContractProblem, links.LinkProblem, contract_files.ContractFilesProblem,
             contract_identity.IdentityProblem) as exc:
         # These exception classes contain deliberate user-facing diagnostics.
-        return {"ok": False, "detail": str(exc)}
+        return {"ok": False, "detail": str(exc),
+                **({'parse_refresh_required': True} if isinstance(exc, contract_files.ParseRefreshRequired) else {})}
 
 
 def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
@@ -1086,6 +1095,8 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     payload.update(fields)
                     if operation in {'identity-confirm', 'identity-revoke', 'identity-correct-sources'}:
                         payload['actor'] = owner
+                elif operation == 'parse-refresh':
+                    payload['expected_guard'] = req.expected_guard
                 elif operation == "documents":
                     payload["contract_id"] = req.contract_id
                 elif operation == "document-links":
@@ -1288,6 +1299,11 @@ def monitor_contract_disk_result(req: MonitorCumulativeResult) -> Response:
 @app.post("/monitor/contracts/build", include_in_schema=False)
 def monitor_contracts_build(req: MonitorContractRegisterBuild) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="view")
+
+
+@app.post('/monitor/contracts/parse-refresh', include_in_schema=False)
+def monitor_contract_parse_refresh(req: MonitorContractParseRefresh) -> Response:
+    return _monitor_cumulative_job(req, family='contracts', operation='parse-refresh')
 
 
 @app.post('/monitor/contracts/identity/inventory', include_in_schema=False)

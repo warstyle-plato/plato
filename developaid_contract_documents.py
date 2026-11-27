@@ -37,7 +37,7 @@ import hashlib
 from math import ceil, floor, fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 16
+READER_VERSION = 17
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -765,7 +765,7 @@ def _relative_page(page, page_number, schedule):
 
 
 def _dated_bar_page(page, page_number, schedule):
-    """A chart with number/name/unit/volume and dated or month/interval columns.
+    """A chart with number/name, optional unit/volume, and labelled calendar columns.
 
     Rebuild the column bounds from the labelled header: a stray rule through
     the name and the signature's right border are not extra data columns.
@@ -774,19 +774,20 @@ def _dated_bar_page(page, page_number, schedule):
     grid = _Grid(page)
     for header, row in enumerate(grid.cells):
         filled = [(i, _space(cell)) for i, cell in enumerate(row) if _space(cell)]
-        if (len(filled) < 5 or not filled[0][1].startswith('№')
-                or not filled[1][1].lower().startswith('наименован')
-                or not filled[2][1].lower().startswith('ед')
-                or not filled[3][1].lower().replace('ё', 'е').startswith(('объем', 'кол'))):
+        if (len(filled) < 3 or not filled[0][1].startswith('№')
+                or not filled[1][1].lower().startswith('наименован')):
             continue
-        dated = any(_CHART_DATE.search(cell) for _, cell in filled[4:])
-        if not dated and not any(_WEEK.search(cell) for _, cell in filled[4:]):
+        metadata = (len(filled) >= 5 and filled[2][1].lower().startswith('ед')
+                    and filled[3][1].lower().replace('ё', 'е').startswith(('объем', 'кол')))
+        first = 4 if metadata else 2
+        dated = any(_CHART_DATE.search(cell) for _, cell in filled[first:])
+        if not dated and not any(_WEEK.search(cell) for _, cell in filled[first:]):
             continue
         # Keep every physical calendar column, including one without a label.
-        # Only the four metadata columns may merge stray rules through their text.
+        # Only the labelled metadata columns may merge stray rules through text.
         # The table's horizontal border excludes a separate signature border.
-        across, _ = _rules(page)
-        first_calendar = filled[3][0]+1
+        across, down = _rules(page)
+        first_calendar = filled[first-1][0]+1
         top, bottom = grid.band(header)
         segments = sorted((x0, x1) for y, x0, x1 in across
                           if abs(y-top) <= 1 or abs(y-bottom) <= 1)
@@ -800,14 +801,32 @@ def _dated_bar_page(page, page_number, schedule):
             right = grid.columns[-1]
         calendar = [i for i in range(first_calendar, len(grid.columns)-1)
                     if grid.columns[i] < right-1]
-        bounds = [grid.columns[i] for i, _ in filled[:4]] + [grid.columns[first_calendar]] + [
+        bounds = [grid.columns[i] for i, _ in filled[:first]] + [grid.columns[first_calendar]] + [
             grid.columns[i+1] for i in calendar]
+        if first == 2:
+            # A signature frame below the body can cross both the name and
+            # calendar in the page-wide grid. Only rules reaching the header
+            # edge belong to this header. Printed column ordinals locate the
+            # end of a merged name even when an early date label is missing.
+            physical = _merge([x for x,y0,y1 in down if y0 < bottom-1 <= y1
+                               and grid.columns[0]-1 <= x <= right+1] + [right])
+            if len(physical) < 4:
+                continue
+            header_grid = _Grid(page, physical)
+            ordinal = [(i,_space(cell)) for i,cell in enumerate(header_grid.cells[header+1])
+                       if _space(cell)] if header+1 < len(header_grid.cells) else []
+            numbered = len(ordinal) >= 3 and [v for _,v in ordinal] == [str(i+1) for i in range(len(ordinal))]
+            calendar_left = physical[ordinal[2][0]] if numbered else physical[2]
+            bounds = [grid.columns[i] for i,_ in filled[:first]] + [x for x in physical if x >= calendar_left]
+            grid = _Grid(page, bounds)
+            row = grid.cells[header]
+            calendar = list(range(first,len(bounds)-1))
         assumption = CHART_DATES_ASSUMPTION if dated else CHART_INTERVALS_ASSUMPTION
         if dated:
             marks = [_CHART_DATE.findall(_space(row[i])) for i in calendar]
             dates, problem = {}, None
             previous = None
-            for column, found in enumerate(marks, 4):
+            for column, found in enumerate(marks, first):
                 if len(found) != 1:
                     problem = 'В шапке графика не прочитана дата календарного столбца.'
                     break
@@ -824,14 +843,14 @@ def _dated_bar_page(page, page_number, schedule):
                 dates[column] = (day, day)
                 previous = day
         else:
-            dates, problem = _weeks(_Grid(page, bounds), header, 4, page)
+            dates, problem = _weeks(_Grid(page, bounds), header, first, page)
         if problem:
             schedule['warnings'].append(f'Стр. {page_number}: {problem} Сроки полос не прочитаны.')
         schedule['warnings'].append(assumption)
-        layout = {'bounds': bounds, 'first': 4, 'dates': None if problem else dates,
+        layout = {'bounds': bounds, 'first': first, 'dates': None if problem else dates,
                   'page': page_number, 'body_row': header+1,
                   'assumption': assumption, 'date_precision': 'chart_marks' if dated else 'chart_intervals',
-                  'metadata': True}
+                  'metadata': metadata}
         return _weekly_page(page, page_number, schedule, layout)
     return None
 
@@ -944,6 +963,8 @@ def _weekly_page(page, page_number, schedule, layout=None):
         if all(_space(cell) == str(i+1) for i, cell in enumerate(row)):
             continue  # Printed column numbers are not a work with code1 and name2.
         code, name = re.sub(r'\s+', '', row[0]).rstrip('.'), _space(row[1])
+        if code.startswith('№') and name.lower().startswith('наименован'):
+            continue  # A continuation can repeat the same labelled header.
         if not code and not name:
             continue
         if not code:
@@ -953,9 +974,20 @@ def _weekly_page(page, page_number, schedule, layout=None):
         if not _CODE.match(code):
             warnings.append(f'Стр. {page_number}: у строки графика «{name[:80]}» нет номера.')
             continue
+        bar = _bar(grid, index, fills, grid.columns, layout['dates'], first, body)
+        if first == 2 and not bar and any(
+                re.sub(r'\s+', '', later[0]).startswith(code+'.') for later in grid.cells[index+1:]):
+            top,bottom = grid.band(index)
+            middle = (top+bottom)/2
+            _,verticals = _rules(page)
+            if not any(grid.columns[1]+1 < x < grid.columns[-1]-1 and y0 < middle < y1
+                       for x,y0,y1 in verticals):
+                # A source group title can span the name and calendar. Its
+                # words beyond the name border are still part of that title.
+                name = _space(' '.join(row[1:]))
+                row = [row[0],name]+['']*(len(row)-2)
         if _resource_row(schedule, row, name, page_number, index, layout):
             continue
-        bar = _bar(grid, index, fills, grid.columns, layout['dates'], first, body)
         parent, prefix = None, code
         while '.' in prefix:
             prefix = prefix.rsplit('.', 1)[0]
@@ -1022,6 +1054,9 @@ def _resource_row(schedule, row, name, page_number, row_index, layout):
                         'start': begin.isoformat(), 'finish': end.isoformat()})
         values.append({'period': period, 'value': value, 'raw': raw, 'value_present': bool(raw),
                        'start': begin.isoformat(), 'finish': end.isoformat()})
+    if category == 'workers_and_itr' and not any(v['value_present'] for v in values) and not re.search(r'чел', name, re.I):
+        schedule.setdefault('resource_headings', []).append({'name': name, 'source': {'page': page_number, 'row': row_index+1}})
+        return True
     schedule.setdefault('columns', columns)
     schedule.setdefault('resources', []).append({'name': name, 'category': category, 'values': values,
         'period_basis': 'literal_date' if all(c['start'] == c['finish'] for c in columns) else 'explicit_interval',

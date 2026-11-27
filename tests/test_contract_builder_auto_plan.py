@@ -42,6 +42,21 @@ def test_new_formula_results_have_caches_for_excel_readers():
     assert cached[sheet.title]['L4'].value==0
 
 
+def test_workforce_deviation_formulas_distinguish_missing_fact_from_confirmed_zero():
+    from developaid_contract_workforce import write_sheet
+    book=Workbook()
+    projection={'available':True,'contract':'Тестовый','rows':[
+        {'date':'2026-05-01','workers_plan':5,'workers_fact':None,'itr_plan':2,'itr_fact':0},
+        {'date':'2026-05-02','workers_plan':5,'workers_fact':0,'itr_plan':None,'itr_fact':1}]}
+    sheet=write_sheet(book,projection)
+    assert all(sheet.cell(row,column).data_type=='f' for row in (6,7) for column in (4,7))
+    buffer=io.BytesIO();book.save(buffer)
+    cached=load_workbook(io.BytesIO(cache_builder_formulas(buffer.getvalue(),book)),data_only=True)
+    got=cached[sheet.title]
+    assert got['D6'].value is None and got['G6'].value==-2
+    assert got['D7'].value==-5 and got['G7'].value is None
+
+
 def test_retrospective_assessment_does_not_claim_production_start_or_daily_fact():
     row=view(10,[event(10,'2026-11-10')])
     early=[b for b in row['reporting']['bars'] if b['range_kind']=='retrospective_report_assessment']
