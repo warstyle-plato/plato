@@ -45,7 +45,7 @@ def current_row():
     return row
 
 
-@pytest.mark.parametrize('version', [11, 12, 13, 14, 15])
+@pytest.mark.parametrize('version', [11, 12, 13, 14, 15, 16])
 def test_legacy_native_document_price_survives_two_independent_reads(pair, monkeypatch, version):
     folder, sha, raw, old, event, state = approved_price(pair, monkeypatch, version)
     first = current_row()
@@ -360,7 +360,7 @@ def test_mutated_reviewed_witness_cannot_be_promoted(pair, monkeypatch, change, 
 def test_unreviewed_future_reader_does_not_inherit_price_witness(pair, monkeypatch):
     folder, sha, _, _, _, state = approved_price(pair, monkeypatch, 15)
     assert current_row()['source_correction']['fresh']
-    monkeypatch.setattr(documents, 'READER_VERSION', 18)
+    monkeypatch.setattr(documents, 'READER_VERSION', 19)
     assert not current_row()['source_correction']['fresh']
     assert provenance.FIELD not in files._stored(folder/(sha+'.json'))
     assert journal.load(PROJECT) == state
@@ -398,3 +398,97 @@ def test_reviewed_reader17_preserves_exact_approved_component(pair, monkeypatch,
     assert provenance.component(refreshed) == provenance.component(old)
     assert journal.load(PROJECT) == state
     assert (folder/(sha+'.pdf')).read_bytes() == raw
+
+
+def test_reviewed_reader18_preserves_native_reader17_approval_on_two_reads(pair, monkeypatch):
+    monkeypatch.setattr(documents, 'READER_VERSION', 18)
+    folder, sha, raw, old, event, state = approved_price(pair, monkeypatch, 17)
+    for _ in range(2):
+        row = current_row()
+        assert row['source_correction']['fresh'] and row['amount'] == 2000
+    fresh = files._stored(folder/(sha+'.json'))
+    marker = fresh[provenance.FIELD]
+    assert fresh['reader'] == marker['to_reader'] == 18 and marker['from_reader'] == 17
+    assert marker['event_id'] == event['event_id']
+    assert provenance.component(old) == provenance.component(fresh)
+    assert old.get('estimates') == fresh.get('estimates')
+    assert journal.load(PROJECT) == state
+    assert (folder/(sha+'.pdf')).read_bytes() == raw
+
+
+def test_reviewed_reader18_advances_an_existing_reader17_witness_without_reapproval(pair, monkeypatch):
+    monkeypatch.setattr(documents, 'READER_VERSION', 17)
+    folder, sha, raw, old, event, state = approved_price(pair, monkeypatch, 14)
+    assert current_row()['source_correction']['fresh']
+    prior = copy.deepcopy(files._stored(folder/(sha+'.json'))[provenance.FIELD])
+    monkeypatch.setattr(documents, 'READER_VERSION', 18)
+    for _ in range(2):
+        assert current_row()['source_correction']['fresh']
+    fresh = files._stored(folder/(sha+'.json'))
+    marker = fresh[provenance.FIELD]
+    assert marker['from_reader'] == 14 and marker['to_reader'] == fresh['reader'] == 18
+    assert {k: v for k, v in marker.items() if k != 'to_reader'} == {
+        k: v for k, v in prior.items() if k != 'to_reader'}
+    assert marker['event_id'] == event['event_id']
+    assert provenance.component(old) == provenance.component(fresh)
+    assert journal.load(PROJECT) == state and (folder/(sha+'.pdf')).read_bytes() == raw
+
+
+@pytest.mark.parametrize('change', ['price', 'tax', 'contract', 'party', 'terms', 'estimate_price'])
+def test_reader18_does_not_reapprove_a_changed_component_during_refresh(pair, monkeypatch, change):
+    monkeypatch.setattr(documents, 'READER_VERSION', 18)
+    folder, sha, raw, _, _, state = approved_price(pair, monkeypatch, 17)
+    read = documents.read
+    def changed(content):
+        fresh = read(content)
+        if change == 'price':
+            fresh['price']['candidates'][0]['value'] = 9999
+        elif change == 'tax':
+            fresh['price']['candidates'][0]['amount_basis'] = 'without_vat'
+        elif change == 'contract':
+            fresh['contract']['number'] = 'OTHER-PARTY-CONTRACT'
+        elif change == 'party':
+            fresh['contract']['contractor'] = 'Другой контрагент'
+        elif change == 'terms':
+            fresh['terms']['changed_semantics'] = True
+        else:
+            fresh['estimates'] = [{'scope': 'accepted', 'positions': [], 'structure': [],
+                                   'totals': [], 'warnings': [], 'pages': []}]
+            fresh['price']['candidates'][0]['value'] = 9999
+        return fresh
+    monkeypatch.setattr(documents, 'read', changed)
+    assert not current_row()['source_correction']['fresh']
+    record = files._stored(folder/(sha+'.json'))
+    assert provenance.FIELD not in record
+    assert journal.load(PROJECT) == state and (folder/(sha+'.pdf')).read_bytes() == raw
+
+
+def test_reader18_keeps_price_component_when_unrelated_rds_metadata_is_discovered(pair, monkeypatch):
+    monkeypatch.setattr(documents, 'READER_VERSION', 18)
+    folder, sha, raw, old, event, state = approved_price(pair, monkeypatch, 17)
+    read = documents.read
+    def discovered(content):
+        fresh = read(content)
+        fresh['estimates'] = [{'scope': 'accepted', 'positions': [], 'structure': [],
+                               'totals': [], 'warnings': [], 'pages': []}]
+        return fresh
+    monkeypatch.setattr(documents, 'read', discovered)
+    for _ in range(2):
+        assert current_row()['source_correction']['fresh']
+    fresh = files._stored(folder/(sha+'.json'))
+    assert fresh['estimates'] != old['estimates']
+    assert provenance.component(fresh) == provenance.component(old)
+    assert fresh[provenance.FIELD]['event_id'] == event['event_id']
+    assert not (fresh.get('schedule') or {}).get('lines')
+    assert journal.load(PROJECT) == state and (folder/(sha+'.pdf')).read_bytes() == raw
+
+
+def test_reader18_refresh_rejects_a_changed_source_pdf_without_rewriting_approval(pair, monkeypatch):
+    monkeypatch.setattr(documents, 'READER_VERSION', 18)
+    folder, sha, raw, _, _, state = approved_price(pair, monkeypatch, 17)
+    path = folder/(sha+'.json')
+    before = path.read_bytes()
+    (folder/(sha+'.pdf')).write_bytes(raw+b'changed')
+    with pytest.raises((identity.IdentityProblem, contracts.ContractProblem, files.ContractFilesProblem)):
+        current_row()
+    assert journal.load(PROJECT) == state and path.read_bytes() == before
