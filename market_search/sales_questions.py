@@ -121,21 +121,9 @@ _PARKING_DDU = re.compile(
     r"(?:\s+от\s+(\d{2}\.\d{2}\.\d{4}))?", re.I)
 
 
-def _parking_family(row: dict[str, Any]) -> tuple | None:
-    """Possible reissue, never a conclusion that two legal DDUs are the same lot."""
+def parking_contract_id(row: dict[str, Any]) -> tuple[str, str, str, str] | None:
+    """Strict legal-number components; a suffix is preserved, never an alias."""
     if contracting.product_name(row.get("product") or "") != "Машиноместо":
-        return None
-    if row.get("escrow_observed") is not True:
-        return None
-    paid = row.get("escrow_paid")
-    if isinstance(paid, bool) or paid in (None, ""):
-        return None
-    try:
-        if not math.isfinite(float(paid)) or float(paid) < 0:
-            return None
-    except (ValueError, TypeError, OverflowError):
-        return None
-    if str(row.get("state") or "").strip().casefold() not in {"", "действующий"}:
         return None
     contract = " ".join(str(row.get("contract") or "").split())
     matched = _PARKING_DDU.fullmatch(contract)
@@ -148,6 +136,24 @@ def _parking_family(row: dict[str, Any]) -> tuple | None:
                 return None
         except ValueError:
             return None
+    return matched[1], matched[2].upper(), matched[3] or "", matched[4].upper()
+
+
+def _parking_family(row: dict[str, Any]) -> tuple | None:
+    """Possible reissue, never a conclusion that two legal DDUs are the same lot."""
+    identity = parking_contract_id(row)
+    if not identity or row.get("escrow_observed") is not True:
+        return None
+    paid = row.get("escrow_paid")
+    if isinstance(paid, bool) or paid in (None, ""):
+        return None
+    try:
+        if not math.isfinite(float(paid)) or float(paid) < 0:
+            return None
+    except (ValueError, TypeError, OverflowError):
+        return None
+    if str(row.get("state") or "").strip().casefold() not in {"", "действующий"}:
+        return None
     values = []
     for name in ("area", "amount"):
         value = row.get(name)
@@ -161,23 +167,29 @@ def _parking_family(row: dict[str, Any]) -> tuple | None:
             return None
         values.append(value)
     # Empty units leave identity unknown. An explicit difference remains separate.
-    family = (matched[1], matched[2].upper(), matched[4].upper(), signed,
+    family = (identity[0], identity[1], identity[3], _date(row.get("signed")),
               " ".join(str(row.get("unit") or "").split()), *values)
-    return family, matched[3] or ""
+    return family, identity[2]
 
 
 def _parking_clarifications(items: list[dict[str, Any]], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_key: dict[str, list[dict[str, Any]]] = {}
+    visible_families: dict[tuple, int] = {}
     for row in rows:
         by_key.setdefault(money_key(row), []).append(row)
+        identity = parking_contract_id(row)
+        if identity and str(row.get("state") or "").strip().casefold() in {"", "действующий"}:
+            key = (identity[0], identity[1], identity[3], _date(row.get("signed")))
+            visible_families[key] = visible_families.get(key, 0) + 1
     families: dict[tuple, list[tuple[dict[str, Any], str]]] = {}
     for item in items:
         source = by_key.get(item["key"]) or []
         if len(source) == 1 and (match := _parking_family(source[0])):
             families.setdefault(match[0], []).append((item, match[1]))
     replacements = {}
-    for members in families.values():
-        if len(members) != 2 or {variant for _, variant in members} != {"", "-1"}:
+    for family, members in families.items():
+        if (visible_families.get(family[:4]) != 2 or len(members) != 2
+                or {variant for _, variant in members} != {"", "-1"}):
             continue
         pair = sorted((item for item, _ in members), key=lambda item: item["key"])
         keys = [item["key"] for item in pair]

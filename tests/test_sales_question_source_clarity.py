@@ -62,6 +62,22 @@ def test_another_family_member_or_conflicting_source_row_prevents_the_pair():
         assert not any(x["kind"] == "contract_identity" for x in ask(rows))
 
 
+@pytest.mark.parametrize("changes", [
+    {"escrow_paid": 800_000}, {"escrow_observed": False},
+    {"escrow_paid": None, "escrow_observed": None}, {"area": None}, {"amount": 800_001},
+])
+def test_a_visible_third_contract_is_counted_even_when_it_is_not_an_unpaid_candidate(changes):
+    rows = [parking(), parking("-1"), parking("-2", **changes)]
+    assert not any(x["kind"] == "contract_identity" for x in ask(rows))
+
+
+def test_legal_number_parser_preserves_versions_without_exposing_a_physical_lot_alias():
+    assert questions.parking_contract_id(parking()) == ("0042", "М", "", "ТЕСТ")
+    assert questions.parking_contract_id(parking("-1")) == ("0042", "М", "-1", "ТЕСТ")
+    assert questions.parking_contract_id(parking("-2", escrow_paid=None)) == ("0042", "М", "-2", "ТЕСТ")
+    assert questions.parking_contract_id(parking(product="Квартира")) is None
+
+
 @pytest.mark.parametrize("member", [0, 1, 2])
 def test_any_prior_question_blocks_the_pair_without_changing_history(tmp_path, member):
     rows = [parking(), parking("-1")]
