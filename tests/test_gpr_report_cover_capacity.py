@@ -6,6 +6,8 @@ scenarios supply longer notes. They do not establish financial acceptance.
 """
 import copy
 import io
+import json
+from urllib.parse import urlsplit
 
 import pymupdf
 import pytest
@@ -13,10 +15,12 @@ from playwright.sync_api import sync_playwright
 
 import developaid_management_report as report
 import developaid_monitor as monitor
+from developaid_report_page import REPORT_PAGE
 from browser import chromium_or_skip
 from market_search import report_pdf
 from test_gpr_executive_readiness import saved, PROJECT, CUT
 from test_the_credit_due_table import _built, _with_the_increase
+from test_management_report_budget_articles import _assert_total_escrow_and_existing_tiles
 
 
 def _normal(text):
@@ -56,7 +60,7 @@ def test_full_cover_notes_and_page2_keep_their_normal_font(saved, tmp_path, monk
     before = copy.deepcopy(built)
     items = report.tiles(built)
     # The independent paid card remains visible when the FM is unavailable.
-    assert len(items) == (14 if variant == 'budget' else 15)
+    _assert_total_escrow_and_existing_tiles(built, items, quarter_escrow=variant == 'full')
     assert len([item for item in items if item.get('group') == 'gpr_readiness']) == 2
     assert len([item for item in items if item.get('group') == 'additional_funding']) == 1
     assert not any(item.get('group') == 'admin_expenses_cash' for item in items)
@@ -110,5 +114,40 @@ def test_full_cover_notes_and_page2_keep_their_normal_font(saved, tmp_path, monk
             cells = page.locator('table.credit-due :is(th,td)')
             assert cells.count() > 50
             assert cells.evaluate_all('(cells)=>cells.every(e=>e.scrollWidth<=e.clientWidth+1)')
+        # Exercise the real screen, rather than the document's print wrapper.
+        errors = []
+
+        def respond(route):
+            url = urlsplit(route.request.url)
+            assert url.hostname == 'cover-capacity.test'
+            if url.path == '/report':
+                route.fulfill(content_type='text/html', body=REPORT_PAGE)
+            elif url.path == '/monitor/report/projects':
+                route.fulfill(json={'projects': [{'project': built['project']}], 'sales_projects': []})
+            elif url.path == '/monitor/report/build':
+                route.fulfill(content_type='application/json', body=json.dumps({'html': body}))
+            elif url.path in {'/monitor/notes', '/monitor/report/mailing', '/monitor/legal', '/monitor/photos'}:
+                route.fulfill(json={})
+            else:
+                route.abort()
+
+        mobile = browser.new_page(viewport={'width': 390, 'height': 844})
+        mobile.on('pageerror', lambda error: errors.append(str(error)))
+        mobile.route('**/*', respond)
+        mobile.add_init_script("localStorage.setItem('plato_projects_key','synthetic-browser-key')")
+        mobile.goto('http://cover-capacity.test/report', wait_until='domcontentloaded')
+        cards = mobile.locator('#reportBox .tiles > .tile')
+        cards.filter(has=mobile.locator('.k', has_text='Оплачено на эскроу всего')).wait_for(state='visible')
+        assert cards.count() == len(cover_items)
+        for item in cover_items:
+            card = cards.filter(has=mobile.locator('.k', has_text=item['label']))
+            assert card.count() == 1 and card.is_visible()
+            assert _normal(card.locator('.v').inner_text()) == _normal(item['value'])
+            assert _normal(card.locator('.n').inner_text()) == _normal(item['note'])
+            card.scroll_into_view_if_needed()
+            box = card.bounding_box()
+            assert box and box['x'] >= 0 and box['x'] + box['width'] <= 390
+            assert card.evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
+        assert not errors
         browser.close()
     assert built == before
