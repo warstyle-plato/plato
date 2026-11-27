@@ -71,6 +71,29 @@ def test_confirmed_contract_and_statement_ratios_keep_their_scope():
     assert statement['state'] == 'known' and statement['scope'] == 'statement'
 
 
+@pytest.mark.parametrize('key', ['progress', 'summary_progress'])
+def test_known_contract_fallback_cannot_erase_unspecified_vat_caveat(key):
+    original = row(**{key: {'state': 'known', 'ratio': .25, 'planned': 1000,
+                           'completed': 250, 'basis': 'contract_amount'}})
+    before = copy.deepcopy(original)
+    value = display.completion(original, CUT)
+    assert value['state'] == 'provisional' and value['scope'] == 'contract'
+    assert value['ratio'] == .25 and 'НДС не сверён' in value['caveat']
+    assert original == before
+    original['completed_basis'] = 'without_vat'
+    assert display.completion(original, CUT)['scope'] != 'contract'
+
+
+@pytest.mark.parametrize('changes', [{'amount': 2000}, {'completed': 300}, {'completed': None}])
+def test_known_progress_with_different_operands_is_source_only(changes):
+    original = row(progress={'state': 'known', 'ratio': .25, 'planned': 1000,
+                            'completed': 250, 'basis': 'contract_amount'}, **changes)
+    before = copy.deepcopy(original)
+    value = display.completion(original, CUT)
+    assert value['state'] == 'reference' and value['scope'] == 'source' and value['ratio'] == .25
+    assert 'Справочно по источнику' in value['reference_label'] and original == before
+
+
 def test_distinct_annual_source_percentages_form_a_labelled_range_not_an_average():
     value = display.completion(row(amount=None, completed=None,
         reported_performance_sources=[source(year=2025, completed=1000), source('b', completed=250)]), CUT)
@@ -119,10 +142,69 @@ def test_future_or_unread_statement_is_not_a_source_percentage():
         reported_performance_sources=[unread, future]), CUT)['ratio'] is None
 
 
+@pytest.mark.parametrize('bases', [('with_vat', 'without_vat'), ('with_vat', 'conflicting')])
+def test_statement_with_explicit_tax_conflict_is_not_admitted_despite_comparable_flag(bases):
+    observation = source()
+    observation.update(planned_amount_basis=bases[0], completed_amount_basis=bases[1])
+    original = row(amount=None, completed=None, reported_performance_sources=[observation])
+    before = copy.deepcopy(original)
+    assert display.qualified_statements(original, CUT) == []
+    assert display.completion(original, CUT)['state'] == 'unknown'
+    assert original == before
+
+
+@pytest.mark.parametrize('key', ['progress', 'summary_progress', 'statement_progress'])
+def test_explicit_source_tax_conflict_blocks_known_fallback(key):
+    value = {'state': 'known', 'ratio': .25, 'planned': 1000, 'completed': 250,
+             'planned_amount_basis': 'with_vat', 'completed_amount_basis': 'without_vat'}
+    original = row(amount=None, completed=None, **{key: value})
+    assert display.completion(original, CUT)['state'] == 'unknown'
+
+
+def test_historical_proof_does_not_override_explicit_statement_tax_conflict():
+    correction = {'decision_id': 'd'*64, 'warning': 'Источник изменился',
+                  'provenance': {'execution': {'raw_id': 'e'*64, 'token': 'f'*64}}}
+    observation = source()
+    observation.update(planned_amount_basis='with_vat', completed_amount_basis='without_vat')
+    original = row(source_correction=correction, reported_performance_sources=[observation])
+    assert display.completion(original, CUT)['state'] == 'unknown'
+
+
 def test_known_zero_stays_a_visible_zero_without_rewriting_the_original_metric():
     original = row(completed=0)
     assert display.completion(original, CUT)['ratio'] == 0
     assert original['completion_ratio'] is None
+
+
+@pytest.mark.parametrize('basis', ['with_vat', 'unspecified'])
+def test_preexisting_confirmed_negative_correction_stays_known_and_raw(basis):
+    import developaid_monitor_page as page
+    from tests import page_blocks
+    original = row(completed=-50, completion_ratio=-.05, monetary_comparable=True,
+                   completed_basis=basis)
+    before = copy.deepcopy(original)
+    value = display.completion(original, CUT)
+    assert value['state'] == 'known' and value['ratio'] == -.05
+    assert 'Корректировка по КС' in value['reference_label'] and 'требуется сверка' in value['reference_label']
+    assert original == before
+    if basis == 'unspecified':
+        assert 'НДС не сверён' in value['reference_label']
+    # This unchanged native reader is the old PAGE contract for confirmed ratios.
+    out, _ = page_blocks.run('const row='+json.dumps(original)+';',
+        'console.log(JSON.stringify(contractDoneShare(row,row.completion_ratio)))', page=page.MONITOR_PAGE)
+    assert json.loads(out)['ratio'] == value['ratio']
+
+
+@pytest.mark.parametrize('changes', [
+    {'monetary_comparable': False}, {'completion_ratio': None}, {'completion_ratio': -.1},
+    {'completed_basis': 'without_vat'},
+])
+def test_negative_value_is_not_newly_admitted_through_provisional_or_unqualified_paths(changes):
+    original = row(completed=-50, completion_ratio=-.05, monetary_comparable=True,
+                   completed_basis='with_vat')
+    original.update(changes)
+    value = display.completion(original, CUT)
+    assert value['ratio'] is None and value['state'] == 'unknown'
 
 
 def test_one_finish_prefers_legal_then_active_gpr_and_does_not_replace_legal_field():
@@ -332,3 +414,50 @@ def test_native_page_keeps_one_completion_and_finish_component_per_registry_row(
         expect(reference).to_contain_text('Справочно по прежним ведомостям; выбор источников изменился')
         assert reference.locator('.contract-progress').count() == 0
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth') and not errors
+
+
+def test_native_page_qualifies_known_progress_fallbacks_without_a_current_scope_claim():
+    from playwright.sync_api import expect
+    from tests.test_monitor_cumulative_controls import browser_page
+    progress = {'state': 'known', 'ratio': .25, 'planned': 1000, 'completed': 250,
+                'basis': 'contract_amount'}
+    values = [row(progress=progress), row(progress=progress, completed_basis='without_vat'),
+              row(progress=progress, amount=2000)]
+    for index, item in enumerate(values):
+        item.update(id=str(index+1)*64, contractor='Учебный подрядчик '+str(index+1),
+                    contract='У-'+str(index+1), contract_date='2026-01-01', physical_items=[], warnings=[])
+    display.attach({'rows': values}, CUT)
+    with browser_page(390) as (page, responses, errors):
+        responses.data.update(rows=values, cut=CUT)
+        page.locator('#cut').fill(CUT)
+        page.locator('#contractsTab').click()
+        blocks = page.locator('.contract-register-completion')
+        expect(blocks).to_have_count(3)
+        assert blocks.evaluate_all('(els)=>els.map(e=>e.dataset.completionState)') == ['provisional', 'unknown', 'reference']
+        expect(blocks.nth(0).locator('.contract-completion-caveat > summary')).to_contain_text('НДС не сверён')
+        expect(blocks.nth(1)).not_to_contain_text('25%')
+        expect(blocks.nth(2).locator('.contract-reference-note')).to_be_visible()
+        expect(blocks.nth(2)).to_contain_text('Справочно по источнику')
+        assert blocks.nth(2).get_attribute('data-completion-scope') == 'source'
+        assert blocks.nth(2).locator('.contract-progress').count() == 0
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth') and not errors
+
+
+def test_native_page_retains_confirmed_negative_correction_with_visible_review_note():
+    from playwright.sync_api import expect
+    from tests.test_monitor_cumulative_controls import browser_page
+    value = row(id='a'*64, contractor='Учебный подрядчик', contract='У-1',
+                completed=-50, completion_ratio=-.05, monetary_comparable=True,
+                completed_basis='with_vat', physical_items=[], warnings=[])
+    display.attach({'rows': [value]}, CUT)
+    with browser_page(390) as (page, responses, errors):
+        responses.data.update(rows=[value], cut=CUT)
+        page.locator('#cut').fill(CUT)
+        page.locator('#contractsTab').click()
+        block = page.locator('.contract-register-completion')
+        assert block.get_attribute('data-completion-state') == 'known'
+        assert '-5%' in block.inner_text().replace('\u2212', '-').replace(' ', '')
+        expect(block).not_to_contain_text('0%')
+        expect(block.locator('.contract-reference-note')).to_be_visible()
+        expect(block.locator('.contract-reference-note')).to_contain_text('требуется сверка')
+        assert block.locator('.risk-good').count() == 0 and not errors
