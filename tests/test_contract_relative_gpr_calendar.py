@@ -616,7 +616,10 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         expect(page.locator('#contractGprBody')).to_contain_text('Предварительный просмотр обнаруженного ГПР')
         expect(page.locator('#contractGprDownload')).to_be_disabled()
         assert page.locator('#contractGprHandover').count() == 0
-        expect(page.locator('[data-gpr-activate]')).to_be_visible()
+        choices = page.locator('.contract-gpr-source-selection')
+        expect(choices).not_to_have_attribute('open', '')
+        choices.locator(':scope > summary').click()
+        expect(choices.locator('[data-gpr-activate]')).to_be_visible()
         assert page.locator('.contract-gpr-track rect[fill="#70AD47"]').count() == 0
         assert page.locator('.contract-gpr-track rect[fill="#E06666"]').count() == 0
         assert page.locator('.contract-gpr-track rect[fill="#D9D9D9"]').count()+page.locator('.contract-gpr-track rect[fill="#E4DFEC"]').count() == 2
