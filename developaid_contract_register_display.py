@@ -49,9 +49,9 @@ def _day(value):
         return None
 
 
-def _ratio(value, completed, planned):
+def _ratio(value, completed, planned, *, nonnegative=True):
     return (_number(value) is not None and _number(completed) is not None
-            and _number(planned) is not None and planned > 0 and completed >= 0
+            and _number(planned) is not None and planned > 0 and (not nonnegative or completed >= 0)
             and math.isclose(value, completed/planned, rel_tol=1e-9, abs_tol=1e-9))
 
 
@@ -66,6 +66,8 @@ def qualified_statements(row, cut):
         sha, sheet, year = source.get('file_sha256') or source.get('sha256'), source.get('sheet'), value.get('period_year')
         if (value.get('amount_scope') != 'statement' or value.get('future_periods_excluded') is not False
                 or value.get('monetary_comparable') is not True
+                or not _compatible(_basis(value.get('planned_amount_basis')),
+                                   _basis(value.get('completed_amount_basis')))
                 or not (value.get('financial_complete') is True
                         or value.get('financial_complete') is None and value.get('source_complete') is True)
                 or not _ratio(value.get('completion_ratio'), value.get('completed'), value.get('planned'))
@@ -98,17 +100,24 @@ def completion(row, cut):
         return {**empty, 'why': 'Выбранные источники изменились. Подтвердите актуальный выбор источников.'}
     first, second = _basis(row.get('amount_basis')), _basis(row.get('completed_basis'))
     direct = row.get('completion_ratio')
-    if not stale and row.get('monetary_comparable') is True and _compatible(first, second) and _ratio(direct, row.get('completed'), row.get('amount')):
-        provisional = 'unspecified' in (first, second)
+    if not stale and row.get('monetary_comparable') is True and _compatible(first, second) and _ratio(direct, row.get('completed'), row.get('amount'), nonnegative=False):
+        negative = direct < 0
+        provisional = not negative and 'unspecified' in (first, second)
         return {'state': 'provisional' if provisional else 'known', 'ratio': direct, 'scope': 'contract',
                 'planned': row['amount'], 'completed': row['completed'],
                 'basis_label': 'денежное закрытие от полной цены договора',
-                'caveat': 'Предварительно: НДС не сверён. Показатель не используется в финансовых расчётах.' if provisional else '', 'why': ''}
+                'reference_label': ('Корректировка по КС: отрицательное закрытие; требуется сверка.'
+                    + (' НДС не сверён.' if 'unspecified' in (first, second) else '')) if negative else '',
+                'caveat': 'Отрицательный подтверждённый итог сохранён как корректировка; это не отрицательная физическая готовность.' if negative else
+                    'Предварительно: НДС не сверён. Показатель не используется в финансовых расчётах.' if provisional else '', 'why': ''}
     for key, scope, label in (('progress', 'contract', 'по сводной КС-2'),
                               ('summary_progress', 'contract', 'по сводной КС-2'),
                               ('statement_progress', 'statement', 'по сопоставленным ведомостям')):
         value = row.get(key) or {}
-        if not stale and value.get('state') == 'known' and _ratio(value.get('ratio'), value.get('completed'), value.get('planned')):
+        if (not stale and value.get('state') == 'known'
+                and _compatible(_basis(value.get('planned_amount_basis')),
+                                _basis(value.get('completed_amount_basis')))
+                and _ratio(value.get('ratio'), value.get('completed'), value.get('planned'))):
             value_scope = 'statement' if value.get('basis') in {'statement', 'statement_union'} else scope
             if value_scope == 'contract':
                 if not _compatible(first, second):
@@ -138,7 +147,7 @@ def completion(row, cut):
     history = row.get('detail_history') or {}
     price = row.get('amount_documents') or {}
     if (not stale and amount is not None and amount > 0 and actual is not None and actual >= 0
-            and first in _BASES and second in _BASES and 'unspecified' in (first, second)
+            and _compatible(first, second) and 'unspecified' in (first, second)
             and (not price or price.get('state') == 'known')
             and history.get('state') != 'unknown' and not (problems & _UNSAFE)
             and _number(actual/amount) is not None):
