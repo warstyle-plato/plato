@@ -4,7 +4,7 @@ import datetime as dt
 
 import pytest
 
-from market_search import sales_dialogue as dialogue, sales_followups as follow
+from market_search import sales_dialogue as dialogue, sales_followups as follow, sales_questions as questions, sales_store as store
 from test_sales_followups import STAMP, answer, native, setup
 
 
@@ -196,4 +196,90 @@ def test_native_failed_raw_save_never_queues_thanks(native, monkeypatch):
     core._telegram_group_message(msg["chat"], msg)
     assert not any(k.startswith("answer:") for k in follow.load(where, "Продажи")["deliveries"])
     assert not next(iter(dialogue.load(where, "Продажи")["batches"].values()))["replies"]
+    assert not sent
+
+
+def legacy_parking_batch(where, scope):
+    rows = [dict(contract=f"ДДУ №{number}М{suffix}/ГР", signed="2026-11-16", product="Машиноместо",
+                 unit="", amount=1000, area=1, escrow_paid=0, escrow_observed=True)
+            for number, suffix in (("0009", ""), ("0009", "-1"), ("0010", ""))]
+    store.save(where, "Продажи", {"contracting": {"rows": rows}}, "synthetic-parking.xlsx")
+    # This reproduces a previously delivered message, before uncertainty
+    # clarifications were introduced. Its three original legal rows stay separate.
+    items = [{"key": questions.money_key(row), "kind": "money", "expected_event": "payment",
+              "subject": {k:row[k] for k in ("contract", "signed", "product", "unit")},
+              "baseline": {"escrow_paid": 0}, "text": f"{row['contract']}: когда ждать оплату?"}
+             for row in rows]
+    bid = dialogue.prepare(where, "Продажи", scope["chat_id"], items, "2026-11-23")
+    dialogue.delivered(where, "Продажи", scope["chat_id"], bid, 600)
+    return dialogue.load(where, "Продажи")["batches"][bid]
+
+
+PARKING_REPLY = ("Добрый вечер\n1. 0009 мм зарегистрировано, ожидаем оплату 03.12.26\n"
+                 "2. Мм009-1 не зарегистрировано ещё\n3.0010зарегистрировано ожидаем\n03.12.26")
+
+
+def test_short_parking_references_only_invite_reply_and_preserve_three_legal_rows(tmp_path):
+    scope, _, _, _ = setup(tmp_path)
+    batch = legacy_parking_batch(tmp_path, scope)
+    before = copy.deepcopy(store.load(tmp_path, "Продажи"))
+    assert answer(tmp_path, scope, batch, text=PARKING_REPLY, mid=700, candidate=True)["candidate"]
+    data = follow.load(tmp_path, "Продажи")
+    assert not data["events"] and not data["ingestions"]
+    notice, = data["deliveries"].values()
+    assert "Спасибо за пояснение" in notice["text"] and "не связано" in notice["text"]
+    assert "Reply" in notice["text"] and "принят" not in notice["text"]
+    assert len(batch["questions"]) == 3 and len(store.load(tmp_path, "Продажи")["sources"]["contracting"]["data"]["rows"]) == 3
+    assert store.load(tmp_path, "Продажи") == before
+    assert not dialogue.load(tmp_path, "Продажи")["batches"][notice["id"].removeprefix("candidate:")]["replies"]
+    assert answer(tmp_path, scope, batch, text=PARKING_REPLY, mid=701, candidate=True)["candidate"]
+    assert len(follow.load(tmp_path, "Продажи")["deliveries"]) == 1
+
+
+def test_short_parking_suffix_is_exact_and_namespace_conflict_remains_ambiguous(tmp_path):
+    scope, _, _, _ = setup(tmp_path)
+    batch = legacy_parking_batch(tmp_path, scope)
+    one, version, ten = batch["questions"]
+    assert follow._explicit_question("ММ009-1 не зарегистрировано", version, batch["questions"])
+    assert follow._explicit_question("0009-1 мм зарегистрировано", version, batch["questions"])
+    assert not follow._explicit_question("ММ009-1 не зарегистрировано", one, batch["questions"])
+    assert not follow._explicit_question("ММ009 зарегистрировано", version, batch["questions"])
+    assert follow._explicit_question("0010зарегистрировано", ten, batch["questions"])
+    for invalid in ("ММ009-2", "ММ009-1-2", "ММ009 -1", "A0009 мм", "ММ03.12.26", "03.12.26"):
+        assert not follow._explicit_question(invalid, one, batch["questions"])
+    other = dict(one, subject=dict(one["subject"], contract="ДДУ №0009М/ТЕСТ"))
+    assert not follow._explicit_question("ММ009 зарегистрировано", one, [one, other])
+    assert not answer(tmp_path, scope, batch,
+        text=PARKING_REPLY.replace("0009 мм", "0009-1 мм"), mid=702, candidate=True)["candidate"]
+
+
+def test_native_plain_parking_answer_gets_one_guarded_truthful_hint(native, monkeypatch):
+    main, core, where, scope, sent = native
+    legacy_parking_batch(where, scope)
+    before = copy.deepcopy(store.load(where, "Продажи"))
+    msg = {"chat": {"id": scope["chat_id"], "type": "supergroup"}, "from": {"id": 4242},
+           "message_id": 700, "date": STAMP, "text": PARKING_REPLY}
+    core._telegram_group_message(msg["chat"], msg)
+    assert not sent and not follow.load(where, "Продажи")["events"]
+    monkeypatch.setattr(follow, "_now", lambda value=None: dt.datetime.fromtimestamp(STAMP, follow.MOSCOW))
+    main._deliver_sales_followups()
+    assert len(sent) == 1 and "Спасибо за пояснение" in sent[0][1]
+    assert "не связано" in sent[0][1] and "принят" not in sent[0][1]
+    core._telegram_group_message(msg["chat"], dict(msg, message_id=701))
+    main._deliver_sales_followups()
+    assert len(sent) == 1 and store.load(where, "Продажи") == before
+
+
+def test_native_ack_queue_failure_does_not_claim_that_saved_raw_reply_was_lost(native, monkeypatch):
+    _, core, where, scope, sent = native
+    batch = next(iter(dialogue.load(where, "Продажи")["batches"].values()))
+    monkeypatch.setattr(follow, "acknowledge", lambda *a, **kw: (_ for _ in ()).throw(OSError("synthetic outbox full")))
+    result = core.internal_monitor_sales_chat(core.SalesChatRequest(
+        chat_id=scope["chat_id"], action="reply", message_id=101, reply_to_id=100,
+        reply_text=batch["text"], reply_from_id=123, reply_is_bot=True, text="1. ожидаем оплату 03.12.26",
+        author_id=4242, author="Менеджер", telegram_date=STAMP,
+        sign=core._web_login_sign("monitor-sales", scope["chat_id"])))
+    assert result["reply_saved"] is True and "synthetic outbox full" in result["followup_error"]
+    assert len(next(iter(dialogue.load(where, "Продажи")["batches"].values()))["replies"]) == 1
+    assert not any(key.startswith("answer:") for key in follow.load(where, "Продажи")["deliveries"])
     assert not sent

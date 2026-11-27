@@ -22,6 +22,12 @@ from . import sales_dialogue, sales_questions, sales_store
 MOSCOW = dt.timezone(dt.timedelta(hours=3))
 _POINT = re.compile(r"(?m)^\s*(\d+)[.)](?:(?!\d)|(?=\d{3,}(?:зарегистрировали|зарегистрировано)\b))[ \t]*", re.I)
 _DATE = re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})(?:\.(\d{4}|\d{2}))?(?!\w|\.\d)")
+_PARKING_NUMBER = r"(\d{1,6})(-[1-9]\d?)?"
+_PARKING_HINTS = (
+    re.compile(r"(?<![\w./-])[МM]\.?\s*[МM]\.?\s*№?\s*" + _PARKING_NUMBER + r"(?![\w./-]|\s*-)", re.I),
+    re.compile(r"(?<![\w./-])" + _PARKING_NUMBER + r"\s*[МM]\.?\s*[МM]\.?(?![\w/-])", re.I),
+    re.compile(r"(?<![\w./-])(\d{3,6})(-[1-9]\d?)?(?=зарегистрировали\b|зарегистрировано\b)", re.I),
+)
 
 
 def digest(value):
@@ -272,9 +278,33 @@ def _explicit(text, subject):
     return bool(contract and len(contract) >= 4 and contract in " ".join(text.casefold().split()))
 
 
-def _explicit_question(text, question):
-    if question.get("kind") == "money":
-        return _explicit(text, question.get("subject") or {})
+def _subjects(question):
+    if question.get("kind") == "contract_identity":
+        return [subject for subject in question.get("subjects") or [] if isinstance(subject, dict)]
+    return [question["subject"]] if isinstance(question.get("subject"), dict) else []
+
+
+def _parking_hint(text, question, context):
+    references = {(int(hit[1]), hit[2] or "") for pattern in _PARKING_HINTS for hit in pattern.finditer(text)
+                  if int(hit[1]) > 0}
+    if len(references) != 1:
+        return False
+    reference, = references
+    matches = set()
+    for item in context:
+        for subject in _subjects(item):
+            legal = sales_questions.parking_contract_id(subject)
+            if legal and (int(legal[0]), legal[2]) == reference:
+                matches.add(digest(identity(subject)))
+    # A shortened number is only a hint to one legal row in this message.
+    # Its version suffix and every original financial identity remain intact.
+    return len(matches) == 1 and any(digest(identity(subject)) in matches for subject in _subjects(question))
+
+
+def _explicit_question(text, question, context=()):
+    if question.get("kind") in ("money", "contract_identity"):
+        return (any(_explicit(text, subject) for subject in _subjects(question))
+                or _parking_hint(text, question, context or [question]))
     if question.get("kind") == "dropped":
         # This is the existing canonical booking key, not an identity guessed
         # from the question's prose. It only permits a Reply invitation.
@@ -321,9 +351,10 @@ def ingest(where, project, scope, *, message_id, reply_to_id, quoted, text, auth
                 continue
             if candidate:
                 parts = _parts(text, len(batch["questions"]))
+                resolved = [resolve_question(question, contracts) for question in batch["questions"]]
                 if (batch.get("message_id") and parts and all(
                         (data["events"].get(_event_id(scope, batch["questions"][n-1]["key"])) or {}).get("state") not in ("resolved", "cancelled", "answered")
-                        and _explicit_question(part, resolve_question(batch["questions"][n-1], contracts))
+                        and _explicit_question(part, resolved[n-1], resolved)
                         for n, part in parts.items())):
                     matching.append((bid, batch))
             elif (batch.get("message_id") == reply_to_id or
