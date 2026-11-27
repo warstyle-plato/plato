@@ -23,10 +23,13 @@ MOSCOW = dt.timezone(dt.timedelta(hours=3))
 _POINT = re.compile(r"(?m)^\s*(\d+)[.)](?:(?!\d)|(?=\d{3,}(?:зарегистрировали|зарегистрировано)\b))[ \t]*", re.I)
 _DATE = re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})(?:\.(\d{4}|\d{2}))?(?!\w|\.\d)")
 _PARKING_NUMBER = r"(\d{1,6})(-[1-9]\d?)?"
+_PARKING_EDGE = r"[\w./\-\u2010-\u2015\u2212]"
+_PARKING_START = r"(?<!" + _PARKING_EDGE + ")"
+_PARKING_END = r"(?!" + _PARKING_EDGE + r"|\s*[-\u2010-\u2015\u2212])"
 _PARKING_HINTS = (
-    re.compile(r"(?<![\w./-])[МM]\.?\s*[МM]\.?\s*№?\s*" + _PARKING_NUMBER + r"(?![\w./-]|\s*-)", re.I),
-    re.compile(r"(?<![\w./-])" + _PARKING_NUMBER + r"\s*[МM]\.?\s*[МM]\.?(?![\w/-])", re.I),
-    re.compile(r"(?<![\w./-])(\d{3,6})(-[1-9]\d?)?(?=зарегистрировали\b|зарегистрировано\b)", re.I),
+    re.compile(_PARKING_START + r"[МM]\.?\s*[МM]\.?\s*№?\s*" + _PARKING_NUMBER + _PARKING_END, re.I),
+    re.compile(_PARKING_START + _PARKING_NUMBER + r"\s*[МM]\.?\s*[МM]\.?" + _PARKING_END, re.I),
+    re.compile(_PARKING_START + r"(\d{3,6})(-[1-9]\d?)?(?=зарегистрировали\b|зарегистрировано\b)", re.I),
 )
 
 

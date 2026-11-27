@@ -245,7 +245,9 @@ def test_short_parking_suffix_is_exact_and_namespace_conflict_remains_ambiguous(
     assert not follow._explicit_question("ММ009-1 не зарегистрировано", one, batch["questions"])
     assert not follow._explicit_question("ММ009 зарегистрировано", version, batch["questions"])
     assert follow._explicit_question("0010зарегистрировано", ten, batch["questions"])
-    for invalid in ("ММ009-2", "ММ009-1-2", "ММ009 -1", "A0009 мм", "ММ03.12.26", "03.12.26"):
+    for invalid in ("ММ009-2", "ММ009-1-2", "ММ009 -1", "0009 мм -1", "0009 мм.1",
+                    "ММ009–1", "0009 мм –1", "0009–1 мм", "ММ009—1", "0009 мм −1",
+                    "A0009 мм", "ММ03.12.26", "03.12.26"):
         assert not follow._explicit_question(invalid, one, batch["questions"])
     other = dict(one, subject=dict(one["subject"], contract="ДДУ №0009М/ТЕСТ"))
     assert not follow._explicit_question("ММ009 зарегистрировано", one, [one, other])
