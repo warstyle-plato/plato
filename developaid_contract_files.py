@@ -337,6 +337,8 @@ def _current(folder: Path, sha: str) -> dict:
 
 def _reread(folder: Path, sha: str, record: dict, verified_bytes: bytes | None = None,
             price_provenance: dict | None = None, expected_metadata_sha256: str | None = None) -> dict:
+    import developaid_contract_ownership as ownership
+    ownership.require_unpinned_refresh(folder.name)
     path, pdf = folder / f"{sha}.json", folder / f"{sha}.pdf"
     if not pdf.exists():
         record.setdefault("warnings", []).insert(

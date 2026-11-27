@@ -72,6 +72,13 @@ def is_raw_history():
     return _RAW_HISTORY.get()
 
 
+def require_unpinned_refresh(raw_id):
+    """A late lazy reader upgrade cannot write through an existing pin."""
+    context = _CONTEXT.get()
+    if context is not None and context.pairs.get(raw_id) in context.binding_pins:
+        raise OwnershipProblem('Исходные привязки изменились после проверки документов. Обновите реестр.')
+
+
 class ReadContext:
     def __init__(self, project, cut):
         import developaid_contract_identity_store as store
@@ -119,6 +126,11 @@ class ReadContext:
         """One aggregate metadata budget for initial, nested and final seals."""
         import developaid_contract_identity as identity
         found = identity.metadata_inventory(self.project, list(pair), correction=pair in self.corrections)
+        self._charge_inventory(found)
+        return found
+
+    def _charge_inventory(self, found):
+        import developaid_contract_identity as identity
         self.parse_refresh_budget['metadata_files'] += found['metadata_files_read']
         self.parse_refresh_budget['metadata_bytes'] += found['metadata_bytes_read']
         self.parse_refresh_budget['files'] += found.get('price_source_files_read', 0)
@@ -129,7 +141,6 @@ class ReadContext:
                 self.parse_refresh_budget['files'] > files.MAX_PARSE_REFRESH_FILES or
                 self.parse_refresh_budget['bytes'] > files.MAX_PARSE_REFRESH_BYTES):
             raise OwnershipProblem('Общий объём метаданных уточнений превышает предел одной сборки.')
-        return found
 
     def capture(self, composition):
         if not self.present:
@@ -140,6 +151,12 @@ class ReadContext:
         relevant = {self.pairs[identifier] for identifier in identifiers if identifier in self.pairs}
         if len(relevant) > MAX_RELEVANT_PAIRS:
             raise OwnershipProblem('Слишком много уточнений реквизитов для одной ограниченной сборки. Реестр не собран частично.')
+        if is_raw_history() and relevant <= self.binding_pins.keys():
+            # Raw history does not apply ownership or consume bindings. The
+            # outer read already pinned these groups and freshly seals them
+            # on exit; repeating that seal for every archive spends the
+            # aggregate IO budget without proving an additional result.
+            return
         active_passes = len(relevant & self.active)
         if relevant:
             import developaid_contract_identity as identity
@@ -253,6 +270,11 @@ class ReadContext:
         except identity.IdentityProblem:
             resolved = {'status':'source_conflict', 'logical_id':None,
                         'member_ids':list(pair), 'reason':'Сохранённые версии уточнения не подтверждены.'}
+        bindings = resolved.get('bindings')
+        if bindings is not None:
+            # resolve already performed a fresh native inventory. Charge and
+            # compare that exact proof instead of reading the group twice.
+            self._charge_inventory(bindings)
         if sorted(resolved.get('member_ids') or []) != list(pair):
             resolved = {'status':'source_conflict', 'logical_id':None,
                         'member_ids':list(pair), 'reason':'Состав уточнения не совпал с исходными карточками.'}
@@ -267,7 +289,7 @@ class ReadContext:
                     resolved = dict(resolved,status='source_conflict',logical_id=None,
                                     reason='Используемая исходная версия не совпала с подтверждённым уточнением.')
                     break
-            if self.binding_pins[pair] != store.digest(self._binding_inventory(pair)):
+            if self.binding_pins[pair] != store.digest(bindings):
                 raise OwnershipProblem('Исходные привязки изменились во время сборки. Обновите реестр.')
         self.cache[pair] = resolved
         return resolved
