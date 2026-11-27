@@ -109,8 +109,8 @@ def test_the_questions_name_what_does_not_add_up():
     assert ("Договор на корп 1 кв.13 от 09.10 (42,2 м², 36,7 млн ₽): на эскроу поступило "
             "0,5 млн ₽ из 36,7 млн ₽. Подскажите, когда ждать оплату?") in texts
     assert not any("кв.38" in t or "кв.70" in t for t in texts if "эскроу" in t)
-    assert ("Квартира № 20 (башня Гармония, 90,2 м²) была в списке броней с 25.10, а с 01.11 её "
-            "там нет, и договора на неё в выгрузке на 02.11 тоже нет. Бронь снята или договор "
+    assert ("Квартира № 20 (башня Гармония, 90,2 м²): в сообщении от 30.10.2026 была в списке броней, "
+            "а в сообщении от 01.11.2026 её уже нет, и договора на неё в выгрузке на 02.11 тоже нет. Бронь снята или договор "
             "ещё оформляется?") in texts
     price = next(t for t in texts if "кв.5 " in t)
     assert price.startswith("Договор на корп 3 кв.5 от 20.10: цена метра 600 тыс. ₽ — на ")
@@ -127,8 +127,8 @@ def test_an_old_export_does_not_ask_about_money_or_claim_no_contract():
                                       "2026-11-02")
     assert {item["kind"] for item in found} <= {"price", "terms", "dropped"}
     [dropped] = [item for item in found if item["kind"] == "dropped"]
-    assert dropped["text"] == ("Квартира № 20 (башня Гармония, 90,2 м²) была в списке броней "
-                               "с 25.10, а с 01.11 её там нет. Договор подписан или бронь снята?")
+    assert dropped["text"] == ("Квартира № 20 (башня Гармония, 90,2 м²): в сообщении от 30.10.2026 была в списке броней, "
+                               "а в сообщении от 01.11.2026 её уже нет. Договор подписан или бронь снята?")
     fresh = sales_questions.questions(_chat(), {"rows": ROWS}, UPLOADED, "2026-11-02")
     assert [item["key"] for item in fresh if item["kind"] == "dropped"] == [dropped["key"]]
 
@@ -160,8 +160,8 @@ def test_a_booking_gone_today_is_asked_about_today(uploaded):
     found = sales_questions.questions(_kutuzov(KUTUZOV_LOTS[1:]), contracts, uploaded,
                                       "2026-11-10")
     assert [item["text"] for item in found if item["kind"] == "dropped"] == [
-        "Квартира № 20 (башня Гармония, 90,2 м²) была в списке броней с 09.11, а с 10.11 её там "
-        "нет; в отчёте стояла дата сделки 10.11. Договор подписан или бронь снята?"]
+        "Квартира № 20 (башня Гармония, 90,2 м²): в сообщении от 09.11.2026 была в списке броней, "
+        "а в сообщении от 10.11.2026 её уже нет; в отчёте стояла дата сделки 10.11. Договор подписан или бронь снята?"]
 
 
 def test_no_booking_question_when_nothing_left_or_the_contract_is_seen():

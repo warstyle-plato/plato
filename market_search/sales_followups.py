@@ -20,8 +20,17 @@ import uuid
 from . import sales_dialogue, sales_questions, sales_store
 
 MOSCOW = dt.timezone(dt.timedelta(hours=3))
-_POINT = re.compile(r"(?m)^\s*(\d+)[.)](?!\d)[ \t]*")
-_DATE = re.compile(r"(?<!\w)(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?(?!\w|\.\d)")
+_POINT = re.compile(r"(?m)^\s*(\d+)[.)](?:(?!\d)|(?=\d{3,}(?:зарегистрировали|зарегистрировано)\b))[ \t]*", re.I)
+_DATE = re.compile(r"(?<![\d.])(\d{1,2})\.(\d{1,2})(?:\.(\d{4}|\d{2}))?(?!\w|\.\d)")
+_PARKING_NUMBER = r"(\d{1,6})(-[1-9]\d?)?"
+_PARKING_EDGE = r"[\w./\-\u2010-\u2015\u2212]"
+_PARKING_START = r"(?<!" + _PARKING_EDGE + ")"
+_PARKING_END = r"(?!" + _PARKING_EDGE + r"|\s*[-\u2010-\u2015\u2212])"
+_PARKING_HINTS = (
+    re.compile(_PARKING_START + r"[МM]\.?\s*[МM]\.?\s*№?\s*" + _PARKING_NUMBER + _PARKING_END, re.I),
+    re.compile(_PARKING_START + _PARKING_NUMBER + r"\s*[МM]\.?\s*[МM]\.?" + _PARKING_END, re.I),
+    re.compile(_PARKING_START + r"(\d{3,6})(-[1-9]\d?)?(?=зарегистрировали\b|зарегистрировано\b)", re.I),
+)
 
 
 def digest(value):
@@ -54,7 +63,9 @@ def _event_id(scope, question_key):
 
 
 def _calendar_token(text, start, end):
-    return not (re.match(r"\s*(?:млн\b|тыс\b|руб\w*|₽|%|м[²2](?!\w)|кв\.?\s*м\b|га\b|кг\b|шт\b)", text[end:], re.I)
+    attached = start > 0 and re.match(r"\w", text[start - 1])
+    return not (attached and not re.search(r"\b(?:ожидаем|жд[её]м)$", text[:start], re.I)
+                or re.match(r"\s*(?:млн\b|тыс\b|руб\w*|₽|%|м[²2](?!\w)|кв\.?\s*м\b|га\b|кг\b|шт\b)", text[end:], re.I)
                 or re.search(r"(?:№|номер|идентификатор|id|дду|договор)\s*[-:]?\s*$", text[:start], re.I))
 
 
@@ -187,10 +198,20 @@ def extract(text, telegram_date, expected_event=""):
             "payment" if re.search(r"оплат|плат[её]ж|деньг|поступ", text, re.I) else "explanation")
     if kind == "explanation" and expected_event in ("payment", "registration", "resigning"):
         kind = expected_event
+    # The source may write a lot number directly before the registration verb.
+    registered = (re.search(r"(?<![^\W\d])(?:зарегистрировали|зарегистрировано)\b", text, re.I)
+                  and not re.search(r"\bне\s+(?:зарегистрировали|зарегистрировано)\b", text, re.I))
+    expectation = re.search(r"\b(?:ожидаем|ожидается|ожидают|жд[её]м|ждать)(?=\b|\d{1,2}\.)", text, re.I)
+    payment = re.search(r"оплат|плат[её]ж|деньг|поступ", text, re.I)
+    if expectation and (payment or registered and expected_event == "payment"):
+        kind = "payment"
     out = {"quote": text, "event_kind": kind, "event_date": None, "due_at": None,
            "date_basis": "", "reason": "Уточните срок ожидаемого события."}
-    claimed = (re.search(r"\b(?:оплатили|оплачено|зарегистрировали|зарегистрировано|поступили)\b", text, re.I)
-               and not re.search(r"\bне\s+(?:оплатили|оплачено|зарегистрировали|зарегистрировано|поступили)\b", text, re.I))
+    if registered and kind == "payment":
+        out["registration_claim"] = "unverified"
+    claimed = (registered if kind == "registration" else
+               re.search(r"\b(?:оплатили|оплачено|поступили)\b", text, re.I)
+               and not re.search(r"\bне\s+(?:оплатили|оплачено|поступили)\b", text, re.I))
     try:
         anchor = dt.datetime.fromtimestamp(int(telegram_date), MOSCOW).date()
         if int(telegram_date) <= 0:
@@ -207,7 +228,9 @@ def extract(text, telegram_date, expected_event=""):
         for hit in _DATE.finditer(text):
             if not _calendar_token(text, hit.start(), hit.end()):
                 return out
-            dates.append((dt.date(int(hit[3]) if hit[3] else anchor.year, int(hit[2]), int(hit[1])), hit[0]))
+            year = (anchor.year // 100 * 100 + int(hit[3]) if hit[3] and len(hit[3]) == 2
+                    else int(hit[3]) if hit[3] else anchor.year)
+            dates.append((dt.date(year, int(hit[2]), int(hit[1])), hit[0]))
         for hit in re.finditer(r"(?<!\w)\d{4}-\d{2}-\d{2}(?!\w)", text):
             if not _calendar_token(text, hit.start(), hit.end()):
                 return out
@@ -244,7 +267,9 @@ def _parts(text, count):
 
 
 def looks_like_answer(text):
-    return bool(_POINT.search(text) and re.search(r"ожида|переподпис|регистр|оплат|плат[её]ж", text, re.I))
+    return bool(_POINT.search(text) and re.search(r"ожида|переподпис|регистр|оплат|плат[её]ж", text, re.I)
+                or re.search(r"\bкв(?:артира)?\.?\s*№?\s*\d+", text, re.I)
+                and re.search(r"брон|договор|сделк", text, re.I))
 
 
 def _explicit(text, subject):
@@ -254,6 +279,42 @@ def _explicit(text, subject):
         return True
     contract = target["contract"].split(" от ")[0].removeprefix("дду ").strip()
     return bool(contract and len(contract) >= 4 and contract in " ".join(text.casefold().split()))
+
+
+def _subjects(question):
+    if question.get("kind") == "contract_identity":
+        return [subject for subject in question.get("subjects") or [] if isinstance(subject, dict)]
+    return [question["subject"]] if isinstance(question.get("subject"), dict) else []
+
+
+def _parking_hint(text, question, context):
+    references = {(int(hit[1]), hit[2] or "") for pattern in _PARKING_HINTS for hit in pattern.finditer(text)
+                  if int(hit[1]) > 0}
+    if len(references) != 1:
+        return False
+    reference, = references
+    matches = set()
+    for item in context:
+        for subject in _subjects(item):
+            legal = sales_questions.parking_contract_id(subject)
+            if legal and (int(legal[0]), legal[2]) == reference:
+                matches.add(digest(identity(subject)))
+    # A shortened number is only a hint to one legal row in this message.
+    # Its version suffix and every original financial identity remain intact.
+    return len(matches) == 1 and any(digest(identity(subject)) in matches for subject in _subjects(question))
+
+
+def _explicit_question(text, question, context=()):
+    if question.get("kind") in ("money", "contract_identity"):
+        return (any(_explicit(text, subject) for subject in _subjects(question))
+                or _parking_hint(text, question, context or [question]))
+    if question.get("kind") == "dropped":
+        # This is the existing canonical booking key, not an identity guessed
+        # from the question's prose. It only permits a Reply invitation.
+        hit = re.fullmatch(r"dropped:.*:(\d+):\d{4}-\d{2}-\d{2}", str(question.get("key") or ""))
+        return bool(hit and re.search(r"\bкв(?:артира)?\.?\s*№?\s*0*" +
+                                      str(int(hit[1])) + r"(?!\d)", text, re.I))
+    return False
 
 
 def _enqueue(where, project, data, scope, key, text, question=None, trusted_markup=False):
@@ -293,10 +354,10 @@ def ingest(where, project, scope, *, message_id, reply_to_id, quoted, text, auth
                 continue
             if candidate:
                 parts = _parts(text, len(batch["questions"]))
+                resolved = [resolve_question(question, contracts) for question in batch["questions"]]
                 if (batch.get("message_id") and parts and all(
-                        batch["questions"][n-1].get("kind") == "money"
-                        and (data["events"].get(_event_id(scope, batch["questions"][n-1]["key"])) or {}).get("state") not in ("resolved", "cancelled", "answered")
-                        and _explicit(part, resolve_question(batch["questions"][n-1], contracts).get("subject") or {})
+                        (data["events"].get(_event_id(scope, batch["questions"][n-1]["key"])) or {}).get("state") not in ("resolved", "cancelled", "answered")
+                        and _explicit_question(part, resolved[n-1], resolved)
                         for n, part in parts.items())):
                     matching.append((bid, batch))
             elif (batch.get("message_id") == reply_to_id or
@@ -314,7 +375,7 @@ def ingest(where, project, scope, *, message_id, reply_to_id, quoted, text, auth
                        if chat.startswith("-100") else f"сообщение Платона № {message} от {batch.get('asked_at', '')}")
             # One invitation per original batch, not per repeated ordinary message.
             _enqueue(where, project, data, scope, f"candidate:{bid}",
-                     f"Пожалуйста, ответьте через Reply на {context}, чтобы я связал пояснения с вопросами. "
+                     f"Спасибо за пояснение. Пожалуйста, нажмите «Ответить» на {context}, чтобы я связал пояснения с вопросами. "
                      "Это сообщение пока не связано с вопросами и сроки контроля не сохранены.", trusted_markup=True)
             _save(where, project, data)
             return {"events": 0, "candidate": True}
@@ -331,6 +392,9 @@ def ingest(where, project, scope, *, message_id, reply_to_id, quoted, text, auth
         count = 0
         for n, part in parts.items():
             question = resolve_question(batch["questions"][n - 1], contracts)
+            if question.get("kind") == "contract_identity":
+                question = {key:value for key,value in question.items()
+                            if key not in ("subject", "baseline", "expected_event")}
             subject = question.get("subject") or {}
             baseline = _number((question.get("baseline") or {}).get("escrow_paid"))
             if question.get("baseline") and baseline is None:
@@ -362,7 +426,14 @@ def ingest(where, project, scope, *, message_id, reply_to_id, quoted, text, auth
             if previous:
                 event["history"] = event["history"] + [{k:v for k,v in previous.items() if k != "history"}]
             timeline = bool(event["event_date"] or event["event_kind"] in ("payment", "registration", "resigning"))
-            if question.get("kind") != "money" and not timeline:
+            if question.get("kind") == "contract_identity":
+                # Several legal rows are awaiting explanation, not one chosen
+                # payment target. A date in that explanation cannot pick a row.
+                event.update(state="answered", event_kind="explanation", event_date=None,
+                             due_at=None, reason="")
+                for key in ("claim", "event_mode", "registration_claim"):
+                    event.pop(key, None)
+            elif question.get("kind") != "money" and not timeline:
                 event["state"] = "answered"
             elif not event["due_at"] or not subject:
                 event["state"] = "waiting_identity" if not subject else "waiting_deadline"
@@ -384,6 +455,31 @@ def ingest(where, project, scope, *, message_id, reply_to_id, quoted, text, auth
             count += 1
         _save(where, project, data)
         return {"events": count, "candidate": False}
+
+
+def acknowledge(where, project, scope, *, message_id, reply_to_id, text, author_id, telegram_date):
+    """Queue one receipt only after the exact known-origin reply was saved."""
+    if (scope.get("sales_project") != project or
+            min(message_id, reply_to_id, author_id, telegram_date) <= 0 or not text.strip()):
+        return False
+    with sales_questions.lock(where, project):
+        matches = [(bid, batch) for bid, batch in sales_dialogue.load(where, project)["batches"].items()
+                   if not batch.get("legacy") and batch["chat_id"] == scope["chat_id"]
+                   and batch.get("message_id") == reply_to_id
+                   and any(reply.get("message_id") == message_id and reply.get("text") == text
+                           and reply.get("author_id") == author_id
+                           and reply.get("telegram_date") == telegram_date
+                           for reply in batch["replies"])]
+        if len(matches) != 1:
+            return False
+        data = load(where, project)
+        key = f"answer:{scope['chat_id']}:{message_id}"
+        if key in data["deliveries"]:
+            return False
+        _enqueue(where, project, data, scope, key, "Спасибо, ответ принят.")
+        data["deliveries"][key].update(answer_batch_id=matches[0][0], answer_message_id=message_id)
+        _save(where, project, data)
+        return True
 
 
 def attest(where, project, request, now=None):
