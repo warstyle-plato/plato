@@ -36,7 +36,7 @@ def source_case(*, group_volume=True):
     edition = {'sha256': 'a' * 64, 'title': 'Учебное соглашение', 'date': '2026-02-01',
                'estimates': [{'positions': positions, 'links': {'positions': proposed}, 'annex': 'Расчёт',
                               'structure': [dict(group,before_position=0)]}],
-               'estimate_sha256': 'b' * 64, 'schedule': schedule, 'schedule_sha256': 'schedule', 'start': None}
+               'estimate_sha256': 'b' * 64, 'schedule': schedule, 'schedule_sha256': 'c'*64, 'start': None}
     acts = [{'number': p['number'], 'name': p['name'], 'unit': p['unit'], 'quantity': 25.0 if i == 0 else 0.0,
              'quantity_material': 0.0, 'act_amount': 250.0 if i == 0 else 0.0,
              'unit_price': p['unit_price'], 'amount_components': {'material': 0.0},
@@ -54,8 +54,8 @@ def projected(*, group_volume=True, physical_groups=None):
     performed = fact.build([edition], planned['in_force'], found, CUT)
     measured = control.build(planned, performed, None, '', CUT)
     listed = {'control': measured, 'plan': planned, 'fact': performed,
-              'documents': [{'sha256': 'schedule', 'title': 'ГПР', 'schedule': edition['schedule']},
-                            {'sha256': 'b'*64, 'title': 'Учебная РДС', 'estimates': edition['estimates']}]}
+              'documents': [{'sha256': 'c'*64, 'title': 'ГПР', 'schedule': edition['schedule'], 'contract': {'number':'Т-1','date':'2026-02-01'}},
+                            {'sha256': 'b'*64, 'title': 'Учебная РДС', 'estimates': edition['estimates'], 'contract': {'number':'Т-1','date':'2026-02-01'}}]}
     return comparison.build(listed, CUT), listed
 
 
@@ -215,10 +215,10 @@ def test_native_card_and_excel_keep_the_original_stage_indices(width, tmp_path):
         expect(rows).to_have_count(1)
         expect(rows).to_contain_text('Остекление')
         with page.expect_download() as got:
-            page.locator('#contractComparisonExport').click()
+            page.locator('#contractGprDownload').click()
         path = tmp_path / 'selected-operation.xlsx'
         got.value.save_as(path)
-        sheet = load_workbook(path).active
+        sheet = load_workbook(path)['Выполнение']
         text = '\n'.join(str(c.value) for row in sheet for c in row if c.value is not None)
         assert [sheet.cell(row,1).value for row in range(8,12)]==['4.1.1','4.1.2','4.1.3','4.1.4']
         assert '::operation:' not in text
