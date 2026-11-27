@@ -9,6 +9,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from urllib.parse import parse_qs, quote, unquote
 
@@ -1087,6 +1088,16 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         проект.
         """
         cabinet_module.require_cabinet(request)
+        escrow_as_of = str(request.query_params.get("escrow_as_of") or "").strip()
+        if escrow_as_of:
+            try:
+                if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", escrow_as_of):
+                    raise ValueError
+                escrow_day = datetime.date.fromisoformat(escrow_as_of)
+                if escrow_day > datetime.datetime.now(ZoneInfo("Europe/Moscow")).date():
+                    raise ValueError
+            except ValueError:
+                raise HTTPException(422, "Укажите дату состояния эскроу в формате ГГГГ-ММ-ДД, не позднее сегодняшней даты.")
         data = await request.body()
         if not data:
             raise HTTPException(status_code=422, detail="Пустой файл")
@@ -1098,6 +1109,9 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             raise HTTPException(
                 status_code=422,
                 detail="Ни одного знакомого листа: " + "; ".join(notes)[:600])
+        if escrow_as_of and "contracting" in parts:
+            parts["contracting"]["as_of"] = escrow_as_of
+            parts["contracting"]["as_of_provenance"] = "uploader_declared"
         if "chessboard" in parts:
             as_of = str(request.query_params.get("as_of") or "").strip()
             if not chessboard.day(as_of) or len(as_of) != 10:

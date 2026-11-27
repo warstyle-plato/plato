@@ -29,34 +29,7 @@ PROJECT, CUT, CONTRACT, TICKET = "Учебный проект", "2026-03-05", "c
 KEY, SESSION = "synthetic-export-admin", "synthetic-owner"
 
 
-def native_card(*, unknown=False, empty=False, finished=False):
-    # Reuse the existing native control fixture's exact pure data helpers;
-    # importing its full module would unnecessarily start the application.
-    module = ast.parse((ROOT / "tests/test_contract_control_reports_lag_and_forecast.py").read_bytes())
-    nodes = [n for n in module.body if isinstance(n, ast.FunctionDef) and n.name in {"_plan", "_fact"}
-             or isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "LINE" for t in n.targets)]
-    scope = {}
-    exec(compile(ast.Module(body=nodes, type_ignores=[]), "<native-pure-control-fixture>", "exec"), scope)
-    line = scope["LINE"]
-    cut = "2026-03-15" if finished else CUT
-    planned = scope["_plan"](cut, line, {**line, "code": "3.2", "name": "Работа с нулевым фактом", "volume": None})
-    planned["editions"][0].update(title="Учебная редакция", date="2026-02-01",
-                                  estimate="Расчёт.pdf", schedule="ГПР.pdf")
-    performed = (("3.1", 1000.0, [{"unit": "м3", "quantity": 20.0}], "2026-03-14", True)
-                 if finished else ("3.1", 300.0, [{"unit": "м3", "quantity": 6.0}]))
-    actual = scope["_fact"](performed, ("3.2", 0.0, []))
-    actual["source"] = "ks6a"
-    if unknown:
-        actual["note"] = "Дата выполнения не подтверждена."
-    if empty:
-        planned = {"editions": []}
-    listed = {"plan": planned, "fact": actual, "documents": [],
-              "control": control.build(planned, actual, None, "", cut)}
-    cached = {"ok": True, "pending": False, "contract_id": CONTRACT, "documents": [],
-              "comparison": comparison.build(listed, cut)}
-    cached["comparison_export"] = export.bind_snapshot(PROJECT, cut, CONTRACT, cached,
-                                                       {"contract": "Т-1", "contractor": "Учебный подрядчик"})
-    return cached
+from tests.contract_rds_fixtures import native_card
 
 
 def xlsx(cached, tokens=None, **kwargs):
@@ -66,158 +39,141 @@ def xlsx(cached, tokens=None, **kwargs):
     return export.workbook(meta, table, rows, **kwargs)
 
 
-def table(raw):
-    sheet = load_workbook(io.BytesIO(raw), data_only=False).active
-    header = next(i for i, row in enumerate(sheet.values, 1) if row[0] == "Работа / единица")
+def table(raw, *, data_only=False):
+    sheet = load_workbook(io.BytesIO(raw), data_only=data_only).active
+    header = next(i for i, row in enumerate(sheet.values, 1) if row[0] == "№")
     return sheet, header
 
 
 def test_native_known_values_zero_units_and_dates_survive_roundtrip():
     cached = native_card()
     before = copy.deepcopy(cached)
-    sheet, header = table(xlsx(cached))
-    natural, money = cached["comparison"]["lines"]
-    assert sheet.max_column == 7
-    assert [sheet.cell(header + 1, i).value for i in (2, 3, 4, 5)] == [natural[k] for k in ("contract_total", "planned", "fact", "deviation")]
-    assert "м3" in sheet.cell(header + 1, 1).value
-    assert sheet.cell(header + 1, 6).value.date() == dt.date.fromisoformat(natural["due"])
-    assert sheet.cell(header + 1, 7).value.date() == dt.date.fromisoformat(natural["forecast_finish"])
-    assert sheet.cell(header + 3, 4).value == money["fact"] == 0
-    assert sheet.cell(header + 3, 4).data_type == "n"
-    assert "₽" in sheet.cell(header + 3, 4).number_format
+    sheet, header = table(xlsx(cached), data_only=True)
+    assert len(sheet.parent.worksheets) == 1 and sheet.max_column == 16
+    first, zero = cached['rds_comparison']['rows']
+    assert [sheet.cell(header+1, i).value for i in (6,7,8,9,10,11,12,13,14)] == [10,.5,6,.3,-4,500,300,-200,2]
+    assert sheet.cell(header+1,3).value == 'м3'
+    assert sheet.cell(header+1,4).value.date() == dt.date(2026,3,1)
+    assert sheet.cell(header+1,5).value.date() == dt.date(2026,3,10)
+    assert sheet.cell(header+2,8).value == 0 and sheet.cell(header+2,8).data_type == 'n'
+    assert sheet.cell(6,14).value == 'Отставание на дату среза, дни'
+    assert sheet.cell(header+1,14).number_format.startswith('[Red]+0')
+    assert 'плюс — отставание' in sheet['N6'].comment.text
+    assert sheet.freeze_panes is None and sheet.auto_filter.ref.startswith('A6:P')
+    assert sheet.page_setup.orientation == 'landscape' and str(sheet.page_setup.paperSize) == sheet.PAPERSIZE_A3
+    assert all(cell.data_type!='e' for row in sheet for cell in row)
     assert cached == before
 
 
-def test_remaining_start_source_and_missing_data_remain_inspectable_in_excel():
+def test_remaining_start_source_and_missing_data_are_comments_not_extra_rows_or_sheets():
     cached = native_card()
-    cached['comparison']['edition'].update(start='2026-02-01', start_source={'title': 'Учебное ДС № 1'})
-    cached['comparison']['data_gaps'] = ['В карточке нет акта КС-2 № 7.']
-    cached['comparison_export'] = export.bind_snapshot(PROJECT, CUT, CONTRACT, cached, {'contract': 'Т-1'})
-    sheet, _ = table(xlsx(cached))
-    values = list(sheet.values)
-    start = next(row for row in values if row[0] == 'Начало учёта оставшихся работ')
-    assert start[1].date() == dt.date(2026, 2, 1)
-    assert any(row[0] == 'Источник начала учёта: Учебное ДС № 1' for row in values)
-    assert any(row[0] == 'В карточке нет акта КС-2 № 7.' for row in values)
-
-
-def test_unknown_and_empty_native_comparisons_are_qualified_not_zero():
-    cached = native_card(unknown=True)
+    cached['rds_comparison'].update(remaining_start='2026-02-01',remaining_source='Учебное ДС № 1',
+                                  data_gaps=['В карточке нет акта КС-2 № 7.'])
+    cached['comparison_export'] = export.bind_snapshot(PROJECT,CUT,CONTRACT,cached,{})
     sheet, header = table(xlsx(cached))
-    assert sheet.cell(header + 1, 3).value is not None  # Known plan survives.
-    assert sheet.cell(header + 1, 4).value is None
-    assert sheet.cell(header + 1, 5).value is None
-    text = "\n".join(str(c.value) for row in sheet for c in row if c.value is not None)
-    assert "Дата выполнения не подтверждена" in text and "Факт неизвестен" in text
+    assert '01.02.2026' in sheet['F6'].comment.text and 'Учебное ДС № 1' in sheet['F6'].comment.text
+    assert 'нет акта' in sheet['A3'].comment.text
+    assert sheet.max_row == header+2 and len(sheet.parent.worksheets) == 1
+
+
+def test_unknown_and_no_rds_are_not_zero_or_pseudo_estimate_rows():
+    sheet, header = table(xlsx(native_card(unknown=True)), data_only=True)
+    assert sheet.cell(header+1,6).value == 10
+    assert all(sheet.cell(header+1,i).value is None for i in (8,9,12,14,15,16))
+    assert sheet.cell(header+1,10).value is None
+    assert sheet.cell(header+1,13).value is None
+    assert 'не подтверждена' in sheet.cell(header+1,8).comment.text
     empty = native_card(empty=True)
-    sheet, header = table(xlsx(empty))
-    assert "нет действующей редакции плана" in sheet.cell(header + 1, 1).value
-    assert all(sheet.cell(header + 1, n).value is None for n in range(2, 8))
+    assert empty['comparison_export']['available'] is False
+    with pytest.raises(export.ExportProblem):
+        export.select_snapshot(empty, PROJECT, CUT, CONTRACT, '0'*64, [])
 
 
-def test_completed_period_date_and_forecast_qualification_stay_visible():
-    cached = native_card(finished=True)
-    sheet, header = table(xlsx(cached))
-    assert sheet.cell(header + 1, 7).value.date() == dt.date(2026, 3, 14)
-    assert "По периоду КС, завершено" in sheet.cell(header + 2, 7).value
-    assert "Позже срока на 4 дн." in sheet.cell(header + 2, 7).value
-    date_row = next(row for row in sheet if row[0].value == "Дата редакции")
-    assert date_row[1].value.date() == dt.date(2026, 2, 1)
-    assert any(c.value == "ГПР: ГПР.pdf" for row in sheet for c in row)
+def test_completed_row_has_signed_canonical_days_and_no_forecast_columns():
+    cached=native_card(finished=True)
+    sheet,header=table(xlsx(cached), data_only=True)
+    canonical=cached['control']['lines'][0]
+    assert sheet.cell(header+1,14).value == canonical['lag_days']-canonical['ahead_days']
+    assert sheet.cell(header+1,15).value.date() == dt.date(2026,3,14)
+    assert sheet.cell(header+1,16).value == 4
+    assert sheet.cell(header+1,14).value != 4  # Finished four days after GPR is a different metric.
+    assert not any('Прогноз' in str(cell.value) for cell in sheet[header])
 
 
 def test_tokens_bind_revision_ordinal_and_digest_even_with_duplicate_codes():
-    cached = native_card()
-    cached["comparison"]["lines"] *= 2
-    cached["comparison_export"] = export.bind_snapshot(PROJECT, CUT, CONTRACT, cached, {})
-    meta = cached["comparison_export"]
-    assert len(set(meta["row_tokens"])) == 4
-    _, _, rows = export.select_snapshot(cached, PROJECT, CUT, CONTRACT, meta["revision"], [meta["row_tokens"][2]])
-    assert rows == [cached["comparison"]["lines"][2]]
-    changed = copy.deepcopy(cached)
-    changed["comparison"]["lines"][0]["fact"] = 999
-    with pytest.raises(export.ExportProblem, match="Версия"):
-        xlsx(changed)
-    with pytest.raises(export.ExportProblem, match="строки"):
-        xlsx(cached, [meta["row_tokens"][0]] * 2)
-    with pytest.raises(export.ExportProblem, match="строки"):
-        xlsx(cached, ["0" * 64])
+    cached=native_card()
+    cached['rds_comparison']['rows'] *= 2
+    cached['comparison_export']=export.bind_snapshot(PROJECT,CUT,CONTRACT,cached,{})
+    meta=cached['comparison_export']
+    assert len(set(meta['row_tokens'])) == 4
+    _,_,rows=export.select_snapshot(cached,PROJECT,CUT,CONTRACT,meta['revision'],meta['row_tokens'])
+    assert rows == cached['rds_comparison']['rows']
+    changed=copy.deepcopy(cached);changed['rds_comparison']['rows'][0]['fact']=999
+    with pytest.raises(export.ExportProblem,match='Версия'): xlsx(changed)
+    changed=copy.deepcopy(cached);changed['fact']['rds_positions'][0]['amount']=999
+    with pytest.raises(export.ExportProblem,match='Версия'): xlsx(changed)
+    with pytest.raises(export.ExportProblem): xlsx(cached,[meta['row_tokens'][0]]*2)
+    with pytest.raises(export.ExportProblem): xlsx(cached,['0'*64])
 
 
-@pytest.mark.parametrize("field,value", [("project", "Другой"), ("cut", "2026-03-04"), ("contract_id", "b" * 64)])
-def test_snapshot_context_cannot_be_relabelled(field, value):
-    cached = native_card()
-    params = dict(project=PROJECT, cut=CUT, contract_id=CONTRACT,
-                  revision=cached["comparison_export"]["revision"], selected_tokens=[])
-    params[field] = value
-    with pytest.raises(export.ExportProblem, match="другому"):
-        export.select_snapshot(cached, **params)
+@pytest.mark.parametrize('field,value',[('project','Другой'),('cut','2026-03-04'),('contract_id','b'*64)])
+def test_snapshot_context_cannot_be_relabelled(field,value):
+    cached=native_card()
+    params=dict(project=PROJECT,cut=CUT,contract_id=CONTRACT,revision=cached['comparison_export']['revision'],selected_tokens=[])
+    params[field]=value
+    with pytest.raises(export.ExportProblem,match='другому'):export.select_snapshot(cached,**params)
 
 
-def test_selection_only_uses_server_values_and_keeps_empty_filter_explicit():
-    cached = native_card()
-    sheet, header = table(xlsx(cached, [cached["comparison_export"]["row_tokens"][1]], query="нулевым", filter="behind"))
-    assert "нулевым" in sheet.cell(header + 1, 1).value and sheet.cell(header + 1, 4).value == 0
-    sheet, header = table(xlsx(cached, [], query="нет такой работы"))
-    assert sheet.cell(header + 1, 1).value == "По выбранному фильтру работ нет."
-    meta, comparison, rows = export.select_snapshot(cached, PROJECT, CUT, CONTRACT,
-        cached["comparison_export"]["revision"], list(reversed(cached["comparison_export"]["row_tokens"])))
-    assert rows == comparison["lines"]  # Client order cannot reorder authoritative rows.
+def test_full_rds_scope_refuses_hidden_gpr_filter_or_partial_selection():
+    cached=native_card();tokens=cached['comparison_export']['row_tokens']
+    for selected in ([],tokens[:1],list(reversed(tokens))):
+        with pytest.raises(export.ExportProblem):xlsx(cached,selected)
+    with pytest.raises(export.ExportProblem):xlsx(cached,filter='behind')
+    with pytest.raises(export.ExportProblem):xlsx(cached,query='кладка')
 
 
 def test_binding_cannot_relabel_a_different_native_cut_or_contract():
-    cached = native_card()
-    assert export.bind_snapshot(PROJECT, "2026-03-04", CONTRACT, cached, {})["available"] is False
-    assert export.bind_snapshot(PROJECT, CUT, "b" * 64, cached, {})["available"] is False
+    cached=native_card()
+    assert export.bind_snapshot(PROJECT,'2026-03-04',CONTRACT,cached,{})['available'] is False
+    assert export.bind_snapshot(PROJECT,CUT,'b'*64,cached,{})['available'] is False
 
 
-@pytest.mark.parametrize("prefix", ["=HYPERLINK(\"https://invalid.example\",\"x\")", "+cmd", "-cmd", "@SUM(1,2)"])
+@pytest.mark.parametrize('prefix',['=HYPERLINK("https://invalid.example","x")','+cmd','-cmd','@SUM(1,2)'])
 def test_source_strings_remain_literal_without_formulas_macros_or_links(prefix):
-    cached = native_card()
-    cached["comparison"]["lines"][0]["name"] = prefix
-    cached["comparison_export"] = export.bind_snapshot(PROJECT, CUT, CONTRACT, cached, {"contract": prefix})
-    raw = xlsx(cached, query=prefix)
-    sheet, header = table(raw)
-    assert sheet.cell(header + 1, 1).value.startswith(prefix)
-    assert all(c.data_type != "f" for row in sheet for c in row)
+    cached=native_card();cached['rds_comparison']['rows'][0]['name']=prefix
+    cached['comparison_export']=export.bind_snapshot(PROJECT,CUT,CONTRACT,cached,{'contract':prefix})
+    raw=xlsx(cached);sheet,header=table(raw)
+    assert sheet.cell(header+1,2).value==prefix
+    assert all(cell.column in (10,13,16) for row in sheet for cell in row if cell.data_type=='f')
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-        assert not any("externalLink" in n or "vbaProject" in n for n in archive.namelist())
-        assert b"<f>" not in archive.read("xl/worksheets/sheet1.xml")
-        assert not any(b'TargetMode="External"' in archive.read(n) for n in archive.namelist() if n.endswith(".rels"))
+        assert not any('externalLink' in name or 'vbaProject' in name for name in archive.namelist())
+        assert not any(b'TargetMode="External"' in archive.read(name) for name in archive.namelist() if name.endswith('.rels'))
+        assert all(cell.column in (10,13,16) for row in sheet for cell in row if cell.data_type=='f')
 
 
-@pytest.mark.parametrize("name", ["x" * 32768, "bad\x01text"])
+@pytest.mark.parametrize('name',['x'*32768,'bad\x01text'])
 def test_unrepresentable_text_is_refused_instead_of_silently_truncated(name):
-    cached = native_card()
-    cached["comparison"]["lines"][0]["name"] = name
-    cached["comparison_export"] = export.bind_snapshot(PROJECT, CUT, CONTRACT, cached, {})
-    with pytest.raises(export.ExportProblem):
-        xlsx(cached)
+    cached=native_card();cached['rds_comparison']['rows'][0]['name']=name
+    cached['comparison_export']=export.bind_snapshot(PROJECT,CUT,CONTRACT,cached,{})
+    with pytest.raises(export.ExportProblem):xlsx(cached)
 
 
 def test_row_and_output_caps_fail_with_a_status_instead_of_an_empty_file(monkeypatch):
-    cached = native_card()
-    cached["comparison"]["lines"] *= export.MAX_ROWS
-    meta = export.bind_snapshot(PROJECT, CUT, CONTRACT, cached, {})
-    assert meta["available"] is False and meta["detail"]
-    monkeypatch.setattr(export, "MAX_XLSX_BYTES", 1)
-    with pytest.raises(export.ExportProblem, match="Файл слишком большой"):
-        xlsx(native_card())
+    cached=native_card();cached['rds_comparison']['rows']*=export.MAX_ROWS
+    assert export.bind_snapshot(PROJECT,CUT,CONTRACT,cached,{})['available'] is False
+    monkeypatch.setattr(export,'MAX_XLSX_BYTES',1)
+    with pytest.raises(export.ExportProblem,match='Файл слишком большой'):xlsx(native_card())
 
 
 def test_writer_does_not_rescan_the_entire_sheet_for_each_work(monkeypatch):
     from openpyxl.worksheet.worksheet import Worksheet
-    cached = native_card()
-    cached["comparison"]["lines"] *= 100
-    cached["comparison_export"] = export.bind_snapshot(PROJECT, CUT, CONTRACT, cached, {})
-    original = Worksheet.max_row.fget
-    scans = []
+    cached=native_card();cached['rds_comparison']['rows']*=100
+    cached['comparison_export']=export.bind_snapshot(PROJECT,CUT,CONTRACT,cached,{})
+    original=Worksheet.max_row.fget;scans=[]
     def count_scans(sheet):
-        scans.append(1)
-        return original(sheet)
-    monkeypatch.setattr(Worksheet, "max_row", property(count_scans))
-    assert xlsx(cached).startswith(b"PK")
-    assert len(scans) < 20, "whole-sheet scans per work make large exports quadratic"
+        scans.append(1);return original(sheet)
+    monkeypatch.setattr(Worksheet,'max_row',property(count_scans))
+    assert xlsx(cached).startswith(b'PK') and len(scans)<20
 
 
 @pytest.fixture
@@ -240,8 +196,12 @@ def route(tmp_path, monkeypatch):
     root = tmp_path / ".cumulative_jobs"
     root.mkdir()
     profile = "monitor-cumulative-v1:contracts"
+    import developaid_monitor as monitor
+    import developaid_monitor_ledgers as ledgers
+    monkeypatch.setattr(monitor, "_SNAPSHOT_DIR", tmp_path)
     metadata = dict(ticket=TICKET, owner=jobs.owner_binding(KEY, SESSION, profile), profile=profile,
-                    request="synthetic", created=time.time(), state="done")
+                    request="synthetic", created=time.time(), state="done",
+                    context=ledgers.snapshot_job_context(PROJECT))
     (root / (TICKET + ".json")).write_text(json.dumps(metadata))
     (root / (TICKET + ".result")).write_text(json.dumps(cached))
     values = dict(key=KEY, session=SESSION, project=PROJECT, cut=CUT, contract_id=CONTRACT,
@@ -387,3 +347,22 @@ def test_sync_export_writer_is_offloaded_and_does_not_block_the_event_loop(route
         status, body = await running
         assert status == 200 and body.startswith(b"PK")
     asyncio.run(exercise())
+
+
+def test_previous_export_v4_schema_cannot_be_reused_as_current_snapshot():
+    cached=native_card();binding=cached['comparison_export']
+    assert binding['schema']==export.SCHEMA and export.SCHEMA!='contract-rds-plan-fact-export-v4'
+    cached['comparison_export']={**binding,'schema':'contract-rds-plan-fact-export-v4'}
+    with pytest.raises(export.ExportProblem,match='Версия таблицы изменилась'):
+        export.select_snapshot(cached,PROJECT,binding['cut'],CONTRACT,binding['revision'],binding['row_tokens'])
+
+
+@pytest.mark.parametrize('previous_schema',['contract-rds-plan-fact-export-v5','contract-rds-plan-fact-export-v6','contract-rds-plan-fact-export-v7'])
+def test_previous_runtime_export_is_rejected_even_with_unchanged_sources(monkeypatch,previous_schema):
+    cached=native_card()
+    schema=export.SCHEMA
+    monkeypatch.setattr(export,'SCHEMA',previous_schema)
+    cached['comparison_export']=export.bind_snapshot(PROJECT,CUT,CONTRACT,cached,{})
+    monkeypatch.setattr(export,'SCHEMA',schema)
+    with pytest.raises(export.ExportProblem,match='Версия'):
+        xlsx(cached)

@@ -577,6 +577,7 @@ __DEVELOPAID_CONTOUR__
       <select id="salesProject" aria-label="Проект отчёта" style="max-width:100%"></select>
     </label>
     <label class="muted">Дата шахматки (при её загрузке) <input type="date" id="chessboardDate"></label>
+    <label class="muted">Дата состояния эскроу (если указана в выгрузке) <input type="date" id="escrowAsOf"></label>
     <div id="overviewBody" class="muted" style="font-size:13px;margin-top:6px">Смотрю, что уже загружено…</div>
     <div id="cfstate" class="muted" style="font-size:12.5px;margin-top:6px"></div>
     <div id="planstate" class="muted" style="font-size:12.5px"></div>
@@ -2689,6 +2690,7 @@ async function loadContracting(file){
     const uploadParams=new URLSearchParams();
     if(salesData&&salesData.project)uploadParams.set('project',salesData.project);
     if($('#chessboardDate').value)uploadParams.set('as_of',$('#chessboardDate').value);
+    if($('#escrowAsOf').value)uploadParams.set('escrow_as_of',$('#escrowAsOf').value);
     const r=await fetch('/cabinet/contracting?'+uploadParams.toString(),{method:'POST',body:file,
       headers:{'x-file-name':encodeURIComponent(file.name)}});
     const raw=await r.text();

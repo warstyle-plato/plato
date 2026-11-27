@@ -207,7 +207,7 @@ def test_the_page_takes_another_region_to_its_own_mode(page) -> None:
     import browser
     page.evaluate("""()=>{
       inputs.land_rights_cost_mln=2864.3; inputs.kindergarten_places=7;
-      document.getElementById('cadastralNumbers').value=%s;
+      writeCadastralField(%s);
     }""" % json.dumps(EKATERINBURG))
     page.evaluate("()=>obtainTep()")
     page.wait_for_function(

@@ -270,6 +270,16 @@ def resolve(project, event, cut, *, register=None, cache=None, active=True):
         card = next((card for card in bindings['cards'] if card['raw_id'] == roles['price_raw_id']), {})
         document = next((doc for doc in card.get('documents') or [] if doc['document_sha256'] == evidence['document_sha256']), None)
         document_evidence_intact = bool(document and all(document.get(key) == evidence[key] for key in DOCUMENT_EVIDENCE_FIELDS))
+        if not document_evidence_intact:
+            import developaid_contract_price_provenance as provenance
+            continuity = (document or {}).get(provenance.FIELD)
+            document_evidence_intact = provenance.accepts(continuity, event, price)
+            result['price_reader_provenance'] = continuity or {'state': 'unsupported',
+                'reason': 'unsupported_reader_price_evidence'}
+            if not document_evidence_intact:
+                result['reason'] = ('Сохранённое подтверждение цены не содержит проверяемого свидетельства '
+                    'исходного разбора до смены версии либо значимые данные документа изменились. '
+                    'Прежнее решение и значения сохранены; автоматическое восстановление не выполнено.')
     native_document_price = bool(document_evidence_intact and price and roles['price_raw_id'] == roles['documents_raw_id']
         and (price.get('amount_documents') or {}).get('state') == 'known'
         and (price.get('amount_source') or {}).get('kind') == 'contract_document'

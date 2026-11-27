@@ -13,10 +13,10 @@ def test_total_reuses_the_native_measure_and_survives_unknown_actuals():
     for unknown in (False, True):
         natural, money = native_card(unknown=unknown)['comparison']['lines']
         assert (natural['contract_total'], natural['unit']) == (20.0, 'м3')
-        assert (money['contract_total'], money['unit']) == (1000.0, '₽')
-        assert natural['planned'] == 10.0 and money['planned'] == 500.0
+        assert (money['contract_total'], money['unit']) == (10.0, 'м2')
+        assert natural['planned'] == 10.0 and money['planned'] == 5.0
         if unknown:
-            assert natural['fact'] is None and money['fact'] is None
+            assert natural['fact'] is None and money['fact'] == 0
 
 
 def test_parent_total_uses_work_cost_while_each_operation_keeps_its_own_area():
@@ -41,10 +41,9 @@ def test_missing_and_zero_totals_stay_distinct_and_materials_are_not_added(value
     cached['comparison']['lines'] = [row]
     cached['comparison_export'] = export.bind_snapshot(PROJECT, CUT, cached['contract_id'], cached, {})
     sheet, header = table(xlsx(cached))
-    assert sheet.cell(header, 2).value == 'Всего по договору'
-    assert sheet.cell(header + 1, 2).value == value
-    assert '₽' in sheet.cell(header + 1, 2).number_format
-    assert sheet.cell(header + 1, 3).value is None  # Unknown plan share is never inferred.
+    assert sheet.cell(header, 2).value == 'Работа из РДС'
+    assert sheet.max_column == 16 and sheet.cell(header+1,11).value == 500
+    assert not any(cell.value == 'Всего по договору' for cell in sheet[header])
 
 
 @pytest.mark.parametrize('width', [390, 1440])
@@ -61,13 +60,13 @@ def test_full_scope_column_is_visible_in_the_real_page_and_selected_excel(width,
     with browser_page(width) as (page, _, errors):
         _browser_export(page, cached, CONTRACT, KEY, [])
         expect(page.locator('.contract-comparison thead th')).to_have_text([
-            'Работа / единица', 'Всего по договору', 'План на дату', 'Факт',
-            'Отклонение', 'Срок работы', 'Прогноз окончания'])
+            'Работа или поставка / единица', 'Всего по договору', 'План на дату', 'Факт',
+            'Отклонение', 'Срок строки', 'Прогноз окончания'])
         cell = lambda code: page.locator(f'tr[data-comparison-code="{code}"] [data-label="Всего по договору"]')
         expect(cell(natural['code'])).to_have_text('20 м3')
-        expect(cell(money['code'])).to_have_text('1 000 ₽')
+        expect(cell(money['code'])).to_have_text('10 м2')
         expect(cell('unknown-total')).to_have_text('Неизвестно')
-        expect(cell('zero-total')).to_have_text('0 ₽')
+        expect(cell('zero-total')).to_have_text('0 м2')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.locator('#contractComparisonSearch').fill('нулевой полный')
         with page.expect_download() as got:
@@ -75,6 +74,6 @@ def test_full_scope_column_is_visible_in_the_real_page_and_selected_excel(width,
         target = tmp_path / 'selected-total.xlsx'
         got.value.save_as(target)
         sheet, header = table(target.read_bytes())
-        assert sheet.cell(header + 1, 2).value == 0.0
-        assert '₽' in sheet.cell(header + 1, 2).number_format
+        assert [sheet.cell(header+i,2).value for i in (1,2)] == ['Кладка стен','Работа с нулевым фактом']
+        assert sheet.cell(header+2,8).value == 0 and sheet.max_column == 16
         assert not errors

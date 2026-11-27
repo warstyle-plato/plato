@@ -95,7 +95,7 @@ def test_the_report_shows_the_credit_block_as_the_tz_asks():
             heads = tab.locator("table.credit-table th").all_inner_texts()
             assert heads == ["Дата", "Основной долг к погашению", "Проценты и комиссии",
                              "Всего к оплате", "Эскроу до раскрытия", "Доступно из раскрытия",
-                             "Другие источники", "Дефицит", "Долг после платежа"]
+                             "Другие источники", "Дефицит", "Долг при выполнении графика"]
             dates = tab.locator("table.credit-table tr.date td:first-child").all_inner_texts()
             # Первый платёж — раскрытие эскроу 20.09.2027: долг к погашению в его размере
             # (договор А, п. 6.1.2); до него проценты и плата за лимит в отсрочке.
@@ -176,17 +176,28 @@ def test_the_monitor_card_runs_the_page_code():
         browser = pw.chromium.launch(executable_path=str(chrome))
         try:
             tab = browser.new_page(viewport={"width": 1280, "height": 900})
+            tab.route("http://plato.test/monitor/**", lambda route: route.fulfill(json={}))
             tab.route("**/monitor/credit", reply)
+            from test_monitor_gpr_sections import monitor_view
+            def full_view(route):
+                value = monitor_view()
+                value['cut'] = route.request.post_data_json['cut']
+                route.fulfill(json={'snapshot': value})
+            tab.route("**/monitor/view", full_view)
             tab.route("http://plato.test/monitor", lambda route: route.fulfill(
                 status=200, body=core.MONITOR_PAGE_HTML, content_type="text/html"))
             tab.goto("http://plato.test/monitor")
             # Вошедший командой: ключ администратора в хранилище, как после входа.
             tab.evaluate("localStorage.setItem(ADMIN_KEY, 'kluch'); syncAuthUi()")
             tab.fill("#project", PROJECT)
-            tab.locator("#moneyTab").click()
+            # Credit becomes eligible only through a completed native full refresh.
+            with tab.expect_response("**/monitor/view"):
+                tab.locator("#refresh").click()
+            from playwright.sync_api import expect
+            expect(tab.locator("#refresh")).to_be_enabled()
+            with tab.expect_response("**/monitor/credit"):
+                tab.locator("#moneyTab").click()
             tab.wait_for_selector("#moneyPanel")
-            # Так карточку открывает «Обновить» после расчёта среза.
-            tab.evaluate("renderCredit()")
             tab.wait_for_selector("#creditBody table.credit-table")
             tab.fill("#creditCut", "35")
             with tab.expect_response("**/monitor/credit"):

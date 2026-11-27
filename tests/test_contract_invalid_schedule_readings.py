@@ -146,7 +146,9 @@ def test_legacy_duplicate_identity_does_not_become_both_buildings_or_a_saved_cho
     assert stored.read_bytes() == raw and not (folder / ("a" * 64 + ".pdf")).exists()
     assert document["reader"] == 4
     # Список отдаёт сохранённый график как есть и добавляет причины непригодных строк.
-    assert {k: v for k, v in document["schedule"].items() if k != "unfit"} == schedule
+    import developaid_contract_gpr as gpr
+    assert {k: v for k, v in document["schedule"].items() if k != "unfit"} == {
+        **schedule, "source_identity": gpr.source_key(record), "anchor": None}
     assert "повторяется" in document["schedule"]["unfit"]["1"]
 
 

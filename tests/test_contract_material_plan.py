@@ -21,12 +21,14 @@ def calculate(lines, actual):
     return control.build({'editions': [current]}, {'lines': actual, 'note': ''}, None, '', '2026-03-10')
 
 
-def test_work_cost_weights_readiness_while_total_money_stays_including_materials():
+def test_work_and_material_costs_weight_readiness_while_total_money_stays_unchanged():
     rows = [work('1', 100, 900), work('2', 900, 100)]
     actual = [{'code': '1', 'fact': 1000, 'work_fact': 100, 'material_fact': 900,
                'volumes': [{'unit': 'м2', 'quantity': 10}], 'last': '2026-03-10', 'complete': False}]
     got = calculate(rows, actual)
-    assert got['total']['readiness'] == pytest.approx(0.1)
+    assert got['total']['readiness'] == pytest.approx(0.5)
+    assert got['components']['work']['readiness'] == pytest.approx(0.1)
+    assert got['components']['material']['readiness'] == pytest.approx(0.9)
     assert got['total']['work_amount'] == 1000
     assert (got['total']['amount'], got['total']['fact']) == (2000, 1000)
 
@@ -36,7 +38,8 @@ def test_delivery_only_has_no_weight_or_volume_in_work_readiness():
     actual = [{'code': '1', 'fact': 1000, 'work_fact': 0, 'material_fact': 1000,
                'volumes': [], 'last': None, 'complete': False}]
     got = calculate(rows, actual)
-    assert got['total']['readiness'] == 0 and not got['forecast']['done']
+    assert got['total']['readiness'] == 0.5 and not got['forecast']['done']
+    assert got['components']['work']['readiness'] == 0
     assert [r['code'] for r in got['lines']] == ['2']
     assert got['total']['fact'] == 1000
 
@@ -67,8 +70,9 @@ def test_material_only_gpr_line_is_not_added_back_as_an_unknown_work():
     document = {'sha256': 'a'*64, 'title': 'Учебный график', 'schedule': {'lines': lines}}
     view = comparison.build({'control': got, 'plan': {'editions': [current]}, 'fact': {},
                              'documents': [document]}, '2026-03-10')
-    assert [r['code'] for r in view['lines']] == ['2']
-    assert view['coverage']['source_works'] == 1 and view['coverage']['unknown'] == 0
+    assert [r['code'] for r in view['lines']] == ['2', '1', '2::material']
+    assert view['lines'][1]['component'] == 'material'
+    assert view['coverage']['source_works'] == 2 and view['coverage']['unknown'] == 0
 
 
 def test_material_statement_uses_material_columns_without_adding_them_to_work_fact():
@@ -78,7 +82,10 @@ def test_material_statement_uses_material_columns_without_adding_them_to_work_fa
     statement = fact.statement_materials(found, '2026-03-10')
     assert statement['source'] == 'ks6a' and statement['unknown_count'] == 0
     assert (statement['rows'][0]['quantity'], statement['rows'][0]['amount']) == (5, 500)
-    assert statement['rows'][0]['source'] == {'row': 31, 'sheet': 'КС-6а'}
+    source=statement['rows'][0]['source']
+    assert (source['row'],source['sheet']) == (31,'КС-6а')
+    assert source['quantity_cell'] is None and source['amount_cell'] is None
+    assert source['coordinate_note']
     assert fact.statement_materials(found, '2026-02-28')['rows'] == []
 
 

@@ -2,7 +2,9 @@
 
 The caller authenticates every admission/poll and supplies an opaque owner
 binding. Tickets are identifiers, never access credentials. No request key,
-session, project name or exception detail is persisted in job metadata.
+session or exception detail is persisted in job metadata. An opt-in server
+context may bind a resolved source namespace and generation; it contains no
+request credentials or uploaded bytes.
 """
 from __future__ import annotations
 
@@ -30,8 +32,10 @@ MAX_RESULT_BYTES = 16 * 1024 * 1024
 MAX_EXTENDED_RESULT_BYTES = 64 * 1024 * 1024
 RESULT_PART_BYTES = 256 * 1024
 FAILURE_CODES = frozenset({"builder_failed", "serialization_failed", "result_too_large",
-                           "storage_failed", "interrupted"})
+                           "storage_failed", "interrupted", "source_changed"})
 FAILED = "Не удалось собрать сводку. Повторите запрос."
+SOURCE_CHANGED_DETAIL = ("Состав архивов изменился. Обновите данные проекта; "
+                         "повторная загрузка файлов не требуется.")
 MISSING = "Сборка сводки не найдена или срок её хранения истёк. Запросите сводку снова."
 
 
@@ -61,8 +65,9 @@ def owner_binding(secret: str, session: str, profile: str) -> str:
 
 
 class Store:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, context_validator: Callable[[dict | None], None] | None = None):
         self.root = root
+        self.context_validator = context_validator
 
     def _path(self, ticket: str, suffix: str) -> Path:
         if not TICKET.fullmatch(ticket):
@@ -151,6 +156,8 @@ class Store:
         return kept
 
     def _state(self, meta: dict, *, include_result: bool = True) -> dict:
+        if self.context_validator is not None:
+            self.context_validator(meta.get("context"))
         ticket = meta["ticket"]
         extended = meta.get("result_limit_bytes", MAX_RESULT_BYTES) > MAX_RESULT_BYTES
         if time.time() - meta["created"] > TTL_SECONDS:
@@ -164,6 +171,8 @@ class Store:
                 if extended:
                     raise JobProblem(500, FAILED, code="storage_failed") from None
                 raise
+            if self.context_validator is not None:
+                self.context_validator(meta.get("context"))
             return {"pending": False, "ticket": ticket, **result}
         if meta["state"] == "error" or not self._busy(ticket):
             code = meta.get("failure_code", "interrupted") if extended else ""
@@ -211,6 +220,8 @@ class Store:
             json_bytes = meta.get("result_bytes") if compressed else size
             if type(json_bytes) is not int or not 0 < json_bytes <= meta.get("result_limit_bytes", MAX_RESULT_BYTES):
                 raise JobProblem(500, FAILED, code="storage_failed")
+            if self.context_validator is not None:
+                self.context_validator(meta.get("context"))
             return {"pending": False, "ticket": ticket, "result_part": {
                 "offset": offset, "total_bytes": size,
                 "encoding": "gzip" if compressed else "identity", "json_bytes": json_bytes,
@@ -219,22 +230,31 @@ class Store:
     def start(self, owner: str, profile: str, params: dict,
               builder: Callable[[], dict], ticket: str = "", *,
               result_limit_bytes: int = MAX_RESULT_BYTES,
-              include_result: bool = True, compress_result: bool = False) -> dict:
+              include_result: bool = True, compress_result: bool = False,
+              context: dict | None = None) -> dict:
         # Server policy only: request payloads never select this budget. An
         # existing ticket retains its admitted metadata, including legacy 16 MiB.
         if type(result_limit_bytes) is not int or not 1 <= result_limit_bytes <= MAX_EXTENDED_RESULT_BYTES:
             raise ValueError("invalid job result limit")
         if type(compress_result) is not bool:
             raise ValueError("invalid result compression policy")
+        if context is not None and (not isinstance(context, dict)
+                or len(json.dumps(context, ensure_ascii=False, allow_nan=False).encode()) > 4096):
+            raise ValueError("invalid server job context")
         if ticket and not TICKET.fullmatch(ticket):
             raise JobProblem(400, "Неверный номер сборки сводки.")
-        fingerprint = hashlib.sha256(json.dumps(params, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        bound_params = {"params": params, "source_context": context} if context is not None else params
+        fingerprint = hashlib.sha256(json.dumps(bound_params, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        if self.context_validator is not None:
+            self.context_validator(context)
         with self._locked():
             if ticket:
                 meta = self._meta(ticket)
                 if meta is not None:
                     if not hmac.compare_digest(meta["owner"], owner) or meta["profile"] != profile:
                         raise JobProblem(404, MISSING)
+                    if self.context_validator is not None:
+                        self.context_validator(meta.get("context"))
                     if meta["request"] != fingerprint:
                         raise JobProblem(409, "Эта сборка относится к другому запросу сводки.")
                     return self._state(meta, include_result=include_result)
@@ -252,6 +272,8 @@ class Store:
             _claim(run_lock, wait=False)
             meta = {"ticket": ticket, "owner": owner, "profile": profile,
                     "request": fingerprint, "created": now, "state": "pending"}
+            if context is not None:
+                meta["context"] = context
             if result_limit_bytes != MAX_RESULT_BYTES:
                 meta["result_limit_bytes"] = result_limit_bytes
             if compress_result:
@@ -302,6 +324,9 @@ class Store:
                 meta["state"] = "done"
                 self._save(meta)
         except Exception as exc:
+            if (isinstance(exc, JobProblem) and isinstance(exc.code, str)
+                    and exc.code in FAILURE_CODES):
+                failure_code = exc.code
             # Exceptions can contain source paths, client names or financial data.
             logging.getLogger(__name__).error("Management report job failed (%s)",
                                              failure_code if extended else type(exc).__name__)

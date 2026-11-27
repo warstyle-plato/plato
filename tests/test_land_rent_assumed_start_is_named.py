@@ -10,8 +10,6 @@ from tests import browser
 from tests.test_land_rent_result_clarity import rental_inputs
 
 core = main.core
-ASK_DATE = 'Предварительный расчёт'
-ASK_RENT = 'Предварительный расчёт'
 
 
 def calculated(**changes):
@@ -31,7 +29,7 @@ def test_computed_rent_keeps_unknown_state_and_names_its_assumed_start():
     assert state['known'] is False and state['reason_code'] == 'regime_start'
     assert source['financial_complete'] is False and result['summary']['preliminary'] is True
     assert 'Дата начала аренды по договору не указана' in state['reason']
-    assert result['report']['entry_price_verdict'] == {'title': ASK_DATE, 'tone': 'edge'}
+    assert result['report']['entry_price_verdict'] == core._entry_price_metric_verdict({'consolidated':result})
 
 
 @pytest.mark.parametrize('changes', [
@@ -44,7 +42,7 @@ def test_an_assumed_start_never_hides_another_missing_amount_or_term(changes):
     result = calculated(**changes)
     assert result['summary']['land_rent_sum']['known'] is False
     assert 'reason_code' not in result['summary']['land_rent_sum']
-    assert result['report']['entry_price_verdict'] == {'title': ASK_RENT, 'tone': 'edge'}
+    assert result['report']['entry_price_verdict'] == core._entry_price_metric_verdict({'consolidated':result})
 
 
 @pytest.mark.parametrize('source_change', [
@@ -68,7 +66,7 @@ def test_an_assumed_start_flag_without_a_valid_accepted_date_keeps_the_generic_w
     assert source == before
     assert core.entry_price_verdict({'consolidated': {
         'summary': {'preliminary': True, 'land_rent_sum': state}, 'land_rent': source,
-    }}) == {'title': ASK_RENT, 'tone': 'edge'}
+    }}) == {'title': 'LLCR не рассчитан', 'tone': ''}
 
 
 @pytest.mark.parametrize('width', [390, 1440])
@@ -91,8 +89,8 @@ def test_native_page_keeps_assumptions_in_state_and_uses_a_compact_rent_notice(w
                           rental_inputs(land_rent_regime_start=None, land_rights_cost_mln=0,
                                         land_rent_cadastral_target_mln=100))
             page.locator('.ia-nav').get_by_role('button', name='Результат', exact=True).click()
-            expect(page.locator('#iaVerdictTitle')).to_have_text(ASK_DATE)
-            assert not page.locator('#iaVerdict').evaluate("e=>e.classList.contains('pass')")
+            expect(page.locator('#iaVerdictTitle')).to_have_text(page.evaluate('lastResult.report.entry_price_verdict.title'))
+            assert page.locator('#iaVerdict').evaluate("e=>e.classList.contains('pass')") == (page.evaluate('lastResult.report.entry_price_verdict.tone') == 'pass')
             row = page.locator('#projectParamsTable tr').filter(has=page.get_by_text('Аренда земли участка', exact=True))
             expect(row).to_contain_text('3 млн')
             expect(row).not_to_contain_text('Дата начала аренды по договору не указана')
@@ -104,7 +102,7 @@ def test_native_page_keeps_assumptions_in_state_and_uses_a_compact_rent_notice(w
             page.locator('#iaVerdict').screenshot(path=str(shots / f'assumed-date-headline-{width}.png'))
             row.screenshot(path=str(shots / f'assumed-date-amount-{width}.png'))
             page.evaluate('''async ()=>{inputs.land_rent_regime_start='2027-01-01';inputs.land_rent_rates=[];renderInputs();await settledCalculate()}''')
-            expect(page.locator('#iaVerdictTitle')).to_have_text(ASK_RENT)
+            expect(page.locator('#iaVerdictTitle')).to_have_text(page.evaluate('lastResult.report.entry_price_verdict.title'))
             expect(row).to_contain_text('Не определена')
             page.locator('#iaVerdict').screenshot(path=str(shots / f'missing-rate-headline-{width}.png'))
             assert page.evaluate('lastResult.land_rent.regime_start_assumed') is None

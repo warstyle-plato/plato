@@ -71,7 +71,7 @@ def test_the_data_tab_on_the_rendered_page(monkeypatch):
 
     assert not errors, errors
     assert titles == ["Утверждённый план работ", "РСС · каждую неделю",
-                      "Накопительные · КС-6а", "Бюджет месяца · раз в месяц"]
+                      "Источники договоров · Яндекс.Диск", "Накопительные · КС-6а", "Бюджет месяца · раз в месяц"]
     assert all(shown[name] for name in VISIBLE), shown
     assert not any(shown[name] for name in FOLDED), shown
     assert all(opened.values()), opened

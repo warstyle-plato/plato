@@ -170,8 +170,10 @@ def test_explicit_zero_reference_is_visible_but_absent_reference_is_unknown():
         second = opened(page, rows[1]['id']).locator(done)
         expect(second).to_contain_text('Данные выполнения не подтверждены')
         expect(second).not_to_contain_text('0 ₽')
-        expect(page.locator(f'tr[data-contract-id="{rows[1]["id"]}"] .contract-money')).to_contain_text(
-            'выполнение не подтверждено')
+        brief = page.locator(f'tr[data-contract-id="{rows[1]["id"]}"] .contract-money')
+        expect(brief).to_contain_text('Процент денежного закрытия не подтверждён')
+        expect(brief).not_to_contain_text('0 ₽')
+        assert brief.locator('.contract-progress').count() == 0
         assert not errors
 
 

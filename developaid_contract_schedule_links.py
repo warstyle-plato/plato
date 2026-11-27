@@ -93,11 +93,34 @@ def _first(read, *names):
 
 
 def _days(line):
+    segments = dated_segments(line)
+    if segments:
+        return sum((finish-start).days+1 for start, finish in segments)
     try:
         start, finish = dt.date.fromisoformat(line["start"]), dt.date.fromisoformat(line["finish"])
     except (KeyError, TypeError, ValueError):
         return 0
     return max(0, (finish - start).days + 1)
+
+
+def dated_segments(line):
+    """Union of occupied source days, preserving real gaps between bars."""
+    result = []
+    for segment in line.get('segments') or []:
+        try:
+            begin, end = dt.date.fromisoformat(segment['start']), dt.date.fromisoformat(segment['finish'])
+        except (KeyError, TypeError, ValueError):
+            return []
+        if end < begin:
+            return []
+        result.append((begin, end))
+    merged = []
+    for begin, end in sorted(result):
+        if merged and begin <= merged[-1][1]+dt.timedelta(days=1):
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((begin, end))
+    return merged
 
 
 def duration_shares(lines):
@@ -359,6 +382,17 @@ def propose(estimate, schedule, *, agreement=False):
         item["lines"] = linked([s["line"] for s in found])
         if len(found) > 1:
             item["assumption"] = SHARE_ASSUMPTION
+    for item in positions:
+        if item['status'] != 'review' or item['lines'] or item['suggested']:
+            continue
+        numbered = [sign['line'] for sign in signs if printed(sign['line']) == _text(item.get('number')).rstrip('.')]
+        if len(numbered) == 1 and not _same_name(numbered[0]['name'], item['name']):
+            candidate = numbered[0]
+            item['source_candidates'] = [{key:candidate.get(key) for key in ('code','name','start','finish')}]
+            item['reason'] = (f"В ГПР есть строка с тем же полным номером {printed(candidate)}, но описание отличается: "
+                f"РДС «{item['name']}»; ГПР «{candidate['name']}». "
+                "Связь и объём работ требуют проверки; совпадение номера не подменяет сопоставление. "
+                + item['reason'])
     return {"positions": positions, **summary(positions, schedule)}
 
 

@@ -248,6 +248,7 @@ LATE = """async (ring)=>{
   return real(url,opts);
  };
  delete inputs._land_lookup; landLookup=null;
+ writeCadastralField('77:06:0003002:18');
  const contour=drawLandPreviewQuiet('77:06:0003002:18');
  await settledCalculate();
  const m=(lastResult.tep||{}).site_massing||{};

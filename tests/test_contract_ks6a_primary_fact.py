@@ -87,11 +87,12 @@ def test_act_date_or_amount_warnings_prevent_a_false_successful_confirmation():
     assert result['state'] == 'differs' and result['issues']
 
 
-def test_ks2_never_substitutes_for_an_absent_or_unreadable_statement():
+def test_ks2_supplies_fact_when_the_statement_is_absent_or_unreadable():
     for found in (None, fact.unavailable('Исходник не прочитан.')):
         got = build(found, uploaded(2))
-        assert got['total'] is None and got['note'] and got['source'] is None
-        assert got['lines'] == []
+        assert got['total'] == 10000 and not got['note'] and got['source'] == 'ks2'
+        assert got['source_incomplete'] and 'Полнота комплекта' in got['source_note']
+        assert got['lines'][0]['volumes'] == [{'unit': 'м2', 'quantity': 100}]
 
 
 @pytest.mark.parametrize('heading', ['КС-2 № {}', 'КС2-{}'])

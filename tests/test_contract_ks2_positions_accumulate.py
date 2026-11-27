@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import developaid_contract_acts as acts
@@ -45,6 +47,50 @@ def test_a_price_of_materials_and_of_work_with_one_cost_and_a_heading_with_its_v
     assert _rows(act) == [(2, "3.2.1", "м2", 52.4, "work", 157200.0), (3, "3.4.1", "шт", 2.0, "work", 4000.0)]
     assert act["positions"][0]["group"] == "Каменная кладка"
     assert act["table_total"] == 161200.0 and got["warnings"] == []
+
+
+def test_a_merged_unit_header_can_cross_the_rule_of_the_order_columns():
+    upper = ("", "Номер", "", "Единица", "", "", "")
+    lower = ("по порядку", "позиции по смете", "Наименование работ", "измерения", "количество",
+             "цена за единицу, руб.", "стоимость, руб.")
+    got = _act(header=upper, rows=(lower, *KS2_ROWS))
+    assert _rows(got["act"]) == [(2, "1.1", "м3", 0.5, "work", 4000.0)]
+    assert got["act"]["table_total"] == 4000.0 and got["warnings"] == []
+
+
+def test_a_kept_act_with_the_old_empty_table_is_reread_without_uploading_again(card):
+    upper = ("", "Номер", "", "Единица", "", "", "")
+    lower = ("по порядку", "позиции по смете", "Наименование работ", "измерения", "количество",
+             "цена за единицу, руб.", "стоимость, руб.")
+    raw = act_pdf(header=upper, rows=(lower, *KS2_ROWS))
+    saved = files.store(PROJECT, ROW, "Акт.pdf", raw)
+    folder = files._directory(PROJECT, CONTRACT)
+    path = folder / (saved["sha256"] + ".json")
+    old = json.loads(path.read_text())
+    old["reader"] = documents.READER_VERSION - 1
+    old["act"].update(positions=[], table_total=None)
+    old["warnings"] = ["В акте КС-2 не найдена таблица выполненных работ: позиции и объёмы не прочитаны."]
+    path.write_text(json.dumps(old, ensure_ascii=False))
+    listed = files.listing(PROJECT, CONTRACT, "2026-02-04")
+    current, = listed["documents"]
+    assert current["reader"] == documents.READER_VERSION
+    assert _rows(current["act"]) == [(2, "1.1", "м3", 0.5, "work", 4000.0)]
+    assert current["warnings"] == []
+    assert (folder / (saved["sha256"] + ".pdf")).read_bytes() == raw
+    assert listed["performed"]["positions"][0]["quantity"] == 0.5
+
+
+@pytest.mark.parametrize("upper", [
+    ("", "Номер", "", "", "", "", ""),
+    ("", "Номер", "Единица", "", "", "", ""),
+    ("", "Номер", "", "Другая единица", "", "", ""),
+])
+def test_a_split_unit_label_must_have_its_exact_first_part_in_the_same_column(upper):
+    lower = ("по порядку", "позиции по смете", "Наименование работ", "измерения", "количество",
+             "цена за единицу, руб.", "стоимость, руб.")
+    got = _act(header=upper, rows=(lower, *KS2_ROWS))
+    assert got["act"]["positions"] == []
+    assert any("не найдена таблица" in warning for warning in got["warnings"])
 
 
 def test_quantities_of_materials_and_of_work_and_costs_split_in_two():
