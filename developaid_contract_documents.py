@@ -37,7 +37,7 @@ import hashlib
 from math import ceil, floor, fsum
 
 # Raise when reading changes: stored documents are then read again from their PDF.
-READER_VERSION = 17
+READER_VERSION = 18
 MONTHS = {'январь': 1, 'февраль': 2, 'март': 3, 'апрель': 4, 'май': 5, 'июнь': 6, 'июль': 7,
           'август': 8, 'сентябрь': 9, 'октябрь': 10, 'ноябрь': 11, 'декабрь': 12}
 _CODE = re.compile(r'^\d+(?:\.\d+)*\.?$')
@@ -1295,10 +1295,24 @@ def _settle_heading(act, state, number=''):
     heading, state['heading'] = state['heading'], None
     if heading is None or (heading['number'] and number.startswith(heading['number'] + '.')):
         return
+    if heading.get('zero_cost'):
+        warning = (f'Стр. {heading["page"]}: строка № {heading["order"]} акта «{heading["name"][:80]}» '
+                   'не распознана как позиция: не хватает единицы, объёма или стоимости.')
+        act['warnings'].append(warning)
+        act.setdefault('unread_positions', []).append({
+            'number': heading['number'], 'name': heading['name'], 'unit': '',
+            'page': heading['page'], 'row': int(heading['order']), 'warning': warning,
+            'kind': 'incomplete_position'})
+        return
     state['group'] = heading['previous']
-    act['warnings'].append(f'Стр. {heading["page"]}: у строки № {heading["order"]} акта «{heading["name"][:80]}» '
+    warning = (f'Стр. {heading["page"]}: у строки № {heading["order"]} акта «{heading["name"][:80]}» '
                            'есть единица и объём, но нет цены и стоимости. Это не позиция, и это не заголовок '
                            'группы: следующая строка не входит в неё по номеру. Её объём не учтён.')
+    act['warnings'].append(warning)
+    act.setdefault('unread_positions', []).append({
+        'number': heading['number'], 'name': heading['name'], 'unit': heading.get('unit') or '',
+        'page': heading['page'], 'row': int(heading['order']), 'warning': warning,
+        'kind': 'unpriced_non_heading'})
 
 
 def _act_rows(cells, columns, page_number, act, state):
@@ -1345,6 +1359,16 @@ def _act_rows(cells, columns, page_number, act, state):
             price = {'material': values[0], 'work': values[1], 'total': None}
             amount = {'material': values[2], 'work': values[3], 'total': fsum(parts) if parts else None}
         quantity = work if work is not None else material
+        if (not unit and quantity is None and name and _CODE.match(number)
+                and all(value is None for value in values[:len(values)-len(costs)])
+                and amount['total'] == 0):
+            # A zero-cost structural heading needs the same hierarchical proof
+            # as an unpriced heading: a following row numbered inside it.
+            # Keep former parsed child fields unchanged; this is not a new work.
+            _settle_heading(act, state, number)
+            state['heading'] = {'order': order, 'number': number, 'name': name,
+                                'page': page_number, 'previous': state['group'], 'zero_cost': True}
+            continue
         if all(v is None and _space(row[n]) in ('', '-') for n, v in zip(money, values)):
             # A heading may give the volume of its works and leave the cost to them.
             _settle_heading(act, state, number)
@@ -1355,12 +1379,17 @@ def _act_rows(cells, columns, page_number, act, state):
                 state['group'] = name
             if unit or quantity is not None:
                 state['heading'] = {'order': order, 'number': number if _CODE.match(number) else '', 'name': name,
-                                    'page': page_number, 'previous': previous}
+                                    'page': page_number, 'previous': previous, 'unit': unit}
             continue
         _settle_heading(act, state, number)
         if not unit or quantity is None or amount['total'] is None:
-            act['warnings'].append(f'Стр. {page_number}: строка № {order} акта «{name[:80]}» не распознана как '
-                                   'позиция: не хватает единицы, объёма или стоимости.')
+            warning = (f'Стр. {page_number}: строка № {order} акта «{name[:80]}» не распознана как '
+                       'позиция: не хватает единицы, объёма или стоимости.')
+            act['warnings'].append(warning)
+            act.setdefault('unread_positions', []).append({
+                'number': number if _CODE.match(number) else '', 'name': name, 'unit': unit,
+                'page': page_number, 'row': int(order), 'warning': warning,
+                'kind': 'incomplete_position'})
             continue
         if not _CODE.match(number):
             act['warnings'].append(f'Стр. {page_number}: у строки № {order} акта «{name[:80]}» нет номера позиции '
@@ -1433,6 +1462,7 @@ def _act(document, text):
     words = _act_words(document[0])
     named = lambda text: [w for w in words if w[4].lower() == text]
     act = {'number': None, 'date': None, 'start': None, 'finish': None, 'total': None, 'positions': [],
+           'unread_positions': [],
            'table_total': None, 'warnings': []}
     contract = None
     for label in named('договор'):

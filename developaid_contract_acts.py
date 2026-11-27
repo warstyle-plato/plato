@@ -159,6 +159,7 @@ def accumulated(records: list[dict], cut: str) -> dict:
             continue
         if not cut or day <= cut:
             evidence.append({**row, 'total': act.get('total'),
+                             'unread_positions': act.get('unread_positions'),
                              'warnings': list(record.get('warnings') or [])})
         if not act.get("positions"):
             excluded.append({**row, "reason": "в акте не прочитаны позиции с объёмами: его объёмы в накопление "

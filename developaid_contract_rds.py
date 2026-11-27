@@ -10,9 +10,89 @@ from developaid_contract_fact import _money
 from developaid_monitor_statement_union import _unit
 
 LAYOUT = 'rds-plan-fact-v3'
+KS_REPORTING_SCHEMA = 'rds-loaded-ks-reporting-v1'
+KS_REPORTING_NOTICE = ('Факт по загруженным и прочитанным КС. Если позиция в этих актах не предъявлена, '
+    'учтено 0; отклонение равно учтённому факту минус план. Это не утверждение о фактическом отсутствии работ на площадке. '
+    'Непрочитанный или неоднозначный источник остаётся неизвестным.')
+KS_REPORTING_FIELDS = ('fact_quantity', 'fact_quantity_ratio', 'quantity_deviation', 'fact', 'deviation')
 FIELDS = ('number', 'name', 'unit', 'start', 'finish', 'plan_quantity', 'plan_quantity_ratio',
           'fact_quantity', 'fact_quantity_ratio', 'quantity_deviation', 'planned', 'fact', 'deviation',
           'day_deviation', 'forecast_finish', 'forecast_delay_days')
+
+
+def _numeric(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def _loaded_ks2_scope(fact, estimates):
+    """Determine reportable absence from native parsed acts, never from an empty fact cell."""
+    evidence = fact.get('act_evidence') or {}
+    scope = fact.get('ks_reporting_context') or {}
+    if (fact.get('source') != 'ks2' or fact.get('note') or fact.get('unread')
+            or scope.get('schema') != 'loaded-ks2-reporting-scope-v1'
+            or scope.get('reporting_scope_available') is not True
+            or not _numeric(evidence.get('count')) or evidence['count'] <= 0
+            or evidence.get('unread_count') != 0):
+        return None
+    acts = evidence.get('acts') or []
+    if (len(acts) != evidence['count'] or any(not _numeric(item.get('positions'))
+            or item['positions'] <= 0 for item in acts)):
+        return None
+    from developaid_contract_fact import match, _code, _norm
+    reviewed = set()
+    for item in [*(fact.get('review') or []), *(scope.get('unread_rows') or [])]:
+        if not isinstance(item, dict) or not all(key in item for key in ('number', 'name', 'unit')):
+            return None
+        identity = match(item, estimates)
+        if isinstance(identity, str):
+            # This is a conservative exclusion, not a second matcher. Keep every
+            # position an unresolved row could refer to unknown; an unrelated
+            # extra act row does not hide the reportable absence of all RDS work.
+            number, name = _code(item.get('number')), _norm(item.get('name'))
+            if not number and not name:
+                return None
+            reviewed.update((e, i) for e, estimate in enumerate(estimates)
+                if estimate.get('scope') != 'accepted'
+                for i, position in enumerate(estimate.get('positions') or [])
+                if (number and _code(position.get('number')) and
+                    (number == _code(position.get('number')) or
+                     number.startswith(_code(position.get('number'))+'.') or
+                     _code(position.get('number')).startswith(number+'.')))
+                or (name and _norm(position.get('name')) == name))
+            continue
+        reviewed.add(tuple(identity[:2]))
+    return reviewed
+
+
+def _ks_reporting(row, fact, identity, observed, unread, reviewed, leaf):
+    if (reviewed is None or observed is not None or unread or identity in reviewed
+            or not leaf
+            or row['physical_audit']['state'] != 'source_missing'
+            or not _numeric(row.get('contract_quantity')) or row['contract_quantity'] <= 0
+            or not row.get('unit')):
+        return None
+    reason = ('По загруженным и прочитанным КС-2 на '+str(fact.get('cut') or '')+
+              ' эта позиция не предъявлена: учтённый объём и стоимость равны 0. '
+              'Полнота комплекта актов и физическое выполнение на площадке этим не подтверждаются.')
+    values = {'schema': KS_REPORTING_SCHEMA, 'basis': 'loaded_ks2', 'state': 'unreported_zero',
+              'fact_quantity': 0.0, 'fact_quantity_ratio': 0.0, 'fact': 0.0,
+              'quantity_deviation': -row['plan_quantity'] if _numeric(row.get('plan_quantity')) else None,
+              'deviation': -row['planned'] if _numeric(row.get('planned')) else None,
+              'physical_quantity_confirmed': False,
+              'comments': {field: reason for field in KS_REPORTING_FIELDS}}
+    for field, plan_field in (('quantity_deviation', 'plan_quantity'), ('deviation', 'planned')):
+        if row.get(plan_field) is None:
+            values['comments'][field] = 'План не подтверждён; отклонение от него не рассчитано. '+reason
+    return values
+
+
+def reporting_row(row):
+    """The page and workbook consume the same server projection; raw physical data stays intact."""
+    view = row.get('ks_reporting')
+    if not isinstance(view, dict) or view.get('schema') != KS_REPORTING_SCHEMA:
+        return row
+    return {**row, **{key: view[key] for key in KS_REPORTING_FIELDS if key in view},
+            'comments': {**(row.get('comments') or {}), **(view.get('comments') or {})}}
 
 
 def build(listed: dict) -> dict:
@@ -36,6 +116,15 @@ def build(listed: dict) -> dict:
     unread = {(item['estimate'], item['index']): item for item in fact.get('rds_unread') or []
               if item.get('estimate_sha256') == document['sha256']}
     bindings = {(item['estimate'], item['index']): item for item in current['position_links']}
+    reviewed = _loaded_ks2_scope(fact, document['estimates'])
+    from developaid_contract_fact import _code
+    nonleaf = {(e, i) for e, estimate in enumerate(document['estimates'])
+               for i, position in enumerate(estimate.get('positions') or [])
+               if position.get('is_group') is True or position.get('group_row') is True
+               or position.get('kind') in {'group', 'heading', 'section'}
+               or (_code(position.get('number')) and any(
+                   _code(other.get('number')).startswith(_code(position['number'])+'.')
+                   for other in estimate.get('positions') or []))}
     schedule = (documents.get(current.get('schedule_sha256')) or {}).get('schedule') or {}
     source_codes = Counter(line['code'] for line in schedule.get('lines') or [])
     scheduled = {line['code']: line for line in schedule.get('lines') or []}
@@ -201,10 +290,14 @@ def build(listed: dict) -> dict:
                     comments['forecast_finish']=comments['forecast_delay_days']=reporting.forecast_text(forecast)
             if row['fact_quantity'] is None:
                 comments['fact_quantity'] = row['physical_audit']['reason']
+            report = _ks_reporting(row, fact, identity, observed, unread.get(identity), reviewed, identity not in nonleaf)
+            if report is not None:
+                row['ks_reporting'] = report
             rows.append(row)
     return {'layout': LAYOUT, 'available': True, 'cut': cut, 'rows': rows, 'headings': headings,
             'estimate_title': document.get('title') or '', 'estimate_sha256': document['sha256'],
             'source': fact.get('source'), 'source_note': fact.get('source_note') or '',
+            'ks_reporting': {'schema': KS_REPORTING_SCHEMA, 'notice': KS_REPORTING_NOTICE},
             'date_assumption': schedule.get('assumption') or '',
             'plan_assumption': listed['plan'].get('assumption') or '',
             'remaining_start': current.get('start'),

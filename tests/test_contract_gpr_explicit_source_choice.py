@@ -194,7 +194,7 @@ def test_native_admin_choice_refreshes_control_and_denies_old_ticket(card,monkey
     exported=client.post('/monitor/contracts/gpr.xlsx',json={**base,'ticket':updated['ticket'],'revision':updated['gpr_export']['revision']})
     assert exported.status_code == 200
     workbook = load_workbook(io.BytesIO(exported.content))
-    assert workbook.sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']
+    assert workbook.sheetnames == ['ГПР', 'Выполнение', 'Численность подрядчика']
     assert all(workbook[name].max_row > 1 for name in workbook.sheetnames)
 
 
