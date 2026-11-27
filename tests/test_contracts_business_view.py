@@ -82,7 +82,7 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         expect(second).to_contain_text('полная сумма не подтверждена')
         expect(second).to_contain_text('Процент денежного закрытия не подтверждён')
         assert second.locator('.contract-money .contract-progress').count() == 0
-        expect(second).to_contain_text('Указать срок договора')
+        expect(second.locator('.term')).to_contain_text('Не определён')
         expect(second).to_contain_text('Работы не указаны')
         expect(second).not_to_contain_text('просрочен')
         expect(second).not_to_contain_text('0%')

@@ -1,5 +1,6 @@
 """Native registry quotes qualified statement value shares without inventing a union."""
 import copy
+import developaid_contract_register_display as display
 import pytest
 from playwright.sync_api import expect
 from tests.test_monitor_cumulative_controls import browser_page
@@ -36,6 +37,7 @@ def test_native_register_qualified_shares_and_fail_closed_sources(width):
     rows=[row(1,[first]),row(2,[first,same]),row(3,[first,other]),row(4,[first,conflict]),
           *variants,row(14),known,row(16,[zero]),unresolved,row(18,[{**first,'financial_complete':True,'natural_complete':False,'source_complete':False}])]
     next(value for value in rows if value['id']==f'{14:064x}')['schedule_control']={'readiness':.99,'coverage':{'known':1,'unknown':9}}
+    display.attach({'rows': rows}, '2026-11-26')
     before=copy.deepcopy(rows)
     with browser_page(width,init="localStorage.setItem('monitor_cut','2026-11-26')") as (page,responses,errors):
         register={'project':'Учебный проект','cut':'2026-11-26','source_date':'2026-11-18','rows':rows}
@@ -44,7 +46,10 @@ def test_native_register_qualified_shares_and_fail_closed_sources(width):
         page.locator('#contractsTab').click()
         expect(page.locator('tr.contract-row[data-contract-id]')).to_have_count(len(rows))
         money=lambda index:page.locator('tr[data-contract-id="'+f'{index:064x}'+'"] .contract-money')
-        assert '50%' in money(1).inner_text().replace(' ','') and 'По ведомости' in money(1).inner_text()
+        assert money(1).locator('.contract-register-completion').count()==1
+        assert '50%' in money(1).inner_text().replace(' ','')
+        for index in [1,2,3,4,16,18]:
+            money(index).locator('.contract-completion-sources > summary').click()
         assert 'Архив: 18.11.2026' in money(1).inner_text() and '100 ₽' in money(1).inner_text()
         assert 'дата выполнения не подтверждена' in money(1).inner_text()
         assert money(2).locator('.contract-statement-share').count()==1
