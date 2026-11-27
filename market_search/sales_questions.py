@@ -40,6 +40,8 @@ import datetime
 import fcntl
 import html
 import json
+import math
+import re
 import statistics
 from pathlib import Path
 from typing import Any, Iterator
@@ -108,6 +110,98 @@ def money_key(row: dict[str, Any]) -> str:
     return f"money:{row.get('contract') or row.get('unit')}:{_date(row.get('signed'))}"
 
 
+def question_keys(item: dict[str, Any]) -> set[str]:
+    """A clarification also covers its original questions, without rewriting history."""
+    return {item["key"], *(key for key in item.get("related_question_keys") or []
+                          if isinstance(key, str) and key)}
+
+
+_PARKING_DDU = re.compile(
+    r"ДДУ\s*№\s*(\d{1,6})([МM])(-[1-9]\d?)?/([А-ЯA-Z0-9]{1,8})"
+    r"(?:\s+от\s+(\d{2}\.\d{2}\.\d{4}))?", re.I)
+
+
+def _parking_family(row: dict[str, Any]) -> tuple | None:
+    """Possible reissue, never a conclusion that two legal DDUs are the same lot."""
+    if contracting.product_name(row.get("product") or "") != "Машиноместо":
+        return None
+    if row.get("escrow_observed") is not True:
+        return None
+    paid = row.get("escrow_paid")
+    if isinstance(paid, bool) or paid in (None, ""):
+        return None
+    try:
+        if not math.isfinite(float(paid)) or float(paid) < 0:
+            return None
+    except (ValueError, TypeError, OverflowError):
+        return None
+    if str(row.get("state") or "").strip().casefold() not in {"", "действующий"}:
+        return None
+    contract = " ".join(str(row.get("contract") or "").split())
+    matched = _PARKING_DDU.fullmatch(contract)
+    signed = _date(row.get("signed"))
+    if not matched or not signed or int(matched[1]) <= 0:
+        return None
+    if matched[5]:
+        try:
+            if datetime.datetime.strptime(matched[5], "%d.%m.%Y").date() != signed:
+                return None
+        except ValueError:
+            return None
+    values = []
+    for name in ("area", "amount"):
+        value = row.get(name)
+        if isinstance(value, bool):
+            return None
+        try:
+            value = float(value)
+        except (ValueError, TypeError, OverflowError):
+            return None
+        if not math.isfinite(value) or value <= 0:
+            return None
+        values.append(value)
+    # Empty units leave identity unknown. An explicit difference remains separate.
+    family = (matched[1], matched[2].upper(), matched[4].upper(), signed,
+              " ".join(str(row.get("unit") or "").split()), *values)
+    return family, matched[3] or ""
+
+
+def _parking_clarifications(items: list[dict[str, Any]], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_key.setdefault(money_key(row), []).append(row)
+    families: dict[tuple, list[tuple[dict[str, Any], str]]] = {}
+    for item in items:
+        source = by_key.get(item["key"]) or []
+        if len(source) == 1 and (match := _parking_family(source[0])):
+            families.setdefault(match[0], []).append((item, match[1]))
+    replacements = {}
+    for members in families.values():
+        if len(members) != 2 or {variant for _, variant in members} != {"", "-1"}:
+            continue
+        pair = sorted((item for item, _ in members), key=lambda item: item["key"])
+        keys = [item["key"] for item in pair]
+        names = [str(item["subject"]["contract"]) for item in pair]
+        clarification = {
+            "key": "contract-identity:" + "|".join(keys),
+            "kind": "contract_identity", "related_question_keys": keys,
+            "subjects": [dict(item["subject"]) for item in pair],
+            "text": (f"В выгрузке есть договоры «{names[0]}» и «{names[1]}» "
+                     "с одинаковыми датой, площадью и стоимостью машино-места. "
+                     "Подскажите, оба договора действуют или один заменил другой?")}
+        replacements.update({key: clarification for key in keys})
+    out, seen = [], set()
+    for item in items:
+        if item["key"] not in replacements:
+            out.append(item)
+            continue
+        item = replacements[item["key"]]
+        if item["key"] not in seen:
+            out.append(item)
+            seen.add(item["key"])
+    return out
+
+
 def _no_money(rows: list[dict[str, Any]], uploaded: datetime.date) -> list[dict[str, Any]]:
     out = []
     for row in rows:
@@ -139,7 +233,7 @@ def _no_money(rows: list[dict[str, Any]], uploaded: datetime.date) -> list[dict[
             "text": (f"{_cap(_name(row))} ({_what(row)}, {_mln(amount)}): "
                      f"{got}. Подскажите, когда ждать оплату?")})
     # Сначала самые крупные суммы: в сообщение идут первые три.
-    return sorted(out, key=lambda item: -item["amount"])
+    return _parking_clarifications(sorted(out, key=lambda item: -item["amount"]), rows)
 
 
 def _cap(text: str) -> str:
@@ -165,9 +259,10 @@ def _dropped(read: dict[str, Any] | None, rows: list[dict[str, Any]], uploaded: 
             continue
         where = ", ".join(x for x in (item.get("tower") or "",
                                       _area(item["area"]) if item.get("area") else "") if x)
-        since, gone = _date(item["first"]), _date(item["gone"])
+        seen, gone = _date(item["last"]), _date(item["gone"])
         text = (f"Квартира № {item['apartment']}" + (f" ({where})" if where else "")
-                + f" была в списке броней с {_dm(since)}, а с {_dm(gone)} её там нет")
+                + f": в сообщении от {seen:%d.%m.%Y} была в списке броней, "
+                  f"а в сообщении от {gone:%d.%m.%Y} её уже нет")
         if item.get("outcome") == "dropped" and fresh and rows:
             text += (f", и договора на неё в выгрузке на {_dm(_date(uploaded))} тоже нет. "
                      "Бронь снята или договор ещё оформляется?")
@@ -271,8 +366,9 @@ def questions(read: dict[str, Any] | None, contracts: dict[str, Any] | None,
     out = []
     for item in found:
         # Один ключ — один вопрос и внутри одного сообщения.
-        if item["key"] not in seen:
-            seen.add(item["key"])
+        keys = question_keys(item)
+        if not (keys & seen):
+            seen.update(keys)
             out.append(item)
     return out
 
@@ -310,7 +406,8 @@ def remember(data_dir: Path, project: str, items: list[dict[str, Any]], today: s
     """Записать заданные вопросы (первые ``MAX_QUESTIONS`` — то, что ушло в чат)."""
     asked = load_asked(data_dir, project)
     for item in items[:MAX_QUESTIONS]:
-        asked.setdefault(item["key"], today)
+        for key in question_keys(item):
+            asked.setdefault(key, today)
     place = _asked_path(data_dir, project)
     place.parent.mkdir(parents=True, exist_ok=True)
     spare = place.with_suffix(".tmp")
