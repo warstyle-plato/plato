@@ -314,7 +314,11 @@ def test_only_trusted_normal_view_receives_extended_budget(monkeypatch, route, f
 
     helper, _ = route_helper(monkeypatch, Admission)
     helper(request(), family=family, operation=operation)
-    assert captured == ([{"result_limit_bytes": jobs.MAX_EXTENDED_RESULT_BYTES}] if operation == "view" else [{}])
+    expected = {"result_limit_bytes": jobs.MAX_EXTENDED_RESULT_BYTES} if operation == "view" else {}
+    if family == 'contracts':
+        import developaid_contract_control as control
+        expected['result_revision'] = control.CALCULATION_REVISION
+    assert captured == [expected]
     if operation == "view":
         assert (route, family) == ("monitor_contracts_build", "contracts")
 
@@ -336,7 +340,8 @@ def test_poll_header_is_only_an_enum_and_message_stays_plain(monkeypatch, code):
     helper, refused = route_helper(monkeypatch, Failed)
     with pytest.raises(refused) as response:
         helper(request(), family="contracts")
-    assert response.value.detail == (jobs.SOURCE_CHANGED_DETAIL if code == "source_changed" else
+    assert response.value.detail == (jobs.CALCULATION_CHANGED_DETAIL if code == "calculation_changed" else
+                                     jobs.SOURCE_CHANGED_DETAIL if code == "source_changed" else
                                      "Не удалось завершить операцию. Повторите запрос.")
     assert PRIVATE not in response.value.detail
     assert response.value.headers == {"Cache-Control": "private, no-store", **(

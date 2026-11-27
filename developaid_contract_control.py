@@ -42,6 +42,12 @@ from developaid_monitor_statement_union import _unit
 
 CALCULATION_REVISION = 'contract-gpr-source-material-components-v5'
 
+
+def is_calculation_result(value):
+    """One shape predicate for fresh calculation stamps and retained readers."""
+    return isinstance(value, dict) and any(key in value for key in
+        ('register', 'control', 'comparison', 'rds_comparison', 'gpr', 'gpr_export', 'comparison_export'))
+
 ASSUMPTION = ("Отставание в днях — на сколько дней назад от даты среза план нарастающим итогом был равен "
               "сегодняшнему факту. Просрочка считается отдельно: сколько дней прошло после срока работы по "
               "графику, а работа не закончена. Прогноз считает, что отставание строки сохранится до её "
