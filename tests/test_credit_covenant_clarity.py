@@ -109,3 +109,45 @@ def test_unknown_disclosure_does_not_display_a_guessed_date():
     got = credit.analyse(inputs)
     assert "<td>Даты раскрытия эскроу</td><td>нет данных</td><td>нет данных</td>" in (
         credit.render_html(got))
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_native_monitor_reaches_the_covenant_explanation_by_scrolling(width):
+    from browser import chromium_or_skip
+    from main import core
+    from playwright.sync_api import sync_playwright
+
+    result = credit.analyse(_inputs())
+    answer = {"state": "ok", "status": result["status"],
+              "html": credit.render_html(result, monitor=True)}
+    chrome = chromium_or_skip()
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
+        try:
+            page = browser.new_page(viewport={"width": width, "height": 900})
+            page.route("**/*", lambda route: route.abort())
+            page.route("http://plato.test/monitor", lambda route: route.fulfill(
+                body=core.MONITOR_PAGE_HTML, content_type="text/html"))
+            page.goto("http://plato.test/monitor")
+            page.evaluate("localStorage.setItem(ADMIN_KEY, 'synthetic-key'); syncAuthUi()")
+            page.evaluate("answer => {selectMonitorTab('money'); drawCredit(answer)}", answer)
+            wrapper = page.locator(".credit-covenants-scroll")
+            header = wrapper.locator("th").last
+            header.scroll_into_view_if_needed()
+            # Start from the left edge, then use native horizontal wheel input.
+            wrapper.evaluate("el => el.scrollLeft = 0")
+            if width == 390:
+                assert wrapper.evaluate("el => el.scrollWidth > el.clientWidth")
+                wrapper.hover(position={"x": 30, "y": 15})
+                page.mouse.wheel(1200, 0)
+                page.wait_for_function("document.querySelector('.credit-covenants-scroll').scrollLeft > 0")
+            bounds = wrapper.bounding_box()
+            assert bounds["x"] >= 0 and bounds["x"] + bounds["width"] <= width
+            for index in (2, 3):
+                cell = wrapper.locator("th").nth(index)
+                assert cell.evaluate("el => {const r=el.getBoundingClientRect(); return document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)===el}")
+            assert "опережение 32 %" in wrapper.inner_text()
+            assert "30.09.2027" in page.locator(".credit-comparison-scroll").inner_text()
+            assert "30.12.2027" in page.locator(".credit-comparison-scroll").inner_text()
+        finally:
+            browser.close()

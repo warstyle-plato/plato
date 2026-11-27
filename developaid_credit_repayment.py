@@ -2056,9 +2056,11 @@ def _covenants_html(result: dict[str, Any]) -> str:
             "проверки. Прогноз — текущий остаток плюс ожидаемые поступления за вычетом "
             "возвратов к той же дате. Если прогноз выше плана, это опережение. Для "
             "договорной проверки требуется согласованный с банком бизнес-план."
-            f"{_esc(basis)}</p><table class='credit-covenants'><tr>"
+            f"{_esc(basis)}</p><div class='credit-covenants-scroll' tabindex='0' role='region' "
+            "aria-label='Проверки кредитных договоров. Таблицу можно прокручивать'>"
+            "<table class='credit-covenants'><tr>"
             "<th>Проверка</th><th>Договор</th><th>Результат</th><th>Пояснение</th></tr>"
-            + "".join(rows) + "</table>")
+            + "".join(rows) + "</table></div>")
 
 
 def _months_html(result: dict[str, Any]) -> str:
@@ -2162,8 +2164,10 @@ def _stress_html(result: dict[str, Any]) -> str:
              f"{num(p['key_rate_pp'])} п. п.")
     return ("<h3>Базовый и стрессовый сценарии</h3>"
             f"<p class='note'>Стресс: {_esc(words)}</p>"
+            "<div class='credit-comparison-scroll' tabindex='0' role='region' "
+            "aria-label='Сравнение сценариев. Таблицу можно прокручивать'>"
             "<table><tr><th>Показатель</th><th>Базовый сценарий</th><th>Стрессовый сценарий</th></tr>"
-            + disclosure + body + first + "</table>" + basis
+            + disclosure + body + first + "</table></div>" + basis
             + _status_html(result["stress_status"], "Статус в стрессе"))
 
 
