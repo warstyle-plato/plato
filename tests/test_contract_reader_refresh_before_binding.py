@@ -38,7 +38,7 @@ def retained(pair, monkeypatch, version, *, scan=None, removed=False, pending=Fa
     return folder, sha, raw, value
 
 
-@pytest.mark.parametrize('version', [11, 12, 13])
+@pytest.mark.parametrize('version', [11, 12, 13, 17])
 def test_native_operational_first_read_refreshes_old_reader_before_pin(pair, monkeypatch, version):
     import main
     folder, sha, raw, _ = retained(pair, monkeypatch, version)
