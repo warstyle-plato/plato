@@ -15,10 +15,10 @@ import developaid_contract_documents as documents
 
 FIELD = 'price_reader_provenance'
 SCHEMA = 'contract-price-reader-provenance-v1'
-LEGACY_READERS = (11, 12, 13, 14, 15, 16)
+LEGACY_READERS = (11, 12, 13, 14, 15, 16, 17)
 # Deliberately reviewed text-reader generations. A future reader upgrade must
 # re-establish semantic continuity; a larger version number is not evidence.
-REFRESH_READERS = (15, 16, 17)
+REFRESH_READERS = (15, 16, 17, 18)
 MAX_WITNESS_BYTES = 1024 * 1024
 _FIELDS = {'schema', 'origin', 'event_id', 'raw_id', 'source_pdf_sha256', 'from_reader', 'to_reader',
            'approved_bindings', 'approved_bindings_sha256', 'approved_document_evidence',
