@@ -34,6 +34,137 @@ def preview(relative=False):
             'preview': {'source': {'sha256': 'a'*64}, 'schedule': schedule}, 'conditions': []}
 
 
+def reported_summary_row(completed=250):
+    """Generic native producer shape; no private contract or source values."""
+    import developaid_monitor_contracts as contracts
+    import developaid_contract_price as price
+    cell = {'filename': 'Учебная сводная.xlsx', 'sheet': 'Итоги', 'row': 5,
+            'planned_amount_cell': 'C5', 'completed_amount_cell': 'F5'}
+    item = {'kind': 'summary', 'customer': 'Учебный заказчик', 'contractor': 'Учебный подрядчик',
+            'contract': 'У-1', 'contract_date': '2026-01-01', 'reported_total': {
+                'planned': 1000, 'completed': completed, 'planned_amount_basis': 'unspecified',
+                'completed_amount_basis': 'unspecified', 'source': cell}}
+    observed = contracts._summary_observation([item], CUT)
+    assert observed['state'] == 'known'
+    rebased = price.rebase_summary(observed, {'state': 'known', 'amount': 2000,
+        'amount_basis': 'with_vat', 'source': {'kind': 'contract_document'}})
+    assert rebased['state'] == 'unknown'
+    date, snapshot = '2026-11-18', '2026-11-18-'+'a'*64
+    progress = {**rebased, 'observation_date': date, 'snapshot_id': snapshot, 'date_basis': 'snapshot'}
+    return row(amount=2000, completed=None, summary_progress=rebased, progress=progress,
+               summary_source_date=date, summary_source_snapshot_id=snapshot,
+               sources=[{**cell, 'snapshot_id': snapshot, 'source_date': date, 'file_sha256': 'b'*64}])
+
+
+def price_stale_summary_row():
+    value = reported_summary_row()
+    value['source_correction'] = {'decision_id': 'c'*64, 'warning': 'Подтверждение цены устарело',
+        'role_freshness': {'execution': True, 'price': False}, 'source_policy': 'follow_selected_native_v1',
+        'roles': {'execution_raw_id': 'd'*64, 'execution_token': 'e'*64},
+        'provenance': {'execution': {'raw_id': 'd'*64, 'token': 'e'*64,
+                                    'source_snapshot_id': value['summary_source_snapshot_id']}}}
+    value['logical_ownership'] = {'resolution_kind': 'source_correction', 'decision_id': 'c'*64,
+                                  'financial_acceptance_required': False}
+    return value
+
+
+def test_execution_current_price_stale_summary_keeps_only_qualified_reference():
+    original = price_stale_summary_row()
+    before = copy.deepcopy(original)
+    value = display.completion(original, CUT)
+    assert value['state'] == 'reference' and value['scope'] == 'source' and value['ratio'] == .25
+    assert 'Подтверждение текущей цены устарело' in value['reference_label']
+    assert 'прежняя база сводной' in value['reference_label']
+    assert original == before and original['completed'] is None
+
+
+@pytest.mark.parametrize('path, replacement', [
+    ('source_correction.decision_id', None),
+    ('source_correction.role_freshness.execution', False),
+    ('source_correction.role_freshness.execution', None),
+    ('source_correction.role_freshness.price', True),
+    ('source_correction.role_freshness.price', None),
+    ('source_correction.source_policy', None),
+    ('source_correction.provenance.execution.raw_id', None),
+    ('source_correction.provenance.execution.token', 'f'*64),
+    ('source_correction.provenance.execution.source_snapshot_id', '2026-11-18-'+'f'*64),
+    ('logical_ownership.decision_id', 'f'*64),
+    ('logical_ownership.financial_acceptance_required', True),
+])
+def test_price_stale_summary_reference_requires_exact_execution_choice_proof(path, replacement):
+    original = price_stale_summary_row()
+    target, keys = original, path.split('.')
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = replacement
+    before = copy.deepcopy(original)
+    assert display.completion(original, CUT)['state'] == 'unknown'
+    assert original == before
+
+
+@pytest.mark.parametrize('completed, ratio', [(0, 0), (250, .25)])
+def test_native_reported_summary_survives_rebase_only_as_source_reference(completed, ratio):
+    original = reported_summary_row(completed)
+    before = copy.deepcopy(original)
+    result = display.completion(original, CUT)
+    assert result['state'] == 'reference' and result['scope'] == 'source' and result['ratio'] == ratio
+    assert result['planned'] == 1000 and result['planned'] != original['amount']
+    assert 'Справочно по сводной' in result['reference_label'] and 'НДС не сверён' in result['reference_label']
+    assert 'полной цены договора не подтверждена' in result['reference_label']
+    assert original == before and original['completed'] is None and original['completion_ratio'] is None
+
+
+@pytest.mark.parametrize('path, replacement', [
+    ('source_correction', {'warning': 'Выбор изменился'}),
+    ('source_correction', {'warning': 'Выбор изменился', 'decision_id': 'c'*64,
+        'provenance': {'execution': {'raw_id': 'd'*64, 'token': 'e'*64}}}),
+    ('logical_ownership', True),
+    ('summary_progress.reported_observation.state', 'unknown'),
+    ('summary_progress.reported_observation.requires_reconciliation', True),
+    ('summary_progress.reported_observation.origin', None),
+    ('summary_progress.reported_observation.basis', 'statement_union'),
+    ('summary_progress.reported_observation.completed_amount_basis', 'without_vat'),
+    ('summary_progress.reported_observation.planned_amount_basis', 'conflicting'),
+    ('summary_progress.reported_observation.scope_fingerprint', None),
+    ('summary_progress.reported_observation.scope_fingerprint', 'f'*64),
+    ('summary_progress.reported_observation.basis_signature', None),
+    ('summary_progress.reported_observation.basis_signature', 'f'*64),
+    ('summary_progress.reported_observation.source.completed_amount_cell', None),
+    ('summary_progress.reported_observation.source.completed_amount_cell', 'F6'),
+    ('progress.source', {}),
+    ('progress.snapshot_id', None),
+    ('progress.snapshot_id', '2026-11-18-'+'f'*64),
+    ('progress.observation_date', '2026-12-01'),
+    ('progress.observation_date', '2027-01-01'),
+    ('summary_source_snapshot_id', None),
+    ('summary_source_date', None),
+    ('sources', []),
+    ('sources', [{'filename': 'Учебная сводная.xlsx', 'sheet': 'Итоги',
+                  'snapshot_id': '2026-11-18-'+'a'*64, 'source_date': '2026-11-18', 'file_sha256': None}]),
+    ('summary_progress.reported_observation.ratio', .4),
+    ('summary_progress.reported_observation.completed', -250),
+    ('summary_progress.reported_observation.completed', float('inf')),
+    ('detail_history', {'state': 'unknown'}),
+    ('statement_progress', {'problems': [{'code': 'annual_evidence_conflict'}]}),
+])
+def test_reported_summary_reference_requires_native_unchanged_qualified_witness(path, replacement):
+    original = reported_summary_row()
+    # The observation and outer progress are independent native DTO objects.
+    original = copy.deepcopy(original)
+    keys = path.split('.')
+    target = original
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = replacement
+    original['summary_progress']['reported_observation']['monetary_comparable'] = True
+    # Test an explicit with/without conflict rather than merely unspecified VAT.
+    if path.endswith('completed_amount_basis'):
+        original['summary_progress']['reported_observation']['planned_amount_basis'] = 'with_vat'
+    before = copy.deepcopy(original)
+    assert display.completion(original, CUT)['state'] == 'unknown'
+    assert original == before
+
+
 def test_unspecified_tax_has_explicit_display_only_provisional_ratio():
     original = row()
     before = copy.deepcopy(original)
@@ -313,7 +444,8 @@ def _completed(store, ticket, owner, purpose):
 def test_retained_display_snapshot_is_not_relabelled_and_fresh_admission_builds_once(tmp_path):
     import developaid_management_report_jobs as jobs
     import developaid_contract_control as control
-    old_schema = 'contract-register-display-old'
+    old_schema = 'contract-register-display-v1'
+    assert display.SCHEMA == 'contract-register-display-v2'
     old = {'ok': True, 'register': {'rows': [], 'display_schema': old_schema},
            'contract_calculation_revision': control.CALCULATION_REVISION}
     store, owner, purpose = jobs.Store(tmp_path), 'synthetic-owner', 'monitor-cumulative-v1:contracts'
@@ -376,6 +508,49 @@ def test_native_registry_finish_shows_preview_and_condition_without_missing_lega
     assert 'Предпросмотр ГПР' in values[0]['html'] and '30.04.2027' in values[0]['html']
     assert 'От даты передачи площадки' in values[1]['html']
     assert all('Указать срок договора' not in value['html'] for value in values)
+
+
+def test_native_page_keeps_reported_summary_reference_scope_visible_for_zero_and_nonzero():
+    import developaid_monitor_page as page
+    from tests import page_blocks
+    rows = [reported_summary_row(0), reported_summary_row(250)]
+    display.attach({'rows': rows}, CUT)
+    out, _ = page_blocks.run('const rows='+json.dumps(rows)+';',
+        'console.log(JSON.stringify(rows.map(r=>contractRegisterCompletionHtml(r,null))))', page=page.MONITOR_PAGE)
+    html = json.loads(out)
+    assert '0%' in html[0] and '25%' in html[1]
+    assert all('data-completion-state="reference"' in value and 'data-completion-scope="source"' in value
+               and 'Справочно по сводной' in value and 'НДС не сверён' in value
+               and 'Доля полной цены договора не подтверждена' in value
+               and '<span class="contract-progress"' not in value for value in html)
+
+
+def test_native_page_shows_reported_summary_references_without_contract_progress_claim():
+    from playwright.sync_api import expect
+    from tests.test_monitor_cumulative_controls import browser_page
+    rows = [reported_summary_row(0), reported_summary_row(250), price_stale_summary_row()]
+    for index, value in enumerate(rows):
+        value.update(id=str(index+1)*64, contractor='Учебный подрядчик', contract='У-'+str(index+1),
+                     physical_items=[], warnings=[])
+    display.attach({'rows': rows}, CUT)
+    with browser_page(390) as (page, responses, errors):
+        responses.data.update(rows=rows, cut=CUT)
+        page.locator('#cut').fill(CUT)
+        page.locator('#contractsTab').click()
+        blocks = page.locator('.contract-register-completion')
+        expect(blocks).to_have_count(3)
+        expect(blocks.nth(0)).to_contain_text('0%')
+        expect(blocks.nth(1)).to_contain_text('25%')
+        for index in range(3):
+            block = blocks.nth(index)
+            assert block.get_attribute('data-completion-state') == 'reference'
+            assert block.get_attribute('data-completion-scope') == 'source'
+            expect(block.locator('.contract-reference-note')).to_be_visible()
+            expect(block.locator('.contract-reference-note')).to_contain_text('НДС не сверён')
+            expect(block.locator('.contract-reference-note')).to_contain_text('Доля полной цены договора не подтверждена')
+            assert block.locator('.contract-progress').count() == 0
+        expect(blocks.nth(2).locator('.contract-reference-note')).to_contain_text('Подтверждение текущей цены устарело')
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth') and not errors
 
 
 @pytest.mark.parametrize('width', [390, 1440])
