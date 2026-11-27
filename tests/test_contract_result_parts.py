@@ -100,7 +100,9 @@ def test_authenticated_part_route_and_pinned_admission(api, monkeypatch):
         result.extend(base64.b64decode(part['content_base64']))
         if len(result) == part['total_bytes']:
             break
-    assert json.loads(result) == payload
+    import developaid_contract_control as control
+    assert json.loads(result) == {**payload,'contract_calculation_revision':control.CALCULATION_REVISION}
+    assert 'contract_calculation_revision' not in payload, 'Fresh stamping must not change producer inputs.'
     assert post(client, 'contracts/build', **params).json() == {
         'pending': False, 'ticket': ticket, 'result_ready': True}
     assert len(calls) == 1

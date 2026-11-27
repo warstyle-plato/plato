@@ -72,6 +72,13 @@ def is_raw_history():
     return _RAW_HISTORY.get()
 
 
+def require_unpinned_refresh(raw_id):
+    """A late lazy reader upgrade cannot write through an existing pin."""
+    context = _CONTEXT.get()
+    if context is not None and context.pairs.get(raw_id) in context.binding_pins:
+        raise OwnershipProblem('Исходные привязки изменились после проверки документов. Обновите реестр.')
+
+
 class ReadContext:
     def __init__(self, project, cut):
         import developaid_contract_identity_store as store
@@ -88,6 +95,11 @@ class ReadContext:
         self.corrections = {}
         self.source_cache = {}
         self.parse_refresh_budget = {'files': 0, 'bytes': 0, 'metadata_files': 0, 'metadata_bytes': 0}
+        from developaid_contract_metadata_budget import MetadataBudget
+        self.metadata_budget = MetadataBudget(self.parse_refresh_budget)
+        # Reserve the fresh final seal before any possible derived write.
+        self.final_metadata = self.metadata_budget.phase()
+        self.resolver_metadata = None
         for event in self.state['events']:
             if event['action'] in {'confirm', 'correct_sources'}:
                 pair = tuple(sorted({member['raw_id'] for member in event['payload']['members']}))
@@ -115,21 +127,12 @@ class ReadContext:
             roster.append(sid)
         return sorted(roster)
 
-    def _binding_inventory(self, pair):
+    def _binding_inventory(self, pair, phase=None):
         """One aggregate metadata budget for initial, nested and final seals."""
         import developaid_contract_identity as identity
-        found = identity.metadata_inventory(self.project, list(pair), correction=pair in self.corrections)
-        self.parse_refresh_budget['metadata_files'] += found['metadata_files_read']
-        self.parse_refresh_budget['metadata_bytes'] += found['metadata_bytes_read']
-        self.parse_refresh_budget['files'] += found.get('price_source_files_read', 0)
-        self.parse_refresh_budget['bytes'] += found.get('price_source_bytes_read', 0)
-        import developaid_contract_files as files
-        if (self.parse_refresh_budget['metadata_files'] > identity.MAX_FILES or
-                self.parse_refresh_budget['metadata_bytes'] > identity.MAX_METADATA_BYTES or
-                self.parse_refresh_budget['files'] > files.MAX_PARSE_REFRESH_FILES or
-                self.parse_refresh_budget['bytes'] > files.MAX_PARSE_REFRESH_BYTES):
-            raise OwnershipProblem('Общий объём метаданных уточнений превышает предел одной сборки.')
-        return found
+        phase = phase if phase is not None else self.metadata_budget.phase()
+        return identity.metadata_inventory(self.project, list(pair), correction=pair in self.corrections,
+                                           _read=phase.inventory())
 
     def capture(self, composition):
         if not self.present:
@@ -140,6 +143,12 @@ class ReadContext:
         relevant = {self.pairs[identifier] for identifier in identifiers if identifier in self.pairs}
         if len(relevant) > MAX_RELEVANT_PAIRS:
             raise OwnershipProblem('Слишком много уточнений реквизитов для одной ограниченной сборки. Реестр не собран частично.')
+        if is_raw_history() and relevant <= self.binding_pins.keys():
+            # Raw history does not apply ownership or consume bindings. The
+            # outer read already pinned these groups and freshly seals them
+            # on exit; repeating that seal for every archive spends the
+            # aggregate IO budget without proving an additional result.
+            return
         active_passes = len(relevant & self.active)
         if relevant:
             import developaid_contract_identity as identity
@@ -151,21 +160,24 @@ class ReadContext:
             if self.binding_pins:
                 self.check()
             fresh = relevant-set(self.binding_pins)
+            # Reserve the first-pin/resolver readers before a refresh can
+            # publish derived JSON; allocated readers remain empty until use.
+            phase = self.metadata_budget.phase()
+            strict_pending = any(pair not in self.corrections and pair not in self.cache for pair in relevant)
+            if strict_pending and (self.resolver_metadata is None
+                    or fresh and self.resolver_metadata.metadata):
+                self.resolver_metadata = self.metadata_budget.phase()
             if fresh:
                 approvals = {pair: event for pair, event in self.corrections.items()
                     if self.active_events.get(pair, {}).get('event_id') == event['event_id']
                     and self.active_events[pair]['action'] == 'correct_sources'}
                 files.refresh_parse_cache(self.project, [(pair, pair in self.corrections) for pair in sorted(fresh)],
-                                          self.parse_refresh_budget, approvals)
+                                          self.parse_refresh_budget, approvals, _proof_budget=self.metadata_budget)
             # Raw-history enrichment can reach the parser before the main
             # operational capture. Its source inventory must be pinned too:
             # an owner edit during that first enrichment is concurrent drift.
-            metadata_bytes = 0
             for pair in relevant:
-                bindings = self._binding_inventory(pair)
-                metadata_bytes += bindings['metadata_bytes_read']
-                if metadata_bytes > identity.MAX_METADATA_BYTES:
-                    raise OwnershipProblem('Общий объём метаданных уточнений превышает предел одной сборки.')
+                bindings = self._binding_inventory(pair, phase)
                 observed = store.digest(bindings)
                 if pair in self.binding_pins and self.binding_pins[pair] != observed:
                     raise OwnershipProblem('Исходные привязки изменились во время чтения. Обновите реестр.')
@@ -249,10 +261,14 @@ class ReadContext:
             self.cache[pair] = resolved
             return resolved
         try:
-            resolved = identity.resolve(self.project, observed[0], self.cut)
+            if self.resolver_metadata is None:
+                self.resolver_metadata = self.metadata_budget.phase()
+            resolved = identity.resolve(self.project, observed[0], self.cut,
+                                        _read=self.resolver_metadata.inventory())
         except identity.IdentityProblem:
             resolved = {'status':'source_conflict', 'logical_id':None,
                         'member_ids':list(pair), 'reason':'Сохранённые версии уточнения не подтверждены.'}
+        bindings = resolved.get('bindings')
         if sorted(resolved.get('member_ids') or []) != list(pair):
             resolved = {'status':'source_conflict', 'logical_id':None,
                         'member_ids':list(pair), 'reason':'Состав уточнения не совпал с исходными карточками.'}
@@ -267,7 +283,7 @@ class ReadContext:
                     resolved = dict(resolved,status='source_conflict',logical_id=None,
                                     reason='Используемая исходная версия не совпала с подтверждённым уточнением.')
                     break
-            if self.binding_pins[pair] != store.digest(self._binding_inventory(pair)):
+            if self.binding_pins[pair] != store.digest(bindings):
                 raise OwnershipProblem('Исходные привязки изменились во время сборки. Обновите реестр.')
         self.cache[pair] = resolved
         return resolved
@@ -321,7 +337,7 @@ class ReadContext:
         elif any(row.get('id') in self.pairs for row in raw_rows(register)):
             raise OwnershipProblem('Уточнения появились после сборки исходных карточек. Обновите реестр.')
 
-    def check(self):
+    def check(self, *, final=False):
         import developaid_contract_identity_store as store
         if store.project_root(self.project) != self.root or store.load(self.project)['head'] != self.head:
             raise OwnershipProblem('Уточнения реквизитов изменились во время чтения. Обновите реестр.')
@@ -336,7 +352,12 @@ class ReadContext:
                     raise OwnershipProblem('Исходная версия изменилась во время чтения; логическое объединение не подтверждено.')
         if self.binding_pins:
             import developaid_contract_identity as identity
-            if any(store.digest(self._binding_inventory(pair)) != digest
+            phase = self.final_metadata if final else self.metadata_budget.phase()
+            if phase is None:
+                raise OwnershipProblem('Финальная проверка источников уже использована.')
+            if final:
+                self.final_metadata = None
+            if any(store.digest(self._binding_inventory(pair, phase)) != digest
                    for pair,digest in self.binding_pins.items()):
                 raise OwnershipProblem('Исходные привязки изменились во время чтения. Обновите реестр.')
 
@@ -360,7 +381,7 @@ def read_scope(project, cut):
             token = _CONTEXT.set(context)
             try:
                 yield context
-                context.check()
+                context.check(final=True)
             finally:
                 _CONTEXT.reset(token)
     except (store.IdentityProblem, OSError):

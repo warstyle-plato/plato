@@ -71,7 +71,9 @@ def test_full_ordinary_register_is_identical_and_chunks_keep_their_policies(api)
     assert meta['result_limit_bytes'] == jobs.MAX_EXTENDED_RESULT_BYTES
     assert meta['compress_result'] is True
     assert set(meta) <= {'ticket','owner','profile','request','created','state',
-                         'result_limit_bytes','compress_result','gzip_result','result_bytes','context'}
+                         'result_limit_bytes','compress_result','gzip_result','result_bytes','context','result_revision'}
+    import developaid_contract_control as control
+    assert meta['result_revision'] == control.CALCULATION_REVISION
     assert meta['context'] == ledgers.snapshot_job_context(PROJECT)
     for accept_gzip in (False, True):
         parts = []; offset = 0
@@ -125,9 +127,12 @@ def test_current_calculation_fingerprint_accepts_omitted_and_false_flag_unchange
     context = ledgers.snapshot_job_context(PROJECT)
     legacy_payload = {'operation': 'view', 'click': 'a'*32, 'project': PROJECT, 'cut': CUT,
                       'contract_calculation_revision':control.CALCULATION_REVISION,'source_context':context}
-    legacy_result = {'ok': True, 'register': {'rows': [], 'unknown': None, 'zero': 0}}
+    # The calculation is current; only omitted/false diagnostic flags are old.
+    legacy_result = {'ok': True, 'register': {'rows': [], 'unknown': None, 'zero': 0},
+                     'contract_calculation_revision':control.CALCULATION_REVISION}
     store.start(owner, purpose, legacy_payload, lambda: legacy_result, 'a'*32,
-                result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES, context=context)
+                result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES, context=context,
+                result_revision=control.CALCULATION_REVISION)
     response = poll(client,'a'*32)
     assert response.status_code == 200 and 'diagnostics' not in response.json()
     before = store._meta('a'*32)

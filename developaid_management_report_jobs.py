@@ -32,10 +32,13 @@ MAX_RESULT_BYTES = 16 * 1024 * 1024
 MAX_EXTENDED_RESULT_BYTES = 64 * 1024 * 1024
 RESULT_PART_BYTES = 256 * 1024
 FAILURE_CODES = frozenset({"builder_failed", "serialization_failed", "result_too_large",
-                           "storage_failed", "interrupted", "source_changed"})
+                           "storage_failed", "interrupted", "source_changed", "calculation_changed"})
 FAILED = "Не удалось собрать сводку. Повторите запрос."
 SOURCE_CHANGED_DETAIL = ("Состав архивов изменился. Обновите данные проекта; "
                          "повторная загрузка файлов не требуется.")
+CALCULATION_CHANGED_DETAIL = ("Расчёт договоров обновлён. Нажмите «Обновить договоры» "
+                              "и откройте карточку снова. Загруженные файлы сохранены.")
+RESULT_REVISION = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$")
 MISSING = "Сборка сводки не найдена или срок её хранения истёк. Запросите сводку снова."
 
 
@@ -188,7 +191,7 @@ class Store:
             return self._state(meta)
 
     def poll_part(self, ticket: str, owner: str, profile: str, offset: int = 0, *,
-                  accept_gzip: bool = False) -> dict:
+                  accept_gzip: bool = False, required_result_revision: str = "") -> dict:
         """Read an immutable result in bounded pieces, authenticating each read.
 
         No JSON decoding or full-file read is needed while holding the shared
@@ -196,10 +199,18 @@ class Store:
         """
         if type(offset) is not int or not 0 <= offset <= MAX_EXTENDED_RESULT_BYTES:
             raise JobProblem(400, "Неверная часть результата.")
+        if type(required_result_revision) is not str or (required_result_revision and
+                not RESULT_REVISION.fullmatch(required_result_revision)):
+            raise ValueError("invalid required result revision")
         with self._locked():
             meta = self._meta(ticket)
             if meta is None or not hmac.compare_digest(meta["owner"], owner) or meta["profile"] != profile:
                 raise JobProblem(404, MISSING)
+            # The producer binds this small policy before persistence. Check it
+            # on EVERY piece, including a direct middle-piece request, without
+            # decoding a potentially 64 MiB DTO or changing old job metadata.
+            if required_result_revision and meta.get("result_revision") != required_result_revision:
+                raise JobProblem(409, CALCULATION_CHANGED_DETAIL, code="calculation_changed")
             state = self._state(meta, include_result=False)
             if state["pending"]:
                 return state
@@ -231,19 +242,25 @@ class Store:
               builder: Callable[[], dict], ticket: str = "", *,
               result_limit_bytes: int = MAX_RESULT_BYTES,
               include_result: bool = True, compress_result: bool = False,
-              context: dict | None = None) -> dict:
+              context: dict | None = None, result_revision: str = "") -> dict:
         # Server policy only: request payloads never select this budget. An
         # existing ticket retains its admitted metadata, including legacy 16 MiB.
         if type(result_limit_bytes) is not int or not 1 <= result_limit_bytes <= MAX_EXTENDED_RESULT_BYTES:
             raise ValueError("invalid job result limit")
         if type(compress_result) is not bool:
             raise ValueError("invalid result compression policy")
+        if type(result_revision) is not str or (result_revision and not RESULT_REVISION.fullmatch(result_revision)):
+            raise ValueError("invalid result revision")
         if context is not None and (not isinstance(context, dict)
                 or len(json.dumps(context, ensure_ascii=False, allow_nan=False).encode()) > 4096):
             raise ValueError("invalid server job context")
         if ticket and not TICKET.fullmatch(ticket):
             raise JobProblem(400, "Неверный номер сборки сводки.")
         bound_params = {"params": params, "source_context": context} if context is not None else params
+        # Revision is an admitted OUTPUT policy, like the byte budget. Do not
+        # change a saved mutation's request identity merely because the server
+        # gained this policy: a lost acknowledgement must remain idempotent.
+        # Contract view/card input fingerprints already bind their method.
         fingerprint = hashlib.sha256(json.dumps(bound_params, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         if self.context_validator is not None:
             self.context_validator(context)
@@ -274,6 +291,8 @@ class Store:
                     "request": fingerprint, "created": now, "state": "pending"}
             if context is not None:
                 meta["context"] = context
+            if result_revision:
+                meta["result_revision"] = result_revision
             if result_limit_bytes != MAX_RESULT_BYTES:
                 meta["result_limit_bytes"] = result_limit_bytes
             if compress_result:

@@ -1,7 +1,7 @@
 """Finite, guarded preparation of derived PDF reads, one PDF per native job.
 
 No identity/source decision is appended and no financial input is imported.
-The ordinary register's aggregate budget and ownership pins remain unchanged.
+The same bounded source-corpus and fresh-proof phases serve preparation and reads.
 """
 from __future__ import annotations
 
@@ -17,86 +17,11 @@ import developaid_contract_identity_store as store
 import developaid_contract_ownership as ownership
 import developaid_monitor_contracts as contracts
 import developaid_monitor_ledgers as ledgers
+from developaid_contract_metadata_budget import MetadataBudget
 
 
 class PreparationChanged(files.ContractFilesProblem):
     pass
-
-
-def _charge(budget, *, inventory=None, raw=None):
-    if inventory is not None:
-        budget['metadata_files'] += inventory['metadata_files_read']
-        budget['metadata_bytes'] += inventory['metadata_bytes_read']
-        budget['files'] += inventory.get('price_source_files_read', 0)
-        budget['bytes'] += inventory.get('price_source_bytes_read', 0)
-    if raw is not None:
-        budget['metadata_files'] += 1
-        budget['metadata_bytes'] += len(raw)
-    if (budget['metadata_files'] > identity.MAX_FILES
-            or budget['metadata_bytes'] > identity.MAX_METADATA_BYTES
-            or budget['files'] > files.MAX_PARSE_REFRESH_FILES
-            or budget['bytes'] > files.MAX_PARSE_REFRESH_BYTES):
-        raise files.ContractFilesProblem('Объём отдельного обновления документов превышает предел проверки. '
-                                         'Обновление остановлено; уже прочитанные документы сохранены.')
-
-
-class _SnapshotMetadata(identity._Metadata):
-    """One descriptor read per path in one locked before/after phase.
-
-    Reusing already-read bytes within the phase does not spend an invented
-    second IO budget. The two phases never share cached metadata or PDFs.
-    _reread's final metadata CAS remains a separate uncached descriptor read.
-    """
-    def __init__(self, budget):
-        super().__init__()
-        self.budget, self.metadata, self.pdfs = budget, {}, {}
-
-    def read(self, path, cap=4*1024*1024):
-        if path not in self.metadata:
-            raw = super().read(path, cap)
-            self.metadata[path] = raw
-            _charge(self.budget, raw=raw)
-        return self.metadata[path]
-
-    def price_pdf(self, path):
-        if path not in self.pdfs:
-            raw = super().price_pdf(path)
-            self.pdfs[path] = raw
-            self.budget['files'] += 1
-            self.budget['bytes'] += len(raw or b'')
-            _charge(self.budget)
-        return self.pdfs[path]
-
-    def inventory(self):
-        return _InventoryMetadata(self)
-
-
-class _InventoryMetadata(identity._Metadata):
-    """Keep the native per-inventory counters in human-approved preimages.
-
-    These logical counters describe this group's ordinary inventory, while
-    the phase owns and charges actual IO once. Shared phase totals must never
-    enter an immutable source-decision binding or price provenance witness.
-    """
-    def __init__(self, phase):
-        super().__init__()
-        self.phase = phase
-
-    def read(self, path, cap=4*1024*1024):
-        raw = self.phase.read(path, cap)
-        self.files += raw is not None
-        self.bytes += len(raw or b'')
-        if self.files > identity.MAX_FILES or self.bytes > identity.MAX_METADATA_BYTES:
-            raise files.ContractFilesProblem('Метаданные группы превышают предел проверки.')
-        return raw
-
-    def price_pdf(self, path):
-        raw = self.phase.price_pdf(path)
-        self.price_pdf_files += 1
-        self.price_pdf_bytes += len(raw or b'')
-        if self.price_pdf_files > files.MAX_PARSE_REFRESH_FILES or self.price_pdf_bytes > files.MAX_PARSE_REFRESH_BYTES:
-            raise files.ContractFilesProblem('Объём источников цены группы превышает предел проверки.')
-        return raw
 
 
 def _corpus(project, cut):
@@ -212,6 +137,7 @@ def prepare(project: str, cut: str, expected_guard: str = '') -> dict:
         raise files.ContractFilesProblem('Проверка состава документов не подтверждена.')
     cut = contracts._cut(cut)
     budget = {'files': 0, 'bytes': 0, 'metadata_files': 0, 'metadata_bytes': 0}
+    proof = MetadataBudget(budget)
     with store.locked(project):
         context = ownership.ReadContext(project, cut)
         source_context = _corpus(project, cut)
@@ -224,18 +150,19 @@ def prepare(project: str, cut: str, expected_guard: str = '') -> dict:
         with contextlib.ExitStack() as locks:
             for identifier in sorted({identifier for pair, _ in groups for identifier in pair}):
                 locks.enter_context(files._locked(identity._safe_path(project, 'contract_documents', identifier)))
-            before_read, after_read = _SnapshotMetadata(budget), _SnapshotMetadata(budget)
+            before_read = proof.phase()
             guard, stale, before = _plan(project, cut, context, groups, before_read, source_context)
             if expected_guard and expected_guard != guard:
                 raise PreparationChanged('Источники или документы изменились после начала обновления. '
                                          'Обновите договоры; уже прочитанные документы сохранены.')
             processed = 0
             if expected_guard and stale:
+                after_read = proof.phase()
                 _, key, members, correction = stale[0]
                 event = context.active_events.get(members) or {}
                 approvals = ({members: event} if event.get('action') == 'correct_sources' else {})
                 own_writes = files.refresh_parse_cache(project, [(members, correction)], budget, approvals,
-                    selected_documents=frozenset({key}), _metadata_snapshots=(before_read, after_read)) or {}
+                    selected_documents=frozenset({key}), _proof_budget=proof, _future_price_passes=1) or {}
                 processed = 1
                 previous_count = len(stale)
                 guard, stale, after = _plan(project, cut, context, groups, after_read, source_context)

@@ -461,7 +461,7 @@ def _binding_conflicts(bindings):
 
 
 @store.in_namespace
-def resolve(project, raw_id, cut, *, source_token=None):
+def resolve(project, raw_id, cut, *, source_token=None, _read=None):
     """Read seam for composition. It does not merge money, documents or choices.
 
     Both raw IDs remain valid addresses. A revoked or stale correction is an
@@ -497,7 +497,7 @@ def resolve(project, raw_id, cut, *, source_token=None):
     ids = sorted({member['raw_id'] for member in payload['members']})
     versions, reviewed_archives = _source_inventory(project, cut, ids)
     checked = {'source_versions': versions,
-               'bindings': metadata_inventory(project, ids)}
+               'bindings': metadata_inventory(project, ids, _read=_read)}
     # A historical cut selects only the versions already saved by that date.
     # Missing/rekeyed approved sources are drift too, not proof of absence.
     import developaid_monitor_contracts as contracts

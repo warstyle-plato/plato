@@ -180,7 +180,8 @@ def test_writer_does_not_rescan_the_entire_sheet_for_each_work(monkeypatch):
 def route(tmp_path, monkeypatch):
     source = ast.parse((ROOT / "engine/monitor_cumulative.py").read_bytes())
     names = {"MonitorCumulativeAuth", "MonitorCumulativeProject", "MonitorContractsBuild", "MonitorContractDocuments",
-             "MonitorContractComparisonExport", "_monitor_cumulative_day", "monitor_contract_comparison_xlsx"}
+             "MonitorContractComparisonExport", "_monitor_cumulative_day", "_monitor_contract_gpr_current",
+             "monitor_contract_comparison_xlsx"}
     nodes = [n for n in source.body if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in names]
     key = [KEY]
     def require_key(given, _section, _session):
@@ -192,6 +193,7 @@ def route(tmp_path, monkeypatch):
                  _env_str=lambda *a: key[0], developaid_monitor=SimpleNamespace(_SNAPSHOT_DIR=tmp_path))
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "<exact-native-export-route>", "exec"), scope)
     cached = native_card()
+    cached['contract_calculation_revision'] = control.CALCULATION_REVISION
     monkeypatch.setattr(jobs.Store, "start", lambda *a, **k: pytest.fail("new job during export"))
     root = tmp_path / ".cumulative_jobs"
     root.mkdir()

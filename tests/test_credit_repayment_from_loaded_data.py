@@ -264,6 +264,20 @@ def test_the_report_discloses_at_the_approved_date_as_the_escrow_table(monkeypat
     assert any("ввод может сдвинуться на 15.12.2028" in note for note in base["assumptions"])
 
 
+@pytest.mark.parametrize("commissioning", [
+    {"date": "2027-09-15", "source": "утверждённый срок"}, None])
+def test_disclosure_notes_keep_the_date_source_after_other_sources_are_collected(commissioning):
+    _project()
+    found = sources.collect(PROJECT, SALES, end="2026-10-20", commissioning=commissioning)
+    source = found["datasets"]["disclosure"]["source"]
+    note = next(n for n in found["notes"] if n.startswith("Раскрытие эскроу принято"))
+    expected = ("срок ввода — утверждённый срок" if commissioning else
+                "утверждённого срока ввода нет — плановая дата раскрытия из условий (допущение)")
+    assert expected in source and expected in note
+    assert "дополнительное финансирование" not in note
+    assert "допущение" in source
+
+
 def test_plan_draws_over_the_free_limit_are_fitted_not_zeroed(monkeypatch):
     """Прод 27.10.2026 (владелец: «опять какая-то чушь»): обе линии выбраны до
     лимитов года, а финмодель планирует выдачи раньше, чем лимит вырастет. Было:
