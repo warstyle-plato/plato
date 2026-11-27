@@ -126,11 +126,15 @@ def test_source_known_money_is_shown_in_the_row_detail_without_creating_ratio(wi
         rows = annual_data(responses)
         rows[0]['remaining'] = 50_000
         rows[0]['completion_ratio'] = .5  # A stale/contradictory ratio cannot price an annual total.
+        from developaid_contract_register_display import attach
+        attach(responses.data, responses.data['cut'])
         page.locator('#contractsTab').click()
         row = page.locator('tr[data-contract-id]').first
-        # The short row says the statement sums are only a reference and prices no share.
+        # Known unpriced source totals remain in the card; the common register
+        # badge cannot invent a percentage or adopt the contradictory stale ratio.
         brief = row.locator('.contract-money')
-        expect(brief).to_contain_text('суммы ведомостей — справочно, в подробностях')
+        expect(brief).to_contain_text('Процент денежного закрытия не подтверждён')
+        expect(brief.locator('.contract-register-completion')).to_have_attribute('data-completion-state', 'unknown')
         assert brief.locator('.contract-progress').count() == 0 and '%' not in brief.text_content()
         assert row.locator('.contract-main-money').all_text_contents() == ['—']
         more = opened(page)

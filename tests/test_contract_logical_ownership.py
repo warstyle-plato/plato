@@ -227,6 +227,8 @@ def test_page_opens_each_raw_card_without_assigning_its_money_to_the_logical_par
     from test_monitor_cumulative_controls import browser_page
     confirm(pair)
     view = contracts.build(PROJECT, CUT, include_history=False)
+    from developaid_contract_register_display import attach
+    attach(view, CUT)
     with browser_page(width) as (page,responses,errors):
         responses.data = view
         requested = []
@@ -238,7 +240,9 @@ def test_page_opens_each_raw_card_without_assigning_its_money_to_the_logical_par
         expect(page.locator('#contractsRows tr[data-contract-id]')).to_have_count(1)
         row = page.locator('#contractsRows tr[data-contract-id]')
         expect(row).to_contain_text('Финансовый источник')
-        expect(row.locator('.term')).to_have_text('Уточнить срок')
+        expect(row.locator('.term .contract-badge')).to_have_text('Не определён')
+        expect(row.locator('.contract-register-finish')).to_have_attribute('data-finish-state', 'unknown')
+        expect(row.locator('.term')).to_contain_text('Принадлежность источника срока требует уточнения')
         expect(row.locator('.contract-schedule')).to_have_text('Проверить исходные карточки')
         expect(row).to_contain_text('Финансовый источник, срок и общий прогноз между карточками не выбраны')
         row.locator('.contract-open').click()
