@@ -180,8 +180,8 @@ def test_native_http_reply_poll_and_no_real_messages(native,monkeypatch):
     assert len(result.json()['state']['events'])==3
     monkeypatch.setattr(follow,'_now',lambda value=None:DUE if value is None else value.astimezone(follow.MOSCOW))
     assert main._deliver_sales_followups()['items']
-    assert len(sent)==3
-    main._deliver_sales_followups();assert len(sent)==3
+    assert len(sent)==4 and sum(text == 'Спасибо, ответ принят.' for _,text in sent)==1
+    main._deliver_sales_followups();assert len(sent)==4
 
 
 def test_nonce_and_cancel_stop_old_intents(native):

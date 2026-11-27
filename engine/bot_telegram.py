@@ -3523,7 +3523,8 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
     except (TypeError, ValueError, OSError):
         taken_at = ""
     # Ответ на вопрос Платона — отдельный маршрут, до распознавания отчёта.
-    # Не читаем посторонние ответы/ботов и не отвечаем в группу квитанцией.
+    # Не читаем посторонние ответы/ботов. Квитанцию после сохранения готовит
+    # ядро; её отправляет та же защищённая очередь, что и контроль ответов.
     from market_search import sales_dialogue
 
     original = message.get("reply_to_message") or {}
