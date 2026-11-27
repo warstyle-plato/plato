@@ -110,8 +110,25 @@ def completion(row, cut):
         value = row.get(key) or {}
         if not stale and value.get('state') == 'known' and _ratio(value.get('ratio'), value.get('completed'), value.get('planned')):
             value_scope = 'statement' if value.get('basis') in {'statement', 'statement_union'} else scope
-            if value_scope == 'contract' and not _compatible(first, second):
-                continue
+            if value_scope == 'contract':
+                if not _compatible(first, second):
+                    continue
+                same = all(_number(row.get(field)) is not None and math.isclose(
+                    row[field], value[source_field], rel_tol=1e-9, abs_tol=1e-9)
+                    for field, source_field in (('amount', 'planned'), ('completed', 'completed')))
+                if not same:
+                    return {'state': 'reference', 'ratio': value['ratio'], 'scope': 'source',
+                            'planned': value['planned'], 'completed': value['completed'],
+                            'basis_label': 'денежное закрытие по суммам источника',
+                            'reference_label': 'Справочно по источнику; общая база текущего договора не подтверждена.',
+                            'caveat': 'Числитель или знаменатель показателя источника отличается от текущих значений карточки.',
+                            'why': value.get('basis_label') or label}
+                provisional = 'unspecified' in (first, second)
+                return {'state': 'provisional' if provisional else 'known', 'ratio': value['ratio'],
+                        'scope': 'contract', 'planned': value['planned'], 'completed': value['completed'],
+                        'basis_label': 'денежное закрытие от полной цены договора',
+                        'caveat': 'Предварительно: НДС не сверён. Показатель не используется в финансовых расчётах.' if provisional else '',
+                        'why': ''}
             return {'state': 'known', 'ratio': value['ratio'], 'scope': value_scope,
                     'planned': value['planned'], 'completed': value['completed'],
                     'basis_label': value.get('basis_label') or label,
