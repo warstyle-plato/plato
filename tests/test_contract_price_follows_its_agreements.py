@@ -275,10 +275,19 @@ def test_unknown_vat_never_appears_as_a_known_rebased_percentage_on_the_page_or_
     with browser_page(width) as (page,responses,errors):
         row['id'] = CONTRACT
         responses.data['rows'] = [copy.deepcopy(row)]
+        from developaid_contract_register_display import attach
+        attach(responses.data, '2026-11-06')
         page.locator('#contractsTab').click()
         shown = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         expect(shown.locator('.contract-money')).to_contain_text('2 000')
-        expect(shown.locator('.contract-money .contract-done')).to_have_count(0)
+        completion = shown.locator('.contract-register-completion')
+        # A common unknown badge replaces the former absent badge. This fixture's
+        # synthetic archive id has no immutable snapshot witness for a reference.
+        expect(completion).to_have_attribute('data-completion-state', 'unknown')
+        expect(completion).to_have_attribute('data-completion-scope', 'unknown')
+        expect(completion.locator('.contract-done b')).to_have_text('—')
+        assert completion.locator('.contract-progress').count() == 0
+        expect(completion).not_to_contain_text('15%')
         more = opened(page,CONTRACT)
         actual = more.locator('[data-label="Выполнение по документам"]')
         expect(actual).to_contain_text('НДС')
