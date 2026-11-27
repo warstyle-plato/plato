@@ -72,7 +72,8 @@ def prepare(data_dir: Path, project: str, chat_id: int, items: list[dict[str, An
         "chat_id": chat_id, "asked_at": today, "message_id": 0,
         "text": html.unescape(sales_questions.message(items)),
         "questions": [{"key": item["key"], "kind": item["kind"], "text": item["text"],
-                       **{key: item[key] for key in ("subject", "baseline", "expected_event") if key in item}}
+                       **{key: item[key] for key in ("subject", "baseline", "expected_event",
+                                                    "subjects", "related_question_keys") if key in item}}
                       for item in items], "replies": [],
     }
     _save(data_dir, project, data)
@@ -81,8 +82,8 @@ def prepare(data_dir: Path, project: str, chat_id: int, items: list[dict[str, An
 
 def asked_keys(data_dir: Path, project: str) -> set[str]:
     """Журнал тоже свидетельствует об отправлявшихся вопросах."""
-    return {q["key"] for batch in load(data_dir, project)["batches"].values()
-            for q in batch["questions"]}
+    return {key for batch in load(data_dir, project)["batches"].values()
+            for question in batch["questions"] for key in sales_questions.question_keys(question)}
 
 
 def reply_project(data_dir: Path, chat_id: int, reply_to_id: int, quoted: str) -> str:
