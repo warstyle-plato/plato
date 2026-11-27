@@ -394,6 +394,16 @@ def _publish_reread(path, fresh, expected_metadata_sha256, metadata_read=None):
     _json(path, fresh)
 
 
+def _verify_refresh_pdf(folder, sha, verified):
+    import developaid_contract_identity_store as namespace
+    try:
+        raw = namespace.read_bytes(folder/(sha+'.pdf'), len(verified))
+    except namespace.IdentityProblem:
+        raise ContractFilesProblem('Исходный PDF изменился во время обновления разбора.') from None
+    if raw is None or hashlib.sha256(raw).hexdigest() != sha:
+        raise ContractFilesProblem('Исходный PDF изменился во время обновления разбора.')
+
+
 def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]], budget: dict | None = None,
                         approvals: dict | None = None, *, selected_documents: frozenset | None = None,
                         _proof_budget=None, _future_price_passes=None) -> dict | None:
@@ -553,16 +563,12 @@ def refresh_parse_cache(project: str, groups: list[tuple[tuple[str, ...], bool]]
                       if _future_price_passes is None else _future_price_passes)
             _proof_budget.reserve_price_proofs(future_pdfs, passes, after_pdfs)
             for folder, sha, _, verified, _, _ in candidates:
-                raw = namespace.read_bytes(folder/(sha+'.pdf'), len(verified))
-                if raw is None or hashlib.sha256(raw).hexdigest() != sha:
-                    raise ContractFilesProblem('Исходный PDF изменился во время обновления разбора.')
+                _verify_refresh_pdf(folder, sha, verified)
             for path, fresh, previous_metadata in staged:
                 _publish_reread(path, fresh, previous_metadata, write_read)
         else:
             for folder, sha, _, verified, _, _ in candidates:
-                raw = namespace.read_bytes(folder/(sha+'.pdf'), len(verified))
-                if raw is None or hashlib.sha256(raw).hexdigest() != sha:
-                    raise ContractFilesProblem('Исходный PDF изменился во время обновления разбора.')
+                _verify_refresh_pdf(folder, sha, verified)
 
         def sealed(inventory, *, after=False):
             observed = copy.deepcopy(inventory)

@@ -170,7 +170,7 @@ def test_parser_window_pdf_growth_is_bounded_by_original_verified_length_before_
             path.write_bytes(raw+b'x')
             grown.append((path, len(raw)))
         return fresh
-    def read(path, cap):
+    def read(path, cap=store.MAX_BYTES):
         if grown and path == grown[0][0]:
             caps.append(cap)
         return native_read(path, cap)
@@ -178,7 +178,7 @@ def test_parser_window_pdf_growth_is_bounded_by_original_verified_length_before_
     monkeypatch.setattr(store, 'read_bytes', read)
     monkeypatch.setattr(files, '_json', lambda *args: pytest.fail('A grown source cannot publish parsed JSON.'))
     found = budget()
-    with pytest.raises(store.IdentityProblem):
+    with pytest.raises(files.ContractFilesProblem, match='PDF изменился'):
         files.refresh_parse_cache(PROJECT, [(tuple(sorted([pair['old'], pair['new']])), True)],
                                   found.totals, _proof_budget=found)
     assert grown and caps == [grown[0][1]]
