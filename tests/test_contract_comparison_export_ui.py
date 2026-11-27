@@ -98,7 +98,7 @@ def _full_card(cached,contract_id):
     return cached
 
 def _browser_export(page,cached,contract_id,key,calls):
-    cached=_full_card(cached,contract_id)
+    cached.update(_full_card(cached,contract_id))
     def documents(route):
         body=route.request.post_data_json
         assert body['project']==PROJECT and body['cut']==CUT and body['contract_id']==contract_id
