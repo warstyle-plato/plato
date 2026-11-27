@@ -199,7 +199,7 @@ def _parking_clarifications(items: list[dict[str, Any]], rows: list[dict[str, An
             "kind": "contract_identity", "related_question_keys": keys,
             "subjects": [dict(item["subject"]) for item in pair],
             "text": (f"В выгрузке есть договоры «{names[0]}» и «{names[1]}» "
-                     "с одинаковыми датой, площадью и стоимостью машино-места. "
+                     "с одинаковыми датой, площадью и суммой договора. "
                      "Подскажите, оба договора действуют или один заменил другой?")}
         replacements.update({key: clarification for key in keys})
     out, seen = [], set()
