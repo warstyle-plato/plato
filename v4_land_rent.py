@@ -511,7 +511,7 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
             preset_gate = (f'AND({preset_gate},COUNT($I$13)=1,$I$13>=46024,$I$9<>"Муниципальная или иная",'
                            'OR($I$10="Обычное, без торгов",$I$10="Не подтверждено"),$I$11="Нет")')
     valid = (f'AND(OR($B$8="Ручные ставки",{preset_gate}),'
-             'OR($L$15="",AND(COUNT($L$15)=1,YEAR($L$15)>=1900,YEAR($L$15)<=2200)),'
+             'IF($L$15="",1,IF(COUNT($L$15)=1,AND(YEAR($L$15)>=1900,YEAR($L$15)<=2200),0)),'
              'OR($F$13="Кадастровая стоимость",$F$13="Годовая сумма договора"),'
              'COUNT($B$9)=1,$B$9>0,COUNT($B$10)=1,YEAR($B$10)>=1900,YEAR($B$10)<=2200,OR($F$10="",COUNT($F$10)=1),OR($B$15>=$B$14,COUNT($L$15)=1),$F$11>=$B$15,'
              'OR($B$12="Первый год отдельно от ВРИ",AND($B$12="Первый год полностью включён в ВРИ",$F$12="Да")),'
@@ -524,7 +524,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         f'IF(IFERROR({valid},0),"Заданы","Не полны"))'))
     valid = '$I$20="Заданы"'
     final = 'IF(COUNT($F$10)=1,MIN($F$10,$F$11),$F$11)'
-    coverage = f'AND($F$11<=EDATE($B$10,{YEARS * 12}),$B$14>=$D$3,$F$11<=EDATE($D$3,{months}))'
+    # A linked empty input is formula text (""), not an empty Excel cell.
+    # AND evaluates all arguments; only IF can protect EDATE from that text.
+    coverage = f'IF(COUNT($B$10)=1,AND($F$11<=EDATE($B$10,{YEARS * 12}),$B$14>=$D$3,$F$11<=EDATE($D$3,{months})),0)'
     put(16, "B16", formula=f"MAX(I{pre_first}:I{pre_end})")
     year_range = f'$A${pre_first}:$A${pre_end}'
     year_checks = [f'AND(COUNT(A{n})=1,A{n}>=1,A{n}<={YEARS},A{n}=ROUND(A{n},0),COUNTIF({year_range},A{n})=1)'
@@ -831,7 +833,11 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
                 if exposure_mode:
                     dev_dest = development_segment_first + p*(YEARS+2) + year
                     own_pre = f'MAX(0,({g_phase(f"MIN({hi},$C${r})",r)})-({g_phase(f"MIN({lo},$C${r})",r)}))'
-                    development = (f'IF({own}>0,{col}{dest}*{own_pre}/{own},0)'
+                    # The validated source already owns missing/zero/known
+                    # rent. Preserve its text and skip base arithmetic for a
+                    # real zero, including strategies on an owned parcel.
+                    development = (f'IF(COUNT({amount})=0,{amount},IF({amount}=0,0,'
+                                   f'IF({own}>0,{col}{dest}*{own_pre}/{own},0)))'
                                    if phase_land[p].get("retained") or phase_land[p].get("policy") == "income_horizon" else f'{col}{dest}')
                     put(dev_dest,f'{col}{dev_dest}',formula=development,style=styles["amount"])
                 if index == 0:
@@ -880,8 +886,9 @@ def build_sheet(inputs: dict[str, Any], result: dict[str, Any], styles: dict[str
         put(n, f"D{n}", unit, style=styles["input_text"])
         put(n, f"E{n}", formula=f'IF(COUNT(C{n})=0,0,IF(D{n}="%",SUM($D$4:${last_col}$4)*C{n}/100,C{n}))', style=styles["amount"])
         put(n, f"F{n}", formula=f'IF(COUNT(A{n})=1,B{n}-DAY(B{n})+1,0)', style=styles["date"])
-        put(n, f"G{n}", formula=f'IF(AND(COUNT(A{n})=0,COUNT(C{n})=0),0,IF(AND(COUNT(A{n})=1,A{n}>=0,A{n}<=1200,A{n}=ROUND(A{n},0),COUNT(C{n})=1,C{n}>=0,B{n}>=$B$14,B{n}<$F$11,OR(D{n}="%",D{n}="млн ₽")),0,1))')
-        put(n,f"H{n}",formula=f'IF(AND(COUNT(A{n})=1,A{n}>=0,A{n}<=1200,A{n}=ROUND(A{n},0),COUNT(C{n})=1,C{n}>0,OR(D{n}="%",D{n}="млн ₽")),EDATE(B{n}-DAY(B{n})+1,1),0)',style=styles["date"])
+        numeric_payment = f'AND(COUNT(A{n})=1,COUNT(C{n})=1)'
+        put(n, f"G{n}", formula=f'IF(AND(COUNT(A{n})=0,COUNT(C{n})=0),0,IF({numeric_payment},IF(AND(A{n}>=0,A{n}<=1200,A{n}=ROUND(A{n},0),C{n}>=0,B{n}>=$B$14,B{n}<$F$11,OR(D{n}="%",D{n}="млн ₽")),0,1),1))')
+        put(n,f"H{n}",formula=f'IF({numeric_payment},IF(AND(A{n}>=0,A{n}<=1200,A{n}=ROUND(A{n},0),C{n}>0,OR(D{n}="%",D{n}="млн ₽")),EDATE(B{n}-DAY(B{n})+1,1),0),0)',style=styles["date"])
     horizon_cell = next(c for c in rows[11] if c.get("r")=="F11")
     horizon_cell.find(_tag("f")).text=f'MAX({project_end_formula or rve_formula},IF($F$16="Ручной график",MAX(H{pay_first}:H{pay_end}),0))'
     if layout is not None:

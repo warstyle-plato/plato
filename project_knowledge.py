@@ -18,6 +18,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from normative_sources import registry_path
+
 _ROOT = Path(__file__).resolve().parent
 RULES_FILES = ("CLAUDE.md", "docs/CLAUDE_HISTORY_*.md")
 SOURCES = {
@@ -131,7 +133,7 @@ def act_provisions(act_id: str) -> dict[str, Any]:
     методика Платона читают их отсюда, а не держат своих пересказов.
     """
     try:
-        rows = json.loads((_ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+        rows = json.loads(registry_path(_ROOT).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     for row in rows if isinstance(rows, list) else []:
@@ -158,7 +160,7 @@ def provisions_text(row: dict[str, Any]) -> str:
 
 def _provision_entries() -> list[dict[str, str]]:
     try:
-        rows = json.loads((_ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+        rows = json.loads(registry_path(_ROOT).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     found = []
@@ -169,7 +171,12 @@ def _provision_entries() -> list[dict[str, str]]:
             if not isinstance(item, dict):
                 continue
             title = f"{row.get('short_name') or row.get('id')}: {item.get('subject')}, {item.get('point')}"
-            body = (f"{title}\n{row.get('title', '')}\n{item.get('text')}\n"
+            body = (f"{title}\n{row.get('title', '')}\n"
+                    f"Источник: {row.get('source_url', '')} ({row.get('source_label', '')}).\n"
+                    f"Редакция проверена на {row.get('current_as_of', 'не указано')}; "
+                    f"статус подтверждения: {row.get('status', 'не указан')}; "
+                    f"дата действия: {row.get('effective_from') or 'не подтверждена'}.\n"
+                    f"{row.get('provisions_use', '')}\n{item.get('text')}\n"
                     f"Род: {item.get('kind')}. Цитата: «{item.get('quote')}»")
             found.append({"source": "normative", "title": title, "text": body})
     return found

@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import datetime
 import io
+import math
 import re
 from typing import Any, Iterable, Sequence
 
@@ -187,6 +188,43 @@ def _number(value: Any) -> float:
         return 0.0
 
 
+def _escrow_observation(value: Any, *, header: str | None, column: int | None,
+                        row: int) -> tuple[bool, dict[str, Any]]:
+    """Whether the native cumulative cell supports its existing parsed amount.
+
+    This only records evidence. The legacy monetary reader remains unchanged;
+    unsupported currency text must not turn its fallback zero into an observation.
+    """
+    evidence = {"sheet": SHEET_CONTRACTS, "header": header, "column": column,
+                "row": row, "raw_kind": "invalid", "reason": "not_numeric"}
+    if column is None:
+        evidence["reason"] = "native_column_missing"
+    elif value is None or (isinstance(value, str) and not value.strip()):
+        evidence.update(raw_kind="blank", reason="blank")
+    elif isinstance(value, bool):
+        evidence["reason"] = "boolean"
+    elif isinstance(value, (int, float)):
+        evidence["raw_kind"] = "numeric"
+        evidence["reason"] = "observed" if math.isfinite(value) else "non_finite"
+    elif isinstance(value, str):
+        text = value.strip()
+        match = re.fullmatch(
+            r"([+-]?(?:[0-9]+|[0-9]{1,3}(?:[ \u00a0\u202f][0-9]{3})+)(?:[.,][0-9]+)?)"
+            r"(?:\s*(₽|руб\.?|RUB))?", text, re.I)
+        if match:
+            evidence["raw_kind"] = "numeric_text"
+            # Only text supported by the existing monetary conversion is evidence.
+            # No alternate amount is exposed or used by consumers.
+            if match[2] or "\u202f" in match[1]:
+                evidence["reason"] = "unsupported_legacy_numeric_rendering"
+            else:
+                legacy = _number(value)
+                strict = float(re.sub(r"[ \u00a0\u202f]", "", match[1]).replace(",", "."))
+                evidence["reason"] = ("observed" if math.isfinite(legacy) and legacy == strict
+                                      else "non_finite")
+    return evidence["reason"] == "observed", evidence
+
+
 def _rows(data: bytes, sheet: str) -> list[list[Any]]:
     """Строки листа. Формат решает содержимое, а не расширение.
 
@@ -282,7 +320,7 @@ def read_contracts(data: bytes) -> dict[str, Any]:
                       if _excel_date(name) is not None and i > (index.get("escrow_total") or 0)]
 
     out: list[dict[str, Any]] = []
-    for row in rows[_HEADER_ROW:]:
+    for row_number, row in enumerate(rows[_HEADER_ROW:], start=_HEADER_ROW + 1):
         def cell(key: str) -> Any:
             position = index.get(key)
             return row[position] if position is not None and position < len(row) else None
@@ -291,6 +329,10 @@ def read_contracts(data: bytes) -> dict[str, Any]:
             continue
         buyer = str(cell("buyer") or "")
         signed = _excel_date(cell("date"))
+        escrow_index = index.get("escrow_total")
+        escrow_observed, escrow_evidence = _escrow_observation(
+            cell("escrow_total"), header=header[escrow_index] if escrow_index is not None else None,
+            column=escrow_index + 1 if escrow_index is not None else None, row=row_number)
         out.append({
             # Квартал у части строк пуст — берём из даты договора, а не теряем
             # тринадцать сделок в «прочем».
@@ -316,6 +358,8 @@ def read_contracts(data: bytes) -> dict[str, Any]:
             "broker_rate": None if cell("broker_rate") in (None, "") else _number(cell("broker_rate")),
             "sales_bonus_paid": _number(cell("sales_bonus_paid")),
             "escrow_paid": _number(cell("escrow_total")),
+            "escrow_observed": escrow_observed,
+            "escrow_evidence": escrow_evidence,
             # Имя покупателя наружу не идёт: остаётся только признак.
             "company_buyer": bool(_COMPANY.search(buyer)),
             # Фамилия — ключ сведения с проводками комиссий, и живёт она ровно

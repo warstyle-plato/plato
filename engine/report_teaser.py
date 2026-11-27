@@ -132,8 +132,10 @@ def _teaser_sweep(kind: str = "teaser") -> None:
 
 
 def _teaser_filename(inputs: dict[str, Any]) -> str:
+    if inputs.get("export_name"):
+        return _project_export_filename("Тизер", inputs["export_name"], "pdf")
     project_name = str(inputs.get("project_name") or "DevelopAid").strip()
-    safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", project_name).strip("_")[:60] or "DevelopAid"
+    safe = _safe_file_stem(project_name, spaces=False)
     return f"DevelopAid_Тизер_{safe}.pdf"
 
 
@@ -170,7 +172,8 @@ def _teaser_build(ticket: str, payload: dict[str, Any], inputs: dict[str, Any]) 
                                    payload.get("phasing") or {}, facts, map_png,
                                    entry_price=entry_price)
         _teaser_write(_teaser_job_path(ticket, "pdf"), content)
-        meta = {"filename": _teaser_filename(inputs), "seconds": round(time.time() - started, 1)}
+        meta = {"filename": _teaser_filename({**inputs, "export_name": payload.get("export_name")}),
+                "seconds": round(time.time() - started, 1)}
         logging.info("teaser %s built in %.1fs", ticket, time.time() - started)
     except HTTPException as exc:
         meta = {"error": str(exc.detail), "status": exc.status_code}
@@ -276,9 +279,8 @@ def report_teaser_result(ticket: str) -> Response:
 
 
 def _report_filename(payload: dict[str, Any]) -> str:
-    project_name = str(payload.get("project_name") or "DevelopAid").strip()
-    safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", project_name).strip("_")[:60] or "DevelopAid"
-    return f"DevelopAid_Отчет_{safe}_{date.today().isoformat()}.pdf"
+    subject = payload.get("export_name") or payload.get("project_name") or "DevelopAid"
+    return _project_export_filename("Отчет", subject, "pdf", spaces=bool(payload.get("export_name")))
 
 
 def _report_build(ticket: str, payload: dict[str, Any]) -> None:

@@ -38,7 +38,7 @@ function currentPdfReportPayload(cads=[]){
  const glavapuMeta=inputs._glavapu_import||null;
  const manualMeta=inputs._manual_tep_import||null;
  const source=(glavapuMeta&&glavapuMeta.source)||(manualMeta&&manualMeta.source)||{};
- return {result:lastResult,inputs:inputs,tep:tep,rates:rates,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',source_label:tepSourceLabel(!!manualMeta),
+ return {result:lastResult,inputs:inputs,tep:tep,rates:rates,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',export_name:currentExportName(),source_label:tepSourceLabel(!!manualMeta),
    // Чувствительность попадает в отчёт только если её считали: гнать полсотни
    // расчётов внутри сборки PDF ради раздела, который никто не просил, незачем.
    sensitivity:sensitivityReport,
@@ -56,9 +56,11 @@ async function exportReportPdf(){
  const button=document.querySelector('[onclick="exportReportPdf()"]');
  const label=button?button.textContent:'';
  const show=text=>{if(button){button.disabled=!!text;button.textContent=text||label}};
+ const payload=currentPdfReportPayload();
+ const filename=projectExportFileName('Отчет',payload.export_name,'pdf',`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`);
  try{
   let response=await fetch('/report/pdf',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
+   body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},payload))});
   const deadline=Date.now()+TEASER_POLL_LIMIT_MS;
   while(response.status===202){
    let state={};try{state=await response.json()}catch(e){}
@@ -70,7 +72,7 @@ async function exportReportPdf(){
   }
   if(!response.ok||response.status!==200){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}alert(detail);return;}
   const blob=await response.blob();
-  downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'',`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`);
+  downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'',filename);
  }finally{show('')}
 }
 
@@ -84,9 +86,11 @@ async function exportTeaserPdf(){
  const button=document.querySelector('[onclick="exportTeaserPdf()"]');
  const label=button?button.textContent:'';
  const show=text=>{if(button){button.disabled=!!text;button.textContent=text||label}};
+ const payload=currentPdfReportPayload();
+ const filename=projectExportFileName('Тизер',payload.export_name,'pdf','DevelopAid_Тизер.pdf');
  try{
   let response=await fetch('/report/teaser',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
+   body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},payload))});
   const deadline=Date.now()+TEASER_POLL_LIMIT_MS;
   while(response.status===202){
    let state={};try{state=await response.json()}catch(e){}
@@ -98,7 +102,7 @@ async function exportTeaserPdf(){
   }
   if(!response.ok||response.status!==200){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}alert(detail);return;}
   const blob=await response.blob();
-  downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'','DevelopAid_Тизер.pdf');
+  downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'',filename);
  }finally{show('')}
 }
 const TEASER_POLL_MS=3000;
@@ -125,12 +129,15 @@ async function exportModelArchive(){
  try{
   await calculate();
   const manualMeta=inputs._manual_tep_import||null;
+  const exportName=currentExportName();
+  const filename=projectExportFileName('модель',exportName,'xlsx',`DevelopAid_модель_${new Date().toISOString().slice(0,10)}.xlsx`);
   const response=await fetch('/report/workbook',{
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({
     inputs,tep,rates,
     phasing:(typeof phasing!=='undefined'?phasing:{}),
     project_name:(manualMeta&&manualMeta.project_name)||'',
+    export_name:exportName,
     scenario:scenarioSelect.value||'base',
     session:activeSession(),access_key:projectsAdminKey
    })
@@ -143,7 +150,7 @@ async function exportModelArchive(){
   downloadBlobResponse(
    await response.blob(),
    response.headers.get('Content-Disposition'),
-   `DevelopAid_модель_${new Date().toISOString().slice(0,10)}.xlsx`
+   filename
   );
  }finally{
   if(button){button.disabled=false;button.textContent=label||'Скачать модель (Excel)'}
@@ -928,8 +935,39 @@ function saveJsonFile(name,data){
  document.body.removeChild(a);setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
-function safeFileName(name){
- return String(name||'Проект').replace(/[\\/:*?"<>|]+/g,' ').trim().slice(0,60)||'Проект';
+function safeFileName(name,fallback='Проект'){
+ let stem=Array.from(String(name||'').normalize('NFC').replace(/[^\p{L}\p{N}_ -]+/gu,'_').replace(/^[ _]+|[ _]+$/g,'')).slice(0,60).join('');
+ while(new TextEncoder().encode(stem).length>160)stem=Array.from(stem).slice(0,-1).join('');
+ return stem.replace(/[ _]+$/g,'')||fallback;
+}
+
+function projectExportFileName(label,subject,extension,fallback){
+ const stem=safeFileName(subject,'');
+ return subject?'DevelopAid_'+label+(stem?'_'+stem:'')+'_'+new Date().toISOString().slice(0,10)+'.'+extension:fallback;
+}
+
+// Only the current snapshot and its opened cabinet record can name an export.
+// The separate metadata leaves document titles and calculation inputs unchanged.
+function projectSourceAddress(source,query,stored){
+ if(!source)return '';
+ const requested=[...new Set(cadastralNumbersIn(query))];
+ const known=[...new Set([source.cadastral_numbers,source.recognized,source.territory?.cadastral_numbers,
+  source.parcels?.map(p=>p.cadastral_number)].filter(Array.isArray).flat())];
+ const bound=query?(String(source.query||'').trim()===query||
+  (requested.length&&requested.length===known.length&&requested.every(n=>known.includes(n)))):stored;
+ if(!bound)return '';
+ return String(source.territory?.address||source.parcels?.find(p=>p.address)?.address||'').trim();
+}
+
+function currentExportName(){
+ const name=String(openedProject?.name||inputs._manual_tep_import?.project_name||'').trim();
+ if(name)return name;
+ const address=String(inputs.project_address||inputs.address||'').trim();
+ if(address)return address;
+ const query=String(inputs._cadastral_query||inputs._mo_calc?.query||'').trim();
+ if(query&&!cadastralNumbersIn(query).length&&/\p{L}/u.test(query))return query;
+ return projectSourceAddress(inputs._cadastral_analysis,query,true)||projectSourceAddress(inputs._mo_calc,query,true)||
+  projectSourceAddress(cadastralAnalysis,query,false)||projectSourceAddress(moResult,query,false);
 }
 
 async function downloadSettingsFile(id){
@@ -944,16 +982,16 @@ async function downloadSettingsFile(id){
 // Текущий проект — тот, что открыт на экране, а не сохранённый. Сохранять
 // ради выгрузки не заставляем: человек мог ничего не сохранять вовсе.
 function downloadCurrentSettings(){
- saveJsonFile(safeFileName(currentProjectName())+' — настройки DevelopAid.json',
-  settingsFileFrom(currentProjectName(),
+ const name=currentProjectName();
+ saveJsonFile(projectExportFileName('настройки',currentExportName(),'json',safeFileName(name)+' — настройки DevelopAid.json'),
+  settingsFileFrom(name,
    {inputs:inputs,tep:persistedTep(tep),phasing:phasing,scenario:scenarioSelect.value}));
 }
 
-// Имя берётся оттуда же, откуда его предлагает сохранение на сервер: своего
-// поля с именем на странице нет, и заводить второе значило бы развести их.
+// Настройки называют тот же текущий проект, что PDF и Excel; без имени и
+// адреса сохраняют прежнюю метку по кадастровому номеру.
 function currentProjectName(){
- const meta=inputs._manual_tep_import||null;
- return (meta&&meta.project_name)||projectCadastral()[0]||'Проект DevelopAid';
+ return currentExportName()||projectCadastral()[0]||'Проект DevelopAid';
 }
 
 function importSettingsFile(){
@@ -1234,6 +1272,7 @@ function resetMoParams(){
 }
 function resetAll(){
  localStorage.removeItem('plato_v04');
+ resetSalesPeriodCharts();
  // Открытая подсказка «i» говорит о числе прошлого проекта — закрыть.
  hideKpiTip();
  inputs=resetInputsWanted();

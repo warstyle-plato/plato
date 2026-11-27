@@ -124,7 +124,13 @@ def test_the_card_plan_follows_confirmations_a_new_schedule_and_removal(card):
 
     # Соглашение № 6 приносит только новый график: тот же расчёт ложится на новые сроки.
     sixth = files.store("Учебный", ROW, "ДС6.pdf", schedule_pdf(lines=LATER, title=AGREEMENT_6))["sha256"]
-    moved = files.listing("Учебный", CONTRACT, "2026-02-04")["plan"]
+    pending = files.listing("Учебный", CONTRACT, "2026-02-04")
+    assert pending["plan"]["in_force"] == card
+    import developaid_contract_gpr as gpr
+    accepted = gpr.save("Учебный", ROW, "2026-02-04", sixth, pending["gpr"]["guard"], "activate",
+                        "Подпись контрагента проверена на учебной странице 1", "synthetic-owner",
+                        counterparty_signed=True)
+    moved = accepted["plan"]
     assert moved["in_force"] == sixth
     current = moved["editions"][-1]
     assert current["estimate"] == "Дополнительное соглашение № 4 от 01.02.2026"

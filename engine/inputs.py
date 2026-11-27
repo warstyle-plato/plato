@@ -2053,7 +2053,7 @@ RESIDENTIAL_ONLY_INPUTS = [
     "seasonal_reduction_pct", "pace_adjustment_pct",
     "sales_lag_months", "bridge_repay_lag_months", "land_rights_cost_mln",
     *(field[0] for group in FIELD_GROUPS if group[0] == "Смена ВРИ и земельные права"
-      for field in group[1] if field[0] != "vri_region"),
+      for field in group[1] if field[0] not in ("vri_region", "land_right")),
     *(field[0] for group in FIELD_GROUPS if group[0] == "Социальная нагрузка"
       for field in group[1]),
 ]

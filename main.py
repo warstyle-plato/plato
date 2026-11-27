@@ -1874,12 +1874,59 @@ def _deliver_management_reports() -> list[dict[str, Any]]:
     return done
 
 
+def _sales_followup_call(action: str, **values) -> dict[str, Any]:
+    payload = dict(values, action=action, sign=core._web_login_sign("sales-followups", 0))
+    url = core._core_api_url("/internal/monitor/sales-followups")
+    if url:
+        return core._core_post(url, payload, 20.0)
+    return core.internal_monitor_sales_followups(core.SalesFollowupRequest(**payload))
+
+
+def _deliver_sales_followups() -> dict[str, Any]:
+    """Existing minute poll; plans/claims/receipts live only on the durable core."""
+    if not core._telegram_token() or not core._telegram_webhook_enabled():
+        return {"items": [], "errors": []}
+    pending = _sales_followup_call("poll")
+    receipts = []
+    for item in pending.get("items") or []:
+        scope = item["scope"]
+        values = {"chat_id": scope["chat_id"], "project": scope["monitor_project"],
+                  "sales_project": item["sales_project"], "delivery_id": item["id"]}
+        # The core rechecks the exact grant, project link and live claim here.
+        try:
+            authorized = _sales_followup_call("begin", **values, claim_id=item["claim_id"])
+        except Exception:
+            continue  # one revoked/unavailable scope does not stop other current groups
+        if authorized.get("authorized") is not True:
+            continue
+        message_id, error = 0, ""
+        try:
+            sent = core._telegram_send_message(scope["chat_id"], authorized["text"])
+            message_id = int((sent or {}).get("message_id") or 0)
+        except Exception as exc:
+            error = type(exc).__name__  # never persist URLs/credentials from exceptions
+        receipt = dict(values, attempt_id=authorized["attempt_id"], message_id=message_id, error=error)
+        for _ in range(2):
+            try:
+                result = _sales_followup_call("receipt", **receipt)
+                receipts.append(result)
+                break
+            except Exception:
+                # Retry only the receipt, never the Telegram send attempt.
+                continue
+    return {"items": receipts, "errors": pending.get("errors") or []}
+
+
 def _management_report_loop() -> None:
     while True:
         try:
             _deliver_management_reports()
         except Exception:
             pass  # отданное ядром помечено «не подтверждено» — это видно владельцу
+        try:
+            _deliver_sales_followups()
+        except Exception:
+            pass  # durable core intents prevent duplicate sends after a lost acknowledgement
         time.sleep(60)
 
 

@@ -96,7 +96,7 @@ def authorize(path: Path, owner_key: str, chat_id: int, name: str) -> None:
         raise AccessDenied("Укажите проект и отрицательный Telegram ID группы.")
     with locked(path):
         grants = _current_state(path, owner_key)
-        grant = {"version": 1, "generation": grants["_generation"], "chat_id": chat_id,
+        grant = {"version": 1, "generation": grants["_generation"], "authorization_id": secrets.token_hex(16), "chat_id": chat_id,
                  "project": name, "actions": list(ACTIONS)}
         grants[str(chat_id)] = {"grant": grant, "signature": _signature(grant, owner_key)}
         _save(path, grants)

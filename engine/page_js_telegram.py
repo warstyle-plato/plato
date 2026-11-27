@@ -86,8 +86,6 @@ async function applyTelegramManualTep(manual,options){
  // хуже, с номерами прошлого расчёта, и непонятно, что именно посчитано.
  const numbers=((manual.source||{}).cadastral_numbers)||[];
  writeCadastralField(numbers.join(', '));
- const preview=document.getElementById('cadastralPreview');
- if(preview){preview.innerHTML='';preview.style.display='none';}
  if(typeof cadastralStatus!=='undefined'&&cadastralStatus){
   cadastralStatus.innerHTML=numbers.length
    ? '<span class="import-ok">Участков в расчёте: '+numbers.length+'.</span> Территория пришла из Telegram вместе с ТЭП.'
@@ -204,6 +202,8 @@ async function initializeTelegramLaunch(){
   if(status)status.innerHTML='<span class="import-error">Расчёт из чата не прошёл: '+why+'</span>';
   const tg=window.Telegram&&window.Telegram.WebApp;
   if(tg&&tg.MainButton){try{tg.MainButton.enable();tg.MainButton.setText('Обновить расчёт в Telegram')}catch(err){}}
+ }finally{
+  applyTelegramCalcOverrides.restoreParcel=false;
  }
 }
 
@@ -271,6 +271,9 @@ async function runTelegramLaunch(){
   setupTelegramEditSubmit();
   return;
  }
+ // Номер карточки восстанавливается один раз при запуске. Последующее
+ // получение ТЭП по другому номеру — явная смена участка пользователем.
+ if(telegramCalcOverrides._cadastral_query)applyTelegramCalcOverrides.restoreParcel=true;
  if(telegramMode==='intake'){
   // «Всё верно, считать» из карточки тизера в чате. Расчёт — умолчания
   // движка, участок (если он в тизере) и поверх ровно строки карточки, без
@@ -364,6 +367,7 @@ async function initializeApp(){
  repairParkingFromGlavapu();
  renderInputs();
  renderTep();
+ renderStoredCadastralQuery();
  renderStoredGlavapu();
  renderStoredCadastral();
  renderStoredLand();

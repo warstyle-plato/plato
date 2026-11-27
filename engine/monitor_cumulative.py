@@ -18,6 +18,13 @@ class MonitorCumulativeProject(MonitorCumulativeAuth):
     project: str = _CumulativeField(min_length=1, max_length=200)
 
 
+class MonitorCumulativeSnapshotState(MonitorCumulativeProject):
+    model_config = {'extra': 'forbid', 'strict': True}
+    snapshot_id: str = _CumulativeField(pattern=r'^\d{4}-\d{2}-\d{2}-[0-9a-f]{64}$')
+    expected_revision: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
+    restore: bool = False
+
+
 class MonitorCumulativeUpload(MonitorCumulativeProject):
     taken_at: str
     filename: str = _CumulativeField(default="", max_length=240)
@@ -30,11 +37,40 @@ class MonitorContractsBuild(MonitorCumulativeProject):
     ticket: str = ""
 
 
+class MonitorContractDiskScan(MonitorContractsBuild):
+    model_config = {'extra': 'forbid', 'strict': True}
+    source: str = _CumulativeField(min_length=1, max_length=512)
+
+
+class MonitorContractDiskStage(MonitorContractsBuild):
+    model_config = {'extra': 'forbid', 'strict': True}
+    revision: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
+    item_ids: list[str] = _CumulativeField(min_length=1, max_length=20)
+
+    @_CumulativeValidator('item_ids')
+    @classmethod
+    def checked_ids(cls, value):
+        if len(set(value)) != len(value) or any(not re.fullmatch(r'[0-9a-f]{64}', item) for item in value):
+            raise ValueError('Выберите разные исходники из этой проверки каталога.')
+        return value
+
+
+class MonitorContractDiskApply(MonitorContractsBuild):
+    model_config = {'extra': 'forbid', 'strict': True}
+    stage_token: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
+    taken_at: str = _CumulativeField(default='', max_length=10)
+
+
 class MonitorContractRegisterBuild(MonitorContractsBuild):
     chunked: bool = _CumulativeField(default=False, strict=True)
     profile_stages: bool = _CumulativeField(default=False, strict=True)
     profile_matching_cache_off: bool = _CumulativeField(default=False, strict=True)
     profile_matching_verify: bool = _CumulativeField(default=False, strict=True)
+
+
+class MonitorContractParseRefresh(MonitorContractsBuild):
+    model_config = {'extra': 'forbid', 'strict': True}
+    expected_guard: str = _CumulativeField(default='', pattern=r'^([0-9a-f]{64})?$')
 
 
 class MonitorContractsTerm(MonitorContractsBuild):
@@ -88,6 +124,24 @@ class MonitorContractComparisonExport(MonitorContractDocuments):
         if len(set(value)) != len(value) or any(not re.fullmatch(r"[0-9a-f]{64}", token) for token in value):
             raise ValueError("Нужны уникальные номера строк этой версии таблицы.")
         return value
+
+
+class MonitorContractGprChange(MonitorContractDocuments):
+    model_config = {'extra': 'forbid', 'strict': True}
+    source_sha256: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
+    expected_guard: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
+    action: str = _CumulativeField(pattern=r'^(anchor|activate)$')
+    handover_date: str = _CumulativeField(default='', max_length=10)
+    advance_date: str = _CumulativeField(default='', max_length=10)
+    counterparty_signed: bool = False
+    note: str = _CumulativeField(min_length=5, max_length=1000)
+
+
+class MonitorContractGprExport(MonitorContractDocuments):
+    model_config = {'extra': 'forbid', 'strict': True}
+    cut: str = _CumulativeField(min_length=10, max_length=10)
+    ticket: str = _CumulativeField(pattern=r'^[0-9a-f]{32}$')
+    revision: str = _CumulativeField(pattern=r'^[0-9a-f]{64}$')
 
 
 class MonitorContractSourceReview(MonitorContractDocuments):
@@ -317,11 +371,14 @@ class MonitorGprPhysicalSave(MonitorCumulativeProject):
 _IDENTITY_PATHS = frozenset('/monitor/contracts/identity/'+name for name in
                             ('inventory', 'confirm', 'revoke', 'resolve', 'result',
                              'correction-inventory', 'correction-preview', 'correct-sources'))
+_CONTRACT_DISK_PATHS = frozenset('/monitor/contracts/disk/'+name for name in ('scan','stage','apply','result'))
+_SNAPSHOT_ACTIVITY_PATHS = frozenset({'/monitor/cumulative/remove'})
 _PDF_INTAKE_PATHS = frozenset('/monitor/contracts/pdf-intake/'+name for name in ('preview', 'commit', 'result'))
-_CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | frozenset({
+_CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS | frozenset({
     '/monitor/schedule/version-preview', '/monitor/schedule/version-approve',
     "/monitor/cumulative/upload", "/monitor/cumulative/result",
-    "/monitor/cumulative/list", "/monitor/contracts/build",
+    "/monitor/cumulative/list", "/monitor/contracts/build", "/monitor/contracts/parse-refresh",
+    "/monitor/contracts/disk/scan", "/monitor/contracts/disk/stage", "/monitor/contracts/disk/apply", "/monitor/contracts/disk/result",
     "/monitor/contracts/result", "/monitor/contracts/result-part", "/monitor/contracts/term", "/monitor/contracts/link", "/monitor/contracts/header-date",
     "/monitor/contracts/source-review",
     "/monitor/contracts/source-audit",
@@ -329,7 +386,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | frozenset({
     "/monitor/contracts/source-duplicate-proof",
     "/monitor/contracts/source-prepared-index",
     "/monitor/contracts/documents", "/monitor/contracts/document-upload",
-    "/monitor/contracts/comparison.xlsx",
+    "/monitor/contracts/comparison.xlsx", "/monitor/contracts/gpr.xlsx", "/monitor/contracts/gpr-change",
     "/monitor/contracts/document-links", "/monitor/contracts/document-remove",
     "/monitor/contracts/document-confirm",
     "/monitor/view", "/monitor/gpr-view", "/monitor/gantt", "/monitor/schedule-fact", "/monitor/gpr-corpus/view",
@@ -346,7 +403,7 @@ _CUMULATIVE_PATHS = _IDENTITY_PATHS | _PDF_INTAKE_PATHS | frozenset({
 
 @app.middleware("http")
 async def monitor_cumulative_private_headers(request: Request, call_next):
-    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS or request.url.path == "/monitor/contracts/comparison.xlsx") and request.method == 'POST':
+    if (request.url.path in _IDENTITY_PATHS | _PDF_INTAKE_PATHS | _SNAPSHOT_ACTIVITY_PATHS | _CONTRACT_DISK_PATHS or request.url.path in {"/monitor/contracts/comparison.xlsx", "/monitor/contracts/gpr.xlsx", "/monitor/contracts/gpr-change", "/monitor/contracts/parse-refresh"}) and request.method == 'POST':
         private = {"Cache-Control": "private, no-store"}
         cap = 1024*1024 if request.url.path == "/monitor/contracts/comparison.xlsx" else 64*1024
         if request.url.path in _PDF_INTAKE_PATHS - {'/monitor/contracts/pdf-intake/result'}:
@@ -495,7 +552,163 @@ def monitor_schedule_gpr_physical_save(req: MonitorGprPhysicalSave) -> Response:
     return _monitor_schedule_gpr_physical(req, save=True)
 
 
+def _monitor_contract_document_context(register, payload, operation):
+    """One native raw/operational document owner resolver, also used by Disk intake."""
+    import developaid_monitor_contracts as contracts
+    import developaid_contract_correction as correction
+    import developaid_contract_identity_store as identity_store
+    rows = contracts.raw_rows(register)
+    row = next((value for value in rows if value['id'] == payload['contract_id']), None)
+    documents_owner, selected = payload['contract_id'], None
+    checked = payload.get('_disk_context')
+    if payload.get('view') == 'operational':
+        logical_id = payload.get('logical_contract_id') or payload['contract_id']
+        active = next((value for value in register.get('rows') or [] if value['id'] == logical_id), None)
+        selected = (active or {}).get('source_correction')
+        if not selected:
+            raise contracts.ContractProblem('Исправленная карточка не представлена на выбранную дату. Обновите реестр.')
+        if payload.get('correction_id') != selected['decision_id'] or payload.get('correction_guard') != selected['read_guard']:
+            raise contracts.ContractProblem('Данные карточки отличаются от списка договоров. Закройте карточку, обновите страницу Монитора и откройте договор снова.')
+        if operation != 'documents' and payload['contract_id'] != selected['roles']['documents_raw_id']:
+            raise contracts.ContractProblem('Карточка документов изменилась. Обновите договор перед сохранением.')
+        if checked is not None and (any(checked.get(key) != payload.get(key) for key in ('view','logical_contract_id','contract_id','correction_id','correction_guard')) or checked.get('roles') != selected['roles']
+                or checked.get('source_policy') != correction.SOURCE_POLICY or selected.get('source_policy') != correction.SOURCE_POLICY
+                or selected.get('fresh') is not True):
+            raise contracts.ContractProblem('Операционный выбор источников устарел или не поддерживается. Обновите его проверку в карточке договора.')
+        row = correction.materialize(register, active)
+        documents_owner = selected['roles']['documents_raw_id']
+    elif checked is not None:
+        if checked.get('view') != 'raw' or checked.get('contract_id') != payload['contract_id']:
+            raise contracts.ContractProblem('Проверка Диска относится к другому виду карточки.')
+        if any(event.get('action') == 'correct_sources' and any(member['raw_id'] == payload['contract_id']
+               for member in event['payload']['members']) for event in identity_store.load(payload['project'])['active']):
+            raise contracts.ContractProblem('Исходная карточка участвует в операционном выборе источников. Нужен текущий операционный допуск.')
+    owner = contracts.find_raw_row(register, documents_owner) if selected else row
+    if checked is not None:
+        import developaid_contract_disk_source as disk
+        if owner is None or payload.get('_disk_owner_guard') != disk.row_guard(owner):
+            raise contracts.ContractProblem('Реквизиты выбранной карточки документов изменились. Проверьте каталог заново.')
+    return row, owner, documents_owner, selected
+
+
+def _monitor_contract_disk_rows(project, cut):
+    import developaid_monitor_contracts as contracts
+    register = contracts.build(project, cut, include_history=False)
+    raw = contracts.raw_rows(register)
+    import developaid_contract_identity_store as identity_store
+    events = [event for event in identity_store.load(project)['active'] if event.get('action')=='correct_sources']
+    covered = {member['raw_id'] for event in events for member in event['payload']['members']}
+    represented, candidates = set(), []
+    for active in register.get('rows') or []:
+        state = active.get('source_correction')
+        if not state:
+            continue
+        represented.update(active.get('raw_member_ids') or [])
+        context = {'view': 'operational', 'logical_contract_id': active['id'],
+                   'contract_id': state['roles']['documents_raw_id'], 'correction_id': state['decision_id'],
+                   'correction_guard': state.get('read_guard'), 'roles': state['roles'],
+                   'source_policy': state.get('source_policy')}
+        event = next((event for event in events if event['event_id']==state['decision_id']), None)
+        context['member_ids'] = sorted(member['raw_id'] for member in event['payload']['members']) if event else []
+        source_owner = contracts.find_raw_row(register, state['roles']['documents_raw_id'])
+        import developaid_contract_disk_source as disk
+        payload = dict(project=project, cut=cut, **context, _disk_context=context,
+                       _disk_owner_guard=disk.row_guard(source_owner) if source_owner else '')
+        try:
+            _, owner, _, _ = _monitor_contract_document_context(register, payload, 'document-upload')
+            execution = contracts.find_raw_row(register, state['roles']['execution_raw_id'])
+            if owner is None or execution is None:
+                raise contracts.ContractProblem('Выбранный источник документов или выполнения не найден.')
+            compact = lambda value: {key: value.get(key) for key in ('id','contractor','customer','contract','contract_date','document_source_ids')}
+            candidates.append({**active, '_disk_native_owner': compact(owner),
+                               '_disk_execution_owner': compact(execution), '_disk_operational': context})
+        except (contracts.ContractProblem, ValueError) as exc:
+            candidates.append({**active, '_disk_review_reason': str(exc)})
+    candidates.extend(row if row['id'] not in covered else {**row, '_disk_review_reason':
+        'На выбранную дату нет текущего операционного допуска для этого выбора источников.'}
+        for row in raw if row['id'] not in represented)
+    return candidates
+
+
+def _monitor_contract_disk_payload(project, cut, row, entry):
+    import developaid_contract_disk_source as disk
+    context = entry.get('native_context')
+    if context is None:
+        context = {'view':'raw', 'contract_id':row['id']}
+    elif context != row.get('_disk_operational'):
+        raise disk.DiskSourceProblem('Операционный выбор источников изменился. Проверьте каталог заново.')
+    return dict(project=project,cut=cut, **context, _disk_context=context,
+                _disk_owner_guard=disk.row_guard(disk.native_owner(row)))
+
+
+def _monitor_contract_disk_document_commit(project, cut, row, entry, raw, policy):
+    import developaid_contract_disk_source as disk
+    payload = _monitor_contract_disk_payload(project,cut,row,entry)
+    payload.update(filename=entry['filename'], _source_policy=policy)
+    value = _monitor_cumulative_execute('document-upload',payload,raw)
+    if value.get('ok') is not True:
+        raise disk.DiskSourceProblem(value.get('detail') or 'Штатный приём документа остановлен.')
+    return value['document']
+
+
+def _monitor_contract_disk_book_commit(project, cut, books, taken_at, archive, policy):
+    """Import into native raw execution scope, without changing a role choice.
+
+    The complete union is acquired once in native global order before the
+    current operational guard is read. Removed archives remain retained.
+    """
+    import developaid_contract_disk_source as disk
+    import developaid_contract_identity_store as journal
+    import developaid_contract_identity as identity
+    import developaid_contract_ownership as ownership
+    import developaid_monitor_contracts as contracts
+    import developaid_monitor_ledgers as ledgers
+    try:
+        with journal.locked(project):
+            groups = []
+            for entry,_ in books:
+                context = entry.get('native_context')
+                group = sorted(set((context.get('member_ids') if context else [entry.get('contract_id')]) or []) | set(entry.get('source_family') or []))
+                if disk.COMMON not in entry['kinds']:
+                    groups.append(group)
+            import contextlib
+            lock = identity._binding_group_locks(project,groups) if groups else contextlib.nullcontext()
+            with lock:
+                with ownership.read_scope(project,cut):
+                    candidates = {row['id']:row for row in _monitor_contract_disk_rows(project,cut)}
+                    for entry,_ in books:
+                        if disk.COMMON in entry['kinds']:
+                            continue
+                        row = candidates.get(entry['contract_id'])
+                        disk.need(row and disk.row_guard(row)==entry['row_guard'],
+                                  'Данные или выбор источников изменились. Проверьте ведомости заново.')
+                        payload = _monitor_contract_disk_payload(project,cut,row,entry)
+                        register = contracts.build(project,cut,include_history=False)
+                        _monitor_contract_document_context(register,payload,'document-upload')
+                        disk.need(disk.legal_identity(disk.native_owner(row,execution=True))==entry['identity'],
+                                  'Источник выполнения относится к другой карточке. Сверьте реквизиты КС-6а.')
+                result = ledgers.store_archive(project,archive,taken_at,'Обновление с Диска.zip',source_policy=policy)
+            return result
+    except (journal.IdentityProblem,ownership.OwnershipProblem,contracts.ContractProblem) as exc:
+        raise disk.DiskSourceProblem(str(exc)) from None
+
+
 def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: bytes = b"") -> dict:
+    if operation.startswith('disk-source-'):
+        import developaid_contract_disk_source as disk_source
+        values = {k: v for k, v in payload.items() if k != 'cut' or operation == 'disk-source-scan'}
+        try:
+            function = {'disk-source-scan': disk_source.scan,
+                        'disk-source-stage': disk_source.stage,
+                        'disk-source-apply': disk_source.apply}[operation]
+            with disk_source.ns.namespace(payload['project']):
+                kwargs = {'row_provider': _monitor_contract_disk_rows}
+                if operation=='disk-source-apply':
+                    kwargs.update(document_commit=_monitor_contract_disk_document_commit,
+                                  book_commit=_monitor_contract_disk_book_commit)
+                return {'ok': True, 'disk_source': function(**values, **kwargs)}
+        except (disk_source.DiskSourceProblem, ValueError) as exc:
+            return {'ok': False, 'detail': str(exc)}
     """Only validated calculation inputs enter the background worker."""
     from fastapi.encoders import jsonable_encoder
     if operation.startswith('pdf-initial-'):
@@ -530,6 +743,8 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
     import developaid_monitor_contract_links as links
     import developaid_contract_files as contract_files
     import developaid_contract_identity as contract_identity
+    import developaid_contract_workforce as workforce
+    document_change_saved = False
     try:
         if operation.startswith('identity-'):
             values = dict(payload)
@@ -559,6 +774,9 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
                 result["contracts"] = contracts.archive_summary(payload["project"], payload["taken_at"])
             except (contracts.ContractProblem, ledgers.LedgerProblem) as exc:
                 result["contracts"] = {"error": str(exc)}
+        elif operation == 'parse-refresh':
+            import developaid_contract_parse_refresh as parse_refresh
+            result = {'parse_refresh': parse_refresh.prepare(**payload)}
         elif operation == "view":
             register = contracts.build(payload["project"], payload["cut"])
             register = links.enrich(payload["project"], register, payload["cut"])
@@ -611,30 +829,16 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
             import developaid_contract_fact as contract_fact
             problem = ""
             try:
+                workforce_sources = workforce.cohort_sources(payload['project'], payload['cut'])
                 register = contracts.build(payload["project"], payload["cut"], include_history=False)
+                register['_workforce_source_guard'] = workforce_sources
                 rows = contracts.raw_rows(register)
             except contracts.ContractProblem as exc:
                 if operation == "document-upload":
                     raise
-                register, rows, problem = {}, [], str(exc)
-            row = next((r for r in rows if r["id"] == payload["contract_id"]), None)
-            documents_owner = payload['contract_id']
-            correction_state = None
-            if payload.get('view') == 'operational':
-                import developaid_contract_correction as correction
-                logical_id = payload.get('logical_contract_id') or payload['contract_id']
-                active = next((r for r in register.get('rows') or [] if r['id'] == logical_id), None)
-                correction_state = (active or {}).get('source_correction')
-                if not correction_state:
-                    raise contracts.ContractProblem('Исправленная карточка не представлена на выбранную дату. Обновите реестр.')
-                if (payload.get('correction_id') != correction_state['decision_id']
-                        or payload.get('correction_guard') != correction_state['read_guard']):
-                    raise contracts.ContractProblem('Выбор источников изменился. Обновите реестр перед открытием карточки.')
-                if operation != 'documents' and payload['contract_id'] != correction_state['roles']['documents_raw_id']:
-                    raise contracts.ContractProblem('Карточка документов изменилась. Обновите договор перед сохранением.')
-                row = correction.materialize(register, active)
-                documents_owner = correction_state['roles']['documents_raw_id']
-            owner_row = contracts.find_raw_row(register, documents_owner) if correction_state else row
+                register, rows, problem = {'_workforce_source_guard': workforce_sources}, [], str(exc)
+            row, owner_row, documents_owner, correction_state = _monitor_contract_document_context(register, payload, operation)
+            logical_id = payload.get('logical_contract_id') or payload['contract_id']
             acts = contract_fact.unavailable(problem) if problem else contract_fact.acts(row)
             if operation == "documents":
                 ownership_state = register.get('logical_ownership',{}).get('states') or {}
@@ -647,8 +851,12 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
             elif operation == "document-upload":
                 if row is None:
                     raise contracts.ContractProblem("Договор не найден в данных выбранного проекта на эту дату.")
-                result = {"document": contract_files.store(payload["project"], owner_row, payload["filename"], archive),
-                          **contract_files.listing(payload["project"], payload["contract_id"], payload["cut"], acts)}
+                if payload.get('_source_policy') is not None:
+                    result = {"document": contract_files.store(payload["project"],owner_row,payload["filename"],archive,
+                                                               source_policy=payload['_source_policy'])}
+                else:
+                    result = {"document": contract_files.store(payload["project"],owner_row,payload["filename"],archive),
+                              **contract_files.listing(payload["project"],payload["contract_id"],payload["cut"],acts)}
             elif operation == "document-links":
                 result = contract_files.save_links(payload["project"], payload["contract_id"], payload["sha256"],
                                                    payload["estimate"], payload["choices"], payload["clear"],
@@ -661,26 +869,67 @@ def _monitor_cumulative_execute_raw(operation: str, payload: dict, archive: byte
             elif operation == "document-remove":
                 result = contract_files.remove(payload["project"], payload["contract_id"], payload["sha256"],
                                                restore=payload["restore"], cut=payload["cut"], acts=acts)
+            elif operation == 'document-gpr':
+                if owner_row is None:
+                    raise contracts.ContractProblem('Договор не найден на выбранную дату.')
+                import developaid_contract_gpr as gpr
+                result = gpr.save(payload['project'], owner_row, payload['cut'], payload['source_sha256'],
+                                  payload['expected_guard'], payload['action'], payload['note'], payload['actor'],
+                                  payload['handover_date'], payload['advance_date'], payload['counterparty_signed'], acts)
             else:
                 raise RuntimeError("unknown monitor operation")
+            if operation != 'documents':
+                document_change_saved = True
+                if ('comparison' in result and workforce.cohort_sources(payload['project'], payload['cut'])
+                        != register.get('_workforce_source_guard')):
+                    # Refresh the full card only AFTER the old owned read scope
+                    # has sealed its successful native write. SourceHub's
+                    # document-only acknowledgement deliberately stays an ack.
+                    result['_refresh_document_scope'] = True
             if correction_state:
                 result.update(contract_id=logical_id, documents_raw_id=documents_owner, source_correction=correction_state)
+                if result.get('gpr'):
+                    result['gpr'].update(contract_id=logical_id, documents_raw_id=documents_owner)
         else:
             raise RuntimeError("unknown monitor operation")
         import developaid_contract_stage_profile as stage_profile
         encoded = stage_profile.call('jsonable_encoder', jsonable_encoder, result)
+        if encoded.get('_refresh_document_scope'):
+            return {'ok': True, **encoded}
         if operation.startswith("document") and "comparison" in encoded:
             import developaid_contract_comparison_export as comparison_export
+            import developaid_contract_rds as rds
+            encoded['rds_comparison'] = rds.build(encoded)
+            if encoded.get('gpr'):
+                import developaid_contract_gpr as gpr
+                import developaid_contract_gpr_export as gpr_export
+                encoded['gpr']['overlays'] = gpr.physical_overlays(encoded, encoded['rds_comparison'])
+                encoded['gpr']['staffing'] = gpr.workforce_sources(payload['project'], row or {}, register,
+                    payload['cut'], encoded['gpr'].get('schedule'))
+                encoded['gpr']['workforce'] = workforce.from_cached(payload['project'], row or {}, register,
+                    payload['cut'], encoded['gpr'])
+                encoded['gpr']['presentation'] = gpr_export.presentation(encoded['gpr']['schedule'] or {},
+                    encoded['gpr']['overlays'], payload['cut'],
+                    gpr.position_projections(encoded, encoded['rds_comparison'], encoded['gpr']['schedule'] or {}),
+                    statement=gpr_export.statement_projection(encoded['rds_comparison']),
+                    source_dates=gpr_export.fact_source_dates(encoded['rds_comparison']))
+                encoded['gpr_export'] = gpr_export.bind_snapshot(payload['project'], payload['cut'],
+                    encoded.get('contract_id') or payload['contract_id'], encoded,
+                    {key: (row or {}).get(key) or '' for key in ('contract', 'contractor', 'contract_date')})
             encoded["comparison_export"] = comparison_export.bind_snapshot(
                 payload["project"], payload["cut"], encoded.get("contract_id") or payload["contract_id"], encoded,
                 {key: (row or {}).get(key) or "" for key in ("contract", "contractor", "contract_date")})
         return {"ok": True, **encoded}
+    except workforce.SourceChanged as exc:
+        return {'ok': False, 'status': 409, 'detail': ('Изменения сохранены. ' if document_change_saved else '')+str(exc),
+                **({'document_change_saved': True} if document_change_saved else {})}
     except ledgers.LedgerProblem as exc:
         return {"ok": False, "detail": str(exc), "files": exc.files}
     except (contracts.ContractProblem, links.LinkProblem, contract_files.ContractFilesProblem,
             contract_identity.IdentityProblem) as exc:
         # These exception classes contain deliberate user-facing diagnostics.
-        return {"ok": False, "detail": str(exc)}
+        return {"ok": False, "detail": str(exc),
+                **({'parse_refresh_required': True} if isinstance(exc, contract_files.ParseRefreshRequired) else {})}
 
 
 def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = b"") -> dict:
@@ -688,17 +937,23 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
     import developaid_contract_ownership as ownership
     import developaid_contract_identity as identity
     import developaid_contract_identity_store as identity_store
-    mutation = (operation.startswith('document-') or operation == 'term') and payload.get('view') == 'operational'
+    operational = (operation.startswith('document-') or operation == 'term') and payload.get('view') == 'operational'
+    source_intake = operation=='document-upload' and payload.get('_source_policy') is not None
+    mutation = operational or source_intake
     try:
         with contextlib.ExitStack() as locks:
             if mutation:
                 locks.enter_context(identity_store.locked(payload['project']))
-                event = next((event for event in identity_store.load(payload['project'])['active']
-                              if event['event_id'] == payload.get('correction_id') and event['action'] == 'correct_sources'), None)
-                if event is None:
-                    raise ownership.OwnershipProblem('Выбор источников изменился. Обновите договор перед сохранением.')
-                ids = sorted({member['raw_id'] for member in event['payload']['members']})
-                locks.enter_context(identity._binding_locks(payload['project'], ids, correction=True))
+                ids = set()
+                if operational:
+                    event = next((event for event in identity_store.load(payload['project'])['active']
+                                  if event['event_id'] == payload.get('correction_id') and event['action'] == 'correct_sources'), None)
+                    if event is None:
+                        raise ownership.OwnershipProblem('Выбор источников изменился. Обновите договор перед сохранением.')
+                    ids.update(member['raw_id'] for member in event['payload']['members'])
+                if source_intake:
+                    ids.update(payload['_source_policy'].get('family') or [])
+                locks.enter_context(identity._binding_locks(payload['project'], sorted(ids), correction=True))
             if operation not in {'view', 'source-review'} and not operation.startswith('document') and not mutation:
                 return _monitor_cumulative_execute_raw(operation, payload, archive)
             with ownership.read_scope(payload['project'], payload['cut']) as context:
@@ -717,9 +972,50 @@ def _monitor_cumulative_execute(operation: str, payload: dict, archive: bytes = 
                             label = result['comparison_export'].get('label') or {}
                             result['comparison_export'] = comparison_export.bind_snapshot(
                                 payload['project'], payload['cut'], result['contract_id'], result, label)
-                return result
+                            if result.get('gpr_export'):
+                                import developaid_contract_gpr_export as gpr_export
+                                result['gpr_export'] = gpr_export.bind_snapshot(payload['project'], payload['cut'],
+                                    result['contract_id'], result, label)
+            if result.pop('_refresh_document_scope', False):
+                fresh_payload = dict(payload)
+                selected = result.get('source_correction')
+                if selected:
+                    fresh_payload.update(correction_guard=selected['read_guard'])
+                fresh = _monitor_cumulative_execute('documents', fresh_payload)
+                if fresh.get('ok') is not True:
+                    fresh['detail'] = 'Изменения сохранены. '+str(fresh.get('detail') or 'Откройте карточку заново.')
+                    fresh['document_change_saved'] = True
+                result.update(fresh)
+            return result
     except (ownership.OwnershipProblem, identity_store.IdentityProblem) as exc:
         return {'ok': False, 'detail': str(exc)}
+
+
+def _monitor_contract_gpr_current(value):
+    """A retained ticket must not resurrect dates or a replaced graph."""
+    import developaid_contract_gpr as gpr
+    import developaid_contract_files as files
+    import developaid_management_report_jobs as jobs
+    if value.get('pending') or value.get('ok') is not True:
+        return
+    if value.get('gpr'):
+        import developaid_contract_gpr_export as gpr_export
+        if (value['gpr'].get('presentation') or {}).get('schema') != gpr_export.PRESENTATION_SCHEMA:
+            raise jobs.JobProblem(409, jobs.SOURCE_CHANGED_DETAIL, code='source_changed')
+    if value.get('comparison_export'):
+        import developaid_contract_comparison_export as comparison_export
+        old_schema = value['comparison_export'].get('schema')
+        if old_schema and old_schema != comparison_export.SCHEMA:
+            raise jobs.JobProblem(409, jobs.SOURCE_CHANGED_DETAIL, code='source_changed')
+    bindings = [value['gpr']] if value.get('gpr') else []
+    bindings.extend((row.get('schedule_control') or {}).get('gpr_binding')
+                    for row in (value.get('register') or {}).get('rows') or [])
+    try:
+        for binding in bindings:
+            if binding:
+                gpr.require_current(binding)
+    except files.ContractFilesProblem:
+        raise jobs.JobProblem(409, jobs.SOURCE_CHANGED_DETAIL, code='source_changed') from None
 
 
 def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Response:
@@ -738,13 +1034,23 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             raise HTTPException(400, 'Режим сравнения требует включённой диагностики этапов.')
         profile = "monitor-cumulative-v1:" + family
         owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
-        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs")
+        import developaid_monitor_ledgers as _job_ledgers
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs",
+                           context_validator=_job_ledgers.validate_snapshot_job_context)
         if not operation:
             if family == "contracts" and getattr(req, "offset", None) is not None:
                 result = store.poll_part(req.ticket, owner, profile, req.offset, accept_gzip=req.accept_gzip)
+                part = result.get('result_part') or {}
+                # The DTO is immutable. Seal its source/anchor at admission of
+                # the first piece and again before the final assembly piece;
+                # intermediate pieces keep the native bounded-read path.
+                # Do not decode a multi-megabyte register for every 256KB part.
+                if req.offset == 0 or (part and req.offset+jobs.RESULT_PART_BYTES >= part['total_bytes']):
+                    _monitor_contract_gpr_current(store.poll(req.ticket, owner, profile))
             else:
                 result = store.poll(req.ticket, owner, profile)
         else:
+            source_context = _job_ledgers.snapshot_job_context(req.project.strip())
             payload = {"project": req.project.strip()}
             if not payload["project"]:
                 raise HTTPException(400, "Выберите проект.")
@@ -759,6 +1065,11 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     raise HTTPException(400, 'PDF не передан целиком. Выберите исходный файл заново.') from None
                 if not archive or len(archive) > 20 * 1024 * 1024:
                     raise HTTPException(413, 'Выберите непустой PDF размером не больше 20 МБ.')
+            elif operation.startswith('disk-source-'):
+                payload.update(req.model_dump(exclude={'key', 'session', 'ticket', 'project'}))
+                payload['cut'] = _monitor_cumulative_day(req.cut)
+                if operation == 'disk-source-apply' and req.taken_at:
+                    payload['taken_at'] = _monitor_cumulative_day(req.taken_at)
             elif operation == "upload":
                 payload.update(taken_at=_monitor_cumulative_day(req.taken_at), filename=req.filename)
                 try:
@@ -784,6 +1095,8 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                     payload.update(fields)
                     if operation in {'identity-confirm', 'identity-revoke', 'identity-correct-sources'}:
                         payload['actor'] = owner
+                elif operation == 'parse-refresh':
+                    payload['expected_guard'] = req.expected_guard
                 elif operation == "documents":
                     payload["contract_id"] = req.contract_id
                 elif operation == "document-links":
@@ -794,6 +1107,14 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                 elif operation == "document-confirm":
                     payload.update(contract_id=req.contract_id, sha256=req.sha256, kind=req.kind,
                                    values=req.values.model_dump())
+                elif operation == 'document-gpr':
+                    for value in (req.handover_date, req.advance_date):
+                        if value:
+                            _monitor_cumulative_day(value)
+                    payload.update(contract_id=req.contract_id, source_sha256=req.source_sha256,
+                                   expected_guard=req.expected_guard, action=req.action, handover_date=req.handover_date,
+                                   advance_date=req.advance_date, counterparty_signed=req.counterparty_signed,
+                                   note=req.note, actor=owner)
                 elif operation == "term":
                     if req.deadline:
                         _monitor_cumulative_day(req.deadline)
@@ -825,7 +1146,14 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             # The store persists only the fingerprint, not these private inputs.
             # A fresh click must not reuse another running view of older data.
             # Retrying the same admission keeps its exact ticket and fingerprint.
-            fingerprint = {"operation": operation, "click": req.ticket or _secrets.token_hex(16), **payload}
+            fingerprint = {"operation": operation, "click": req.ticket or _secrets.token_hex(16),
+                           "source_context": source_context, **payload}
+            if operation.startswith('disk-source-'):
+                import developaid_contract_disk_source as disk_source
+                fingerprint['contract_disk_schema'] = disk_source.SCHEMA
+            if operation in {'view', 'documents'}:
+                import developaid_contract_control as contract_control
+                fingerprint['contract_calculation_revision'] = contract_control.CALCULATION_REVISION
             if archive:
                 fingerprint["archive_sha256"] = _hashlib.sha256(archive).hexdigest()
             profile_stages = operation == "view" and getattr(req, "profile_stages", False)
@@ -838,7 +1166,7 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             if matching_verify:
                 import developaid_contract_match_verify as matching_verification
                 fingerprint['matching_cache'] = matching_verification.PURPOSE
-            def build():
+            def build_raw():
                 if profile_stages:
                     import developaid_contract_stage_profile as stage_profile
                     if matching_verify:
@@ -863,6 +1191,11 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
                                                     operation, payload, archive)
                     return {**result, 'diagnostics': diagnostics.export()}
                 return _monitor_cumulative_execute(operation, payload, archive)
+            def build():
+                _job_ledgers.validate_snapshot_job_context(source_context)
+                value = build_raw()
+                _job_ledgers.validate_snapshot_job_context(source_context)
+                return value
             # Only the ordinary register transports its complete history/rows.
             # Source review/audit/index operations retain the default budget.
             result_policy = ({"result_limit_bytes": jobs.MAX_EXTENDED_RESULT_BYTES}
@@ -870,7 +1203,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             if operation == "view" and getattr(req, "chunked", False):
                 result_policy["include_result"] = False
                 result_policy["compress_result"] = True
-            result = store.start(owner, profile, fingerprint, build, req.ticket, **result_policy)
+            result = store.start(owner, profile, fingerprint, build, req.ticket, context=source_context, **result_policy)
+        if family == 'contracts':
+            _monitor_contract_gpr_current(result)
         if result["pending"]:
             result["detail"] = ("Проверяю управленческую статью АХР." if family == "finance-management" else
                                 "Проверяю банковское отнесение АХР." if family == "finance-allocation" else
@@ -890,7 +1225,7 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
         }
         if exc.code:
             private["X-Monitor-Job-Error"] = exc.code
-        raise HTTPException(exc.status, messages.get(exc.status, "Не удалось завершить операцию. Повторите запрос."),
+        raise HTTPException(exc.status, jobs.SOURCE_CHANGED_DETAIL if exc.code == "source_changed" else messages.get(exc.status, "Не удалось завершить операцию. Повторите запрос."),
                             headers=private) from None
     except Exception as exc:
         logging.getLogger("developaid.monitor").error("Cumulative operation unavailable (%s)", type(exc).__name__)
@@ -914,15 +1249,61 @@ def monitor_cumulative_list(req: MonitorCumulativeProject) -> Response:
     _require_admin_key(req.key, "Монитор проекта", req.session)
     import developaid_monitor_ledgers as ledgers
     try:
-        return JSONResponse(content={"snapshots": ledgers.list_snapshots(req.project)})
+        return JSONResponse(content=ledgers.snapshot_inventory(req.project))
     except Exception as exc:
         logging.getLogger("developaid.monitor").error("Cumulative snapshot list unavailable (%s)", type(exc).__name__)
         raise HTTPException(503, "История накопительных сейчас недоступна.") from None
 
 
+@app.post("/monitor/cumulative/remove", include_in_schema=False)
+def monitor_cumulative_remove(req: MonitorCumulativeSnapshotState) -> Response:
+    """A reversible exact-snapshot selection change; never delete financial evidence."""
+    private = {"Cache-Control": "private, no-store"}
+    _require_admin_key(req.key, "Монитор проекта", req.session)
+    import developaid_monitor_ledgers as ledgers
+    import developaid_contract_identity_store as identity_store
+    try:
+        result = ledgers.change_snapshot_activity(req.project.strip(), req.snapshot_id,
+                                                  req.expected_revision, restore=req.restore)
+        return JSONResponse(result, headers=private)
+    except ledgers.LedgerConflict as exc:
+        raise HTTPException(409, str(exc), headers=private) from None
+    except ledgers.LedgerProblem as exc:
+        raise HTTPException(400, str(exc), headers=private) from None
+    except identity_store.IdentityProblem:
+        raise HTTPException(409, "Привязка проекта изменилась. Обновите список снимков и проверьте состояние архива перед повторным действием.", headers=private) from None
+    except Exception:
+        raise HTTPException(503, "Не удалось изменить архив. Обновите список снимков перед повторным действием.", headers=private) from None
+
+
+@app.post('/monitor/contracts/disk/scan', include_in_schema=False)
+def monitor_contract_disk_scan(req: MonitorContractDiskScan) -> Response:
+    return _monitor_cumulative_job(req, family='contract-disk', operation='disk-source-scan')
+
+
+@app.post('/monitor/contracts/disk/stage', include_in_schema=False)
+def monitor_contract_disk_stage(req: MonitorContractDiskStage) -> Response:
+    return _monitor_cumulative_job(req, family='contract-disk', operation='disk-source-stage')
+
+
+@app.post('/monitor/contracts/disk/apply', include_in_schema=False)
+def monitor_contract_disk_apply(req: MonitorContractDiskApply) -> Response:
+    return _monitor_cumulative_job(req, family='contract-disk', operation='disk-source-apply')
+
+
+@app.post('/monitor/contracts/disk/result', include_in_schema=False)
+def monitor_contract_disk_result(req: MonitorCumulativeResult) -> Response:
+    return _monitor_cumulative_job(req, family='contract-disk')
+
+
 @app.post("/monitor/contracts/build", include_in_schema=False)
 def monitor_contracts_build(req: MonitorContractRegisterBuild) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="view")
+
+
+@app.post('/monitor/contracts/parse-refresh', include_in_schema=False)
+def monitor_contract_parse_refresh(req: MonitorContractParseRefresh) -> Response:
+    return _monitor_cumulative_job(req, family='contracts', operation='parse-refresh')
 
 
 @app.post('/monitor/contracts/identity/inventory', include_in_schema=False)
@@ -1031,6 +1412,47 @@ def monitor_contracts_documents(req: MonitorContractDocuments) -> Response:
     return _monitor_cumulative_job(req, family="contracts", operation="documents")
 
 
+@app.post('/monitor/contracts/gpr-change', include_in_schema=False)
+def monitor_contract_gpr_change(req: MonitorContractGprChange) -> Response:
+    return _monitor_cumulative_job(req, family='contracts', operation='document-gpr')
+
+
+@app.post('/monitor/contracts/gpr.xlsx', include_in_schema=False)
+def monitor_contract_gpr_xlsx(req: MonitorContractGprExport) -> Response:
+    private = {'Cache-Control': 'private, no-store'}
+    _require_admin_key(req.key, 'Монитор проекта', req.session)
+    import developaid_management_report_jobs as jobs
+    import developaid_contract_gpr_export as gpr_export
+    import developaid_contract_comparison_export as comparison_export
+    import developaid_monitor_ledgers as ledgers
+    try:
+        profile = 'monitor-cumulative-v1:contracts'
+        owner = jobs.owner_binding(_env_str('DEVELOPAID_ADMIN_KEY', '').strip(), req.session, profile)
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / '.cumulative_jobs',
+                           context_validator=ledgers.validate_snapshot_job_context)
+        cached = store.poll(req.ticket, owner, profile)
+        _monitor_contract_gpr_current(cached)
+        meta = gpr_export.select_snapshot(cached, req.project.strip(), _monitor_cumulative_day(req.cut),
+                                          req.contract_id, req.revision)
+        raw = gpr_export.workbook(meta, cached)
+        # Check after generation as well: an anchor/source change in another
+        # worker cannot return an Excel of an obsolete card.
+        comparison_export.require_current_sources(meta)
+        gpr_export.require_current_workforce(cached, req.project.strip())
+        return Response(raw, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        headers={**private, 'Content-Disposition':
+                            gpr_export.disposition(meta)})
+    except comparison_export.ExportProblem as exc:
+        raise HTTPException(exc.status, str(exc), headers=private) from None
+    except jobs.JobProblem as exc:
+        raise HTTPException(409 if exc.status in (400, 404, 409) else 503,
+                            'Сохранённая карточка изменилась. Откройте её заново перед выгрузкой.', headers=private) from None
+    except Exception as exc:
+        logging.getLogger('developaid.monitor').error('Contract GPR export unavailable (%s)', type(exc).__name__)
+        raise HTTPException(503, 'Не удалось подготовить Excel ГПР. Повторите выгрузку из открытой карточки.',
+                            headers=private) from None
+
+
 @app.post('/monitor/contracts/pdf-intake/preview', include_in_schema=False)
 def monitor_contract_pdf_preview(req: MonitorContractPdfPreview) -> Response:
     return _monitor_cumulative_job(req, family='contracts-pdf', operation='pdf-initial-preview')
@@ -1056,7 +1478,9 @@ def monitor_contract_comparison_xlsx(req: MonitorContractComparisonExport) -> Re
     try:
         profile = "monitor-cumulative-v1:contracts"
         owner = jobs.owner_binding(_env_str("DEVELOPAID_ADMIN_KEY", "").strip(), req.session, profile)
-        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs")
+        import developaid_monitor_ledgers as _job_ledgers
+        store = jobs.Store(developaid_monitor._SNAPSHOT_DIR / ".cumulative_jobs",
+                           context_validator=_job_ledgers.validate_snapshot_job_context)
         cached = store.poll(req.ticket, owner, profile)
         meta, comparison, rows = comparison_export.select_snapshot(
             cached, project, cut, req.contract_id, req.revision, req.selected_tokens)
@@ -1068,7 +1492,7 @@ def monitor_contract_comparison_xlsx(req: MonitorContractComparisonExport) -> Re
     except comparison_export.ExportProblem as exc:
         raise HTTPException(exc.status, str(exc), headers=private) from None
     except jobs.JobProblem as exc:
-        status = 409 if exc.status in (400, 404) else 503
+        status = 409 if exc.status in (400, 404, 409) else 503
         raise HTTPException(status, "Сохранённая карточка недоступна. Откройте её заново перед выгрузкой.",
                             headers=private) from None
     except Exception as exc:

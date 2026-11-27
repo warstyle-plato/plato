@@ -3,7 +3,7 @@
 «Можно ли фото из чата тоже выборочно брать и вставлять?» (владелец,
 20.10.2026; выбор — на странице сводки). Бот читает привязанный чат стройки и
 сохраняет фото на ядре той же подписанной дорогой, что отчёты; в сводку
-попадает только то, что человек отметил на странице «Сводка руководству».
+попадает стабильный ежедневный выбор или приоритетный ручной набор.
 
 Проверяется: хранение и выбор, путь от настоящего входа бота до диска ядра,
 подпись, тишина в групповом чате и отрисованная страница с галочкой.
@@ -66,9 +66,9 @@ def test_only_the_chosen_photos_of_the_period_reach_the_report():
     assert again.get("duplicate") is True
 
     built = report.build(PROJECT, "week", "2026-10-18")
-    # Ничего не отмечено — блока нет: «не выбрано» не значит «показать всё».
-    assert built["photos"]["total"] == 2 and built["photos"]["items"] == []
-    assert "Фото со стройки" not in report.render_html(built)
+    # Новое указание владельца: до пяти снимков каждого дня выбираются автоматически.
+    assert built["photos"]["total"] == 2 and len(built["photos"]["items"]) == 2
+    assert "Фото со стройки" in report.render_html(built)
 
     site_photos.select(PROJECT, "AQAD1", True, "Владелец")
     site_photos.select(PROJECT, "AQAD2", True, "Владелец")
@@ -196,21 +196,23 @@ def test_the_page_ticks_a_photo_into_the_report(monkeypatch):
             tab.wait_for_selector("#photosList label[data-id='AQAD1'] img[src^='blob:']")
             before = tab.locator("#reportBox figure.photo").count()
             state = tab.inner_text("#photosState")
+            tab.uncheck("#photosList label[data-id='AQAD1'] .photoPick")
+            tab.wait_for_function("document.querySelectorAll('#reportBox figure.photo').length===1")
             tab.check("#photosList label[data-id='AQAD1'] .photoPick")
-            tab.wait_for_selector("#reportBox figure.photo img")
+            tab.wait_for_function("document.querySelectorAll('#reportBox figure.photo').length===2")
             after = tab.locator("#reportBox figure.photo").count()
-            caption = tab.inner_text("#reportBox figure.photo figcaption")
+            caption = tab.locator("#reportBox figure.photo figcaption").first.inner_text()
             loaded = tab.evaluate(
                 "document.querySelector('#reportBox figure.photo img').naturalWidth")
         finally:
             browser.close()
     assert not errors, errors
     assert closed and unloaded
-    assert state == "За период: 2, отмечено для сводки: 0."
-    assert before == 0 and after == 1
+    assert state == "За период: 2, в сводку: 2."
+    assert before == 2 and after == 2
     assert "Монолит 5 эт." in caption
     assert loaded == 64
-    assert [p["id"] for p in site_photos.photos(PROJECT) if p["chosen"]] == ["AQAD1"]
+    assert [p["id"] for p in site_photos.photos(PROJECT) if p["chosen"]] == ["AQAD1", "AQAD2"]
 
 
 def test_the_photos_fold_by_day(monkeypatch):
@@ -253,6 +255,6 @@ def test_the_photos_fold_by_day(monkeypatch):
     assert [d[0] for d in days] == ["2026-10-16", "2026-10-13", "2026-10-12"]
     assert [d[1] for d in days] == [True, False, True]
     # Автор у всех снимков дня один — он в заголовке дня, а не в каждой карточке.
-    assert days[0][2] == "16.10.2026 · 3 фото · Иван Прораб"
-    assert days[2][2] == "12.10.2026 · 2 фото · отмечено 1 · Иван Прораб"
+    assert days[0][2] == "16.10.2026 · 3 фото · в сводку 3 · автовыбор · Иван Прораб"
+    assert days[2][2] == "12.10.2026 · 2 фото · в сводку 2 · ручной набор · Иван Прораб"
     assert idle, "снимки свёрнутого дня грузятся заранее"

@@ -11,12 +11,14 @@ from types import SimpleNamespace
 import pytest
 
 import developaid_management_report_jobs as jobs
+import developaid_monitor_ledgers as ledgers
 
 
 OWNER = "synthetic-owner"
 PROFILE = "monitor-cumulative-v1:contracts"
 PARAMS = {"operation": "view", "click": "synthetic-click"}
 PRIVATE = "PRIVATE_EXCEPTION_PATH_DOCUMENT_AND_PAYLOAD"
+SOURCE_CONTEXT = {"namespace": "Synthetic", "generation": "c" * 64}
 ROUTE_SOURCE = Path(__file__).resolve().parents[1] / "engine" / "monitor_cumulative.py"
 
 
@@ -267,6 +269,8 @@ def route_helper(monkeypatch, store_type):
         def __init__(self, status, detail, headers=None):
             self.status, self.detail, self.headers = status, detail, headers
 
+    monkeypatch.setattr(ledgers, "snapshot_job_context", lambda project: SOURCE_CONTEXT)
+    monkeypatch.setattr(ledgers, "validate_snapshot_job_context", lambda context: None)
     monkeypatch.setattr(jobs, "Store", store_type)
     monkeypatch.setattr(jobs, "owner_binding", lambda *args: OWNER)
     namespace = {"Response": object, "HTTPException": Refused,
@@ -276,7 +280,10 @@ def route_helper(monkeypatch, store_type):
                  "_monitor_cumulative_execute": lambda *args: pytest.fail("No business builder in route-policy test"),
                  "developaid_monitor": SimpleNamespace(_SNAPSHOT_DIR=Path("synthetic-unused-directory")),
                  "base64": __import__("base64"), "logging": __import__("logging")}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), str(ROUTE_SOURCE), "exec"), namespace)
+    # Keep the real retained-ticket source guard in the isolated harness.
+    guard = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                 and node.name == "_monitor_contract_gpr_current")
+    exec(compile(ast.Module(body=[guard, function], type_ignores=[]), str(ROUTE_SOURCE), "exec"), namespace)
     return namespace[function.name], Refused
 
 
@@ -284,6 +291,7 @@ def request():
     return SimpleNamespace(key="", session="", ticket="a" * 32, project="Synthetic", cut="2026-11-16",
         taken_at="2026-11-16", filename="synthetic", content_base64="YQ==", contract_id="b" * 64,
         deadline="", contract_date="", note="", evidence_id="", confirmed=False, book_sha256=[], corpus_token="",
+        expected_guard="c" * 64, action="anchor", handover_date="", advance_date="", counterparty_signed=False,
         sha256="", estimate=0, choices=[], clear=False, restore=False, source_sha256="", revision="",
         assignments=[], item_ids=[], management_article="", model_dump=lambda **kwargs: {},
         kind="synthetic", snapshot_id="", file_sha256="", sheet="", cell="", raw="",
@@ -295,10 +303,12 @@ def test_only_trusted_normal_view_receives_extended_budget(monkeypatch, route, f
     captured = []
 
     class Admission:
-        def __init__(self, root):
-            pass
+        def __init__(self, root, *, context_validator):
+            assert context_validator is ledgers.validate_snapshot_job_context
 
-        def start(self, owner, profile, fingerprint, build, ticket, **policy):
+        def start(self, owner, profile, fingerprint, build, ticket, *, context, **policy):
+            assert context == SOURCE_CONTEXT
+            assert fingerprint["source_context"] == SOURCE_CONTEXT
             captured.append(policy)
             return {"pending": True, "ticket": ticket}
 
@@ -317,15 +327,17 @@ def test_protected_source_operations_are_explicitly_covered():
 @pytest.mark.parametrize("code", ["", *sorted(jobs.FAILURE_CODES), PRIVATE])
 def test_poll_header_is_only_an_enum_and_message_stays_plain(monkeypatch, code):
     class Failed:
-        def __init__(self, root):
-            pass
+        def __init__(self, root, *, context_validator):
+            assert context_validator is ledgers.validate_snapshot_job_context
 
         def poll(self, *args):
-            raise jobs.JobProblem(500, jobs.FAILED, code=code)
+            raise jobs.JobProblem(500, PRIVATE, code=code)
 
     helper, refused = route_helper(monkeypatch, Failed)
     with pytest.raises(refused) as response:
         helper(request(), family="contracts")
-    assert response.value.detail == "Не удалось завершить операцию. Повторите запрос."
+    assert response.value.detail == (jobs.SOURCE_CHANGED_DETAIL if code == "source_changed" else
+                                     "Не удалось завершить операцию. Повторите запрос.")
+    assert PRIVATE not in response.value.detail
     assert response.value.headers == {"Cache-Control": "private, no-store", **(
         {"X-Monitor-Job-Error": code} if code in jobs.FAILURE_CODES else {})}

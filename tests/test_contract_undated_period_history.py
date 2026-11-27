@@ -223,7 +223,9 @@ def test_compact_heading_recognizer_does_not_extract_an_act_from_dates_or_mentio
 
 
 @pytest.mark.parametrize('statement,estimate', [('смен', 'смена'), ('штук', 'шт'),
-                                               ('чел-час', 'человеко-час')])
+                                               ('чел-час', 'человеко-час'),
+                                               ('человеко-час', 'человеко- час'),
+                                               ('чел - час', 'человеко-час')])
 def test_grammatical_unit_variants_match_the_same_estimate_position(statement, estimate):
     import developaid_contract_fact as fact
     position = {'number': '1.1', 'name': 'Учебная работа', 'unit': estimate}
@@ -232,3 +234,15 @@ def test_grammatical_unit_variants_match_the_same_estimate_position(statement, e
     # These are names of the same unit, never a conversion between units.
     work['unit'] = 'маш-смена' if estimate == 'смена' else 'м2'
     assert isinstance(fact.match(work, [{'positions': [position]}]), str)
+
+
+def test_spacing_at_a_hyphen_never_changes_unit_dimensions_or_confirms_a_schedule_link():
+    from developaid_contract_detail_history import normalize_unit
+    import developaid_contract_fact as fact
+    units = ['м2', 'м3', 'шт', 'смена', 'маш-смена', 'человеко-час']
+    assert len({normalize_unit(unit) for unit in units}) == len(units)
+    for source in units:
+        for target in units:
+            position = {'number': '2.2', 'name': 'Учебная работа', 'unit': target}
+            result = fact.match(dict(position, unit=source), [{'positions': [position]}])
+            assert (isinstance(result, tuple)) == (source == target)

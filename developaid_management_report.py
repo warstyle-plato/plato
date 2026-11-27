@@ -1875,7 +1875,7 @@ def link_sales(project: str, sales_project: str, author: str,
     name = str(sales_project or "").strip()
     if name and name not in sales_projects(data_dir):
         raise ValueError(f"В отчёте о продажах нет проекта «{name}».")
-    record = {"sales_project": name, "by": author,
+    record = {"sales_project": name, "by": author, "revision": os.urandom(16).hex(),
               "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
     folder = monitor._project_dir(project)
     # Два воркера: запись через временный файл и замену, читатель видит
@@ -4083,11 +4083,15 @@ def _works_html(block: dict[str, Any], kind: str) -> str:
 
 
 def _photos_html(block: dict[str, Any], kind: str) -> str:
-    """Фото со стройки, отмеченные на странице сводки. Не отмечено — блока нет."""
+    """Compressed daily selection; unreadable chosen photos have visible reasons."""
     esc = html.escape
     items = block.get("items") or []
-    if not items:
+    skipped = block.get('skipped') or []
+    if not items and not skipped:
         return ""
+    notice = '<p class="note">'+esc(block['notice'])+'</p>' if block.get('notice') else ''
+    problems = ('<ul class="photo-problems">'+''.join('<li>'+esc(_day(item.get('day')))+': '+esc(item['reason'])+'</li>'
+                 for item in skipped)+'</ul>') if skipped else ''
     cells = []
     for item in items:
         note = " · ".join(part for part in (_date(item["day"]).strftime("%d.%m.%Y"),
@@ -4095,7 +4099,7 @@ def _photos_html(block: dict[str, Any], kind: str) -> str:
         caption = (f"{esc(item['caption'])}<br>" if item.get("caption") else "")
         cells.append(f"<figure class='photo'><img src='{item['src']}' alt='{esc(item.get('caption') or 'фото со стройки')}'>"
                      f"<figcaption>{caption}<span class='note'>{esc(note)}</span></figcaption></figure>")
-    return (f"<h3>Фото со стройки за {PERIODS[kind]}</h3><div class='photos'>"
+    return (f"<h3>Фото со стройки за {PERIODS[kind]}</h3>"+notice+problems+"<div class='photos'>"
             + "".join(cells) + "</div>")
 
 
@@ -4948,7 +4952,7 @@ def _sales_depth_html(block: dict[str, Any], kind: str) -> str:
              _pct(item["amount"] / total)] for item in payments]))
     pool = block.get("pool") or {}
     if pool.get("products"):
-        out.append("<h3>Остаток нераспроданного</h3>")
+        out.append("<h3>Остаток по квартирографии или плану финмодели</h3>")
         out.append(_table(["Тип", "Продано лотов", "Всего лотов", "Продано м²", "Всего м²",
                            "Осталось м²"], [
             [esc(p["product"]), f"{p['sold_units']:.0f}",
@@ -4957,7 +4961,7 @@ def _sales_depth_html(block: dict[str, Any], kind: str) -> str:
              _area(max(0.0, p["pool_area"] - p["sold_area"])) if p["pool_area"] else "—"]
             for p in pool["products"]]))
     elif block.get("state") == "ok":
-        out.append("<p class='note'>Остаток нераспроданного не посчитан: в отчёте о продажах "
+        out.append("<p class='note'>Сверка остатка с квартирографией и планом не выполнена: в отчёте о продажах "
                    "нет квартирографии или плана финмодели по объёмам.</p>")
     return "\n".join(out)
 

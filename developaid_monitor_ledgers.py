@@ -1179,6 +1179,12 @@ def _ledger(filename: str, sheet: str, rows: list[list[Any]]) -> dict | None:
                             'amount_basis': pamount_basis, 'date_start': start, 'date_end': end,
                             'source': _source(filename, sheet, ri,
                                               quantity_cell=_cell(col+(2 if split else 1), ri),
+                                              work_quantity_cell=_cell(col+2,ri) if split else None,
+                                              material_quantity_cell=_cell(col+1,ri) if split else None,
+                                              work_amount_cell=(_cell(_money_pair_columns(qhead,col+2)['work']+1,ri)
+                                                if split and _money_pair_columns(qhead,col+2) else None),
+                                              material_amount_cell=(_cell(_money_pair_columns(qhead,col+2)['material']+1,ri)
+                                                if split and _money_pair_columns(qhead,col+2) else None),
                                               amount_cell=(_cell(col+3, ri)+' + '+_cell(col+4, ri)
                                                            if split else _cell(col+2, ri)))})
         completed_work = completed_material = None
@@ -1590,6 +1596,10 @@ def _root(project: str, *, create: bool = False) -> Path:
 
 @contextlib.contextmanager
 def _lock(root: Path):
+    import developaid_contract_identity_store as identity_store
+    if str(root / '.lock') in identity_store._HELD_NATIVE_LOCKS.get():
+        yield
+        return
     try:
         import fcntl
     except ImportError:
@@ -1679,7 +1689,146 @@ def _import_result(snapshot: dict, *, duplicate: bool) -> dict:
             'issues_overflow_count': max(0, total-len(issues))}
 
 
-def store_archive(project: str, data: bytes, taken_at: Any, filename: str = '') -> dict:
+_ACTIVITY_FILE = '.snapshot-activity.json'
+_MAX_ACTIVITY_BYTES = 256 * 1024
+
+
+def _activity(root: Path) -> dict:
+    """One atomic project-local selection journal; original imports stay immutable."""
+    path = root / _ACTIVITY_FILE
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > _MAX_ACTIVITY_BYTES:
+                raise ValueError('invalid journal file')
+            raw = handle.read(_MAX_ACTIVITY_BYTES + 1)
+        state = json.loads(raw)
+        if (not isinstance(state, dict) or set(state) != {'schema', 'events'}
+                or type(state['schema']) is not int or state['schema'] != 1 or not isinstance(state['events'], list)):
+            raise ValueError('invalid journal')
+        for index, event in enumerate(state['events'], 1):
+            if (not isinstance(event, dict) or set(event) != {'revision', 'snapshot_id', 'action', 'recorded_at'}
+                    or type(event['revision']) is not int or event['revision'] != index
+                    or event['action'] not in {'remove', 'restore'}
+                    or not isinstance(event['snapshot_id'], str)
+                    or not re.fullmatch(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{64}', event['snapshot_id'])
+                    or dt.datetime.fromisoformat(event['recorded_at']).utcoffset() != dt.timedelta(0)):
+                raise ValueError('invalid event')
+        return state
+    except FileNotFoundError:
+        return {'schema': 1, 'events': []}
+    except (OSError, ValueError, TypeError, KeyError):
+        raise LedgerProblem('История удаления архивов не читается. Состав источников не изменён.') from None
+
+
+def _activity_digest(state: dict) -> str:
+    return hashlib.sha256(json.dumps(state, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def _removed(state: dict) -> dict:
+    removed = {}
+    for event in state['events']:
+        if event['action'] == 'remove':
+            removed[event['snapshot_id']] = event
+        else:
+            removed.pop(event['snapshot_id'], None)
+    return removed
+
+
+def removed_snapshot_ids(project: str) -> set[str]:
+    """Also suppress removed ZIPs in source audits' orphan-original discovery."""
+    return set(_removed(_activity(_root(project))))
+
+
+def _require_active(project: str, snapshot_id: str) -> None:
+    if snapshot_id in removed_snapshot_ids(project):
+        raise LedgerConflict('Архив удалён из расчёта. Обновите данные проекта или восстановите его в истории снимков.')
+
+
+def snapshot_job_context(project: str) -> dict:
+    """Only a resolved namespace and selection generation enter private job metadata."""
+    import developaid_contract_identity_store as identity_store
+    # Admission is already authenticated; create only the existing private project namespace.
+    Path(monitor._SNAPSHOT_DIR).mkdir(parents=True, exist_ok=True, mode=0o700)
+    with identity_store.namespace(project):
+        root = _root(project)
+        info = root.parent.stat()
+        aliases = identity_store.read_bytes(Path(monitor._SNAPSHOT_DIR) / monitor._ALIASES_FILE, 64 * 1024)
+        generation = {'activity': _activity(root), 'namespace_identity': [info.st_dev, info.st_ino],
+                      'aliases_sha256': hashlib.sha256(aliases).hexdigest() if aliases is not None else None}
+        return {'namespace': root.parent.name, 'generation': _activity_digest(generation)}
+
+
+def validate_snapshot_job_context(value) -> None:
+    import developaid_management_report_jobs as jobs
+    try:
+        if (not isinstance(value, dict) or set(value) != {'namespace', 'generation'}
+                or not isinstance(value['namespace'], str) or not value['namespace']
+                or len(value['namespace']) > 200 or monitor._slug(value['namespace']) != value['namespace']
+                or not isinstance(value['generation'], str) or not re.fullmatch('[0-9a-f]{64}', value['generation'])
+                or monitor._resolved_slug(value['namespace']) != value['namespace']
+                or snapshot_job_context(value['namespace']) != value):
+            raise ValueError('source changed')
+    except (OSError, ValueError):
+        raise jobs.JobProblem(409, jobs.SOURCE_CHANGED_DETAIL, code='source_changed') from None
+
+
+def snapshot_inventory(project: str) -> dict:
+    """All briefs plus a CAS token bound to the resolved project, not only its files."""
+    import developaid_contract_identity_store as identity_store
+    Path(monitor._SNAPSHOT_DIR).mkdir(parents=True, exist_ok=True, mode=0o700)
+    with identity_store.namespace(project):
+        state = _activity(_root(project))
+        removed = _removed(state)
+        snapshots = list_snapshots(project, include_removed=True)
+        token = hashlib.sha256(json.dumps({'snapshots': snapshots, 'activity': state, 'namespace_context': snapshot_job_context(project)},
+                                         sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+        return {'snapshots': [dict(s, removed=s['snapshot_id'] in removed,
+                                  removed_at=(removed.get(s['snapshot_id']) or {}).get('recorded_at'))
+                              for s in snapshots], 'revision': token,
+                'active_snapshot_id': next((s['snapshot_id'] for s in snapshots if s['snapshot_id'] not in removed), None)}
+
+def change_snapshot_activity(project: str, snapshot_id: str, expected_revision: str, *, restore: bool = False) -> dict:
+    """Remove/restore one exact import under namespace and project locks, never its bytes."""
+    if not isinstance(expected_revision, str) or not re.fullmatch('[0-9a-f]{64}', expected_revision) or type(restore) is not bool:
+        raise LedgerProblem('Нужна актуальная версия списка снимков.')
+    import developaid_contract_identity_store as identity_store
+    with identity_store.namespace(project):
+        root = _root(project)
+        _snapshot_path(root, snapshot_id)
+        if not root.is_dir() or root.is_symlink():
+            raise LedgerProblem('Сохранённый архив не найден.')
+        with _lock(root):
+            inventory = snapshot_inventory(project)
+            if inventory['revision'] != expected_revision:
+                raise LedgerConflict('Список архивов изменился. Обновите его перед удалением или восстановлением.')
+            selected = next((s for s in inventory['snapshots'] if s['snapshot_id'] == snapshot_id), None)
+            if selected is None:
+                raise LedgerProblem('Сохранённый архив не найден в этом проекте.')
+            if selected['removed'] == (not restore):
+                raise LedgerConflict('Состояние архива уже изменено. Обновите список снимков.')
+            if restore and any(s['snapshot_id'] != snapshot_id and not s['removed']
+                               and s['taken_at'] == selected['taken_at'] for s in inventory['snapshots']):
+                raise LedgerConflict('На эту дату уже есть действующий архив. Сначала удалите его из расчётов.')
+            # Validate the immutable manifest identity, without parsing Excel or rewriting it.
+            manifest = _read_manifest(_snapshot_path(root, snapshot_id))
+            if (manifest.get('snapshot_id') != snapshot_id or manifest.get('taken_at') != snapshot_id[:10]
+                    or manifest.get('sha256') != snapshot_id[11:]):
+                raise LedgerProblem('Идентичность сохранённого архива не подтверждена; состав источников не изменён.')
+            state = _activity(root)
+            state['events'].append({'revision': len(state['events']) + 1, 'snapshot_id': snapshot_id,
+                                    'action': 'restore' if restore else 'remove',
+                                    'recorded_at': dt.datetime.now(dt.timezone.utc).isoformat()})
+            raw = json.dumps(state, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode()
+            if len(raw) > _MAX_ACTIVITY_BYTES:
+                raise LedgerProblem('История изменений достигла предела. Обратитесь к администратору; архив не изменён.')
+            identity_store.assert_namespace(project)
+            _atomic(root / _ACTIVITY_FILE, raw)
+            return dict(snapshot_inventory(project), changed_snapshot_id=snapshot_id, restored=restore)
+
+
+def store_archive(project: str, data: bytes, taken_at: Any, filename: str = '', *, source_policy: dict | None = None) -> dict:
     day = _iso(taken_at)
     digest = hashlib.sha256(data).hexdigest()
     stem = f'{day}-{digest}'
@@ -1687,13 +1836,46 @@ def store_archive(project: str, data: bytes, taken_at: Any, filename: str = '') 
     parsed = parse_archive(data, filename)
     root = _root(project, create=True)
     with _lock(root):
+        if source_policy is not None:
+            import developaid_contract_identity_store as identity_store
+            if (not isinstance(source_policy, dict) or set(source_policy) != {'archive_revision'}
+                    or not re.fullmatch(r'[0-9a-f]{64}', str(source_policy.get('archive_revision') or ''))):
+                raise LedgerConflict('Проверка состояния накопительных не подтверждена.')
+            identity_store.assert_namespace(project)
+            if snapshot_inventory(project)['revision'] != source_policy['archive_revision']:
+                raise LedgerConflict('Состав снимков изменился. Повторите проверку Диска перед применением.')
+            # The native archive lock covers this last-state check and commit.
+            # In particular a source removed after preflight cannot reappear in
+            # a newly named archive or under a different snapshot date.
+            manifests = [path for path in root.glob('*.json') if re.fullmatch(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{64}',path.stem)]
+            if len(manifests) > 128:
+                raise LedgerConflict('История снимков требует отдельной сверки.')
+            seen, budget = set(), 0
+            for manifest_path in manifests:
+                raw = identity_store.read_bytes(manifest_path, MAX_PARSED_BYTES)
+                if raw is None:
+                    raise LedgerConflict('История исходных ведомостей не подтверждена.')
+                budget += len(raw)
+                if budget > 64*1024*1024:
+                    raise LedgerConflict('История снимков превышает предел проверки.')
+                for source in json.loads(raw).get('files') or []:
+                    sha = source.get('sha256')
+                    if source.get('status') != 'ignored' and PurePosixPath(source.get('filename') or '').suffix.lower() in SUPPORTED:
+                        if not isinstance(sha,str) or not re.fullmatch(r'[0-9a-f]{64}',sha):
+                            raise LedgerConflict('История исходных ведомостей не подтверждена.')
+                        seen.add(sha)
+            incoming = {source.get('sha256') for source in parsed['files'] if source.get('sha256')}
+            if incoming & seen:
+                raise LedgerConflict('Одна из ведомостей уже сохранена, в том числе среди исключённых снимков. Повторите проверку; автоматического восстановления нет.')
         existing = list(root.glob(f'{day}-*.json'))
-        if existing:
-            path = _snapshot_path(root, stem)
-            if len(existing) == 1 and existing[0] == path:
-                stored = json.loads(path.read_text(encoding='utf-8'))
-                return _import_result(stored, duplicate=True)
-            raise LedgerConflict('Архив на эту дату уже загружен. Выберите дату нового среза; предыдущий архив сохранён.')
+        path = _snapshot_path(root, stem)
+        if path in existing:
+            stored = json.loads(path.read_text(encoding='utf-8'))
+            _require_active(project, stem)
+            return _import_result(stored, duplicate=True)
+        removed = removed_snapshot_ids(project)
+        if any(path.stem not in removed for path in existing):
+            raise LedgerConflict('На эту дату уже есть действующий архив. Удалите его из расчётов перед загрузкой исправленного; исходные файлы останутся в истории.')
         stored = {**parsed, 'snapshot_id': stem, 'taken_at': day,
                   'loaded_at': dt.datetime.now(dt.timezone.utc).isoformat(),
                   'filename': PurePosixPath(filename).name[:240] if filename else 'Накопительные.zip',
@@ -1716,13 +1898,16 @@ def _read_manifest(path: Path) -> dict:
 
 
 @stage_profile.stage('manifest_list')
-def list_snapshots(project: str) -> list[dict]:
+def list_snapshots(project: str, *, include_removed: bool = False) -> list[dict]:
     root = _root(project)
     if not root.exists():
         return []
+    removed = set() if include_removed else removed_snapshot_ids(project)
     out = []
     for path in sorted(root.glob('*.json'), reverse=True):
         if not re.fullmatch(r'\d{4}-\d{2}-\d{2}-[0-9a-f]{64}', path.stem):
+            continue
+        if path.stem in removed:
             continue
         checked = _snapshot_path(root, path.stem)
         try:
@@ -1855,6 +2040,7 @@ def verified_archive(project: str, snapshot_id: str, filename: str = '') -> dict
     """One hash-checked source entry point, including every memory/disk hit."""
     root = _root(project)
     _snapshot_path(root, snapshot_id)  # Validate the identifier before any I/O.
+    _require_active(project, snapshot_id)
     raw = root / (snapshot_id + '.zip')
     try:
         with stage_profile.measure('zip_read'):
@@ -1919,6 +2105,7 @@ def read_snapshot(project: str, snapshot_id: str) -> dict:
     """
     root = _root(project)
     path = _snapshot_path(root, snapshot_id)
+    _require_active(project, snapshot_id)
     try:
         snapshot = _read_manifest(path)
     except (OSError, ValueError):

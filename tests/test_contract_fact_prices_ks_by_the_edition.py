@@ -100,11 +100,14 @@ def test_the_fact_of_the_card_is_priced_by_the_estimate_and_laid_on_confirmed_li
     # Стены: 0,5 × 8 000 по долям 3/8 и 5/8; армирование плит — более мелкая строка позиции 1.2.
     assert [{k: v for k, v in line.items() if k != 'position_facts'} for line in got["lines"]] == [
         {"code": "1.1", "fact": 1500.0, "volumes": [{"unit": "м3", "quantity": 0.1875}], "last": "2026-02-03",
-         "complete": False, "work_fact": 1500.0, "material_fact": 0.0, "material_volumes": []},
+         "complete": False, "work_fact": 1500.0, "material_fact": 0.0, "material_volumes": [], "material_last": None,
+         "material_position_facts": [], "material_current_source": False, "material_positions_unknown": False},
         {"code": "1.2", "fact": 2500.0, "volumes": [{"unit": "м3", "quantity": 0.3125}], "last": "2026-02-03",
-         "complete": False, "work_fact": 2500.0, "material_fact": 0.0, "material_volumes": []},
+         "complete": False, "work_fact": 2500.0, "material_fact": 0.0, "material_volumes": [], "material_last": None,
+         "material_position_facts": [], "material_current_source": False, "material_positions_unknown": False},
         {"code": "1.3", "fact": 1500.0, "volumes": [{"unit": "м3", "quantity": 0.5}], "last": "2026-02-02",
-         "complete": False, "work_fact": 1500.0, "material_fact": 0.0, "material_volumes": []}]
+         "complete": False, "work_fact": 1500.0, "material_fact": 0.0, "material_volumes": [], "material_last": None,
+         "material_position_facts": [], "material_current_source": False, "material_positions_unknown": False}]
     positions = [line['position_facts'] for line in got['lines']]
     assert [sum(p['quantity'] for p in group) for group in positions] == [0.1875, 0.3125, 0.5]
     assert [group[0]['last'] for group in positions] == ['2026-02-03', '2026-02-03', '2026-02-02']

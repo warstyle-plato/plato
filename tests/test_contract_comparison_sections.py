@@ -122,12 +122,12 @@ def test_unambiguous_printed_sections_and_unknown_works_reach_excel():
     assert [r['section'] for r in rows] == ['Корпус 1', 'Корпус 1', 'Корпус 2', 'Паркинг', '']
     assert rows[1]['state'] == 'unknown' and rows[1]['fact'] is None
     meta = cached['comparison_export']
-    raw = export.workbook(meta, cached['comparison'], rows)
+    table = cached['rds_comparison']
+    raw = export.workbook(meta, table, table['rows'])
     sheet = load_workbook(io.BytesIO(raw)).active
-    labels = [row[0] for row in sheet.values]
-    for label in ['Корпус 1', 'Корпус 2', 'Паркинг', 'Раздел в ГПР не указан']:
-        assert labels.count(label) == 1
-    assert labels.index('Корпус 1') < labels.index('Корпус 2') < labels.index('Паркинг')
+    assert sheet.max_column == 16
+    assert [sheet.cell(index,2).value for index in (7,8)] == ['Кладка стен','Работа с нулевым фактом']
+    assert not any(cell.value in ('Корпус 1','Корпус 2','Паркинг') for row in sheet for cell in row)
 
 
 @pytest.mark.parametrize('width', [390, 1440])
