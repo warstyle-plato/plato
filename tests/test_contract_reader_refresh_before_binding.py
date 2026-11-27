@@ -74,7 +74,7 @@ def test_current_reader_does_not_reparse_or_write_metadata(pair, monkeypatch):
 def test_disabling_pre_pin_refresh_reproduces_native_self_drift(pair, monkeypatch):
     import main
     retained(pair, monkeypatch, 11)
-    monkeypatch.setattr(files, 'refresh_parse_cache', lambda *args: None)
+    monkeypatch.setattr(files, 'refresh_parse_cache', lambda *args, **kwargs: None)
     result = main.core._monitor_cumulative_execute('view', {'project': PROJECT, 'cut': CUT})
     assert result['ok'] is False and 'привязки изменились' in result['detail']
 
