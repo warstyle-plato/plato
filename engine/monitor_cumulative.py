@@ -1011,6 +1011,10 @@ def _monitor_contract_gpr_current(value):
         old_schema = value['comparison_export'].get('schema')
         if old_schema and old_schema != comparison_export.SCHEMA:
             raise jobs.JobProblem(409, jobs.SOURCE_CHANGED_DETAIL, code='source_changed')
+    if (value.get('register') or {}).get('display_schema'):
+        import developaid_contract_register_display as register_display
+        if value['register']['display_schema'] != register_display.SCHEMA:
+            raise jobs.JobProblem(409, jobs.SOURCE_CHANGED_DETAIL, code='source_changed')
     bindings = [value['gpr']] if value.get('gpr') else []
     bindings.extend((row.get('schedule_control') or {}).get('gpr_binding')
                     for row in (value.get('register') or {}).get('rows') or [])
@@ -1160,6 +1164,9 @@ def _monitor_cumulative_job(req, *, family: str, operation: str = "") -> Respons
             if operation in {'view', 'documents'}:
                 import developaid_contract_control as contract_control
                 fingerprint['contract_calculation_revision'] = contract_control.CALCULATION_REVISION
+            if family == 'contracts' and operation == 'view':
+                import developaid_contract_register_display as register_display
+                fingerprint['contract_register_display_schema'] = register_display.SCHEMA
             if archive:
                 fingerprint["archive_sha256"] = _hashlib.sha256(archive).hexdigest()
             profile_stages = operation == "view" and getattr(req, "profile_stages", False)

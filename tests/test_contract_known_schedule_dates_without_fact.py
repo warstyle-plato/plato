@@ -64,13 +64,14 @@ def test_real_page_shows_known_plan_dates_when_forecast_is_unavailable(source_ca
             'pending':False,'ok':True,**source_card}))
         page.locator('#contractsTab').click()
         line=page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(line.locator('.term')).to_contain_text('План ГПР: 05.02.2026')
+        expect(line.locator('.term')).to_contain_text('05.02.2026')
+        expect(line.locator('.term')).to_contain_text('По ГПР')
         schedule=line.locator('.contract-schedule')
         expect(schedule).to_have_text('Проверить документы')
         expect(schedule).not_to_contain_text(CHART_DATES_ASSUMPTION)
         expect(schedule).not_to_contain_text('Это сроки исходного графика')
         expect(schedule.locator('.contract-source-plan .warn')).to_have_count(0)
-        expect(line.locator('.term')).to_contain_text('Указать срок договора')
+        expect(line.locator('.term')).not_to_contain_text('Указать срок договора')
         expect(line.locator('.term')).not_to_contain_text('Прогноз')
         expect(line.locator('.term')).not_to_contain_text('Прогноз неизвестен')
         line.locator('.contract-open').click()
@@ -105,7 +106,7 @@ def test_known_gpr_forecast_is_the_same_in_the_term_tile_and_schedule(width,cont
         page.locator('#contractsTab').click()
         line=page.locator(f'tr[data-contract-id="{CONTRACT}"]')
         term=line.locator('.term')
-        target='03.02.2026' if contract_deadline else 'План ГПР: 05.02.2026'
+        target='03.02.2026' if contract_deadline else '05.02.2026'
         expect(term).to_contain_text(target)
         expect(term).not_to_contain_text('Прогноз по ГПР')
         expect(term).not_to_contain_text('Прогноз неизвестен')
@@ -116,7 +117,8 @@ def test_known_gpr_forecast_is_the_same_in_the_term_tile_and_schedule(width,cont
         expect(more.locator('[data-label="Прогноз окончания"]')).not_to_contain_text('Прогноз неизвестен')
         expect(more.locator('[data-label="Прогноз окончания"] .contract-card-pill-value')).to_have_text('06.02.2026')
         if not contract_deadline:
-            expect(term).to_contain_text('Указать срок договора')
+            expect(term).to_contain_text('По ГПР')
+            expect(term).not_to_contain_text('Указать срок договора')
             expect(more.locator('.contract-term')).to_have_text('Указать срок')
         else:
             expect(more).to_contain_text('ДС № 1 · стр. 2 · п. 2.3.2')

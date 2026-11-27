@@ -136,7 +136,7 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         head = page.locator(".contract-register thead th")
         expect(head).to_have_count(6)
         names = [" ".join(x.split()) for x in head.evaluate_all("hs => hs.map(h => h.textContent)")]
-        assert names == ["Договор", "Сумма и выполнение", "Срок", "График договора", "Внимание", "Открыть"]
+        assert names == ["Договор", "Сумма и выполнение", "Срок завершения", "График договора", "Внимание", "Открыть"]
         color = "e => getComputedStyle(e).color"
         red = brief.locator(".contract-risk").evaluate(color)
         # The same native result is presented once, in the modal work table.

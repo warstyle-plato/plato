@@ -66,7 +66,7 @@ def test_missing_forecast_inputs_have_short_specific_explanations():
                        'reason': 'Длинное техническое пояснение. ' * 20}
         page.locator('#contractsTab').click()
         first = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(first.locator('.term')).to_have_text('Указать срок договора')
+        expect(first.locator('.term')).to_have_text('Не определён')
         expect(first.locator('.contract-attention')).to_contain_text('Уточнить сумму')
         more = opened(page, CONTRACT)
         expect(more.locator('.contract-money-forecast')).to_contain_text('Для прогноза нужна полная сумма договора.')
