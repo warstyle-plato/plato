@@ -132,7 +132,7 @@ def test_plain_dropped_answer_gets_truthful_invitation_without_attaching(tmp_pat
     assert not data["events"] and not data["ingestions"]
     notice, = data["deliveries"].values()
     assert "Спасибо за пояснение" in notice["text"]
-    assert "не связано" in notice["text"] and "Reply" in notice["text"] and "принят" not in notice["text"]
+    assert "не связано" in notice["text"] and "«Ответить»" in notice["text"] and "принят" not in notice["text"]
     assert dialogue.load(tmp_path, "Продажи") == before
     assert not answer(tmp_path, scope, batch, text=text.replace("107", "108"), mid=401, candidate=True)["candidate"]
     dropped_batch(tmp_path, scope, tower="Другая башня", mid=301)
@@ -228,7 +228,7 @@ def test_short_parking_references_only_invite_reply_and_preserve_three_legal_row
     assert not data["events"] and not data["ingestions"]
     notice, = data["deliveries"].values()
     assert "Спасибо за пояснение" in notice["text"] and "не связано" in notice["text"]
-    assert "Reply" in notice["text"] and "принят" not in notice["text"]
+    assert "«Ответить»" in notice["text"] and "принят" not in notice["text"]
     assert len(batch["questions"]) == 3 and len(store.load(tmp_path, "Продажи")["sources"]["contracting"]["data"]["rows"]) == 3
     assert store.load(tmp_path, "Продажи") == before
     assert not dialogue.load(tmp_path, "Продажи")["batches"][notice["id"].removeprefix("candidate:")]["replies"]
@@ -281,7 +281,32 @@ def test_native_ack_queue_failure_does_not_claim_that_saved_raw_reply_was_lost(n
         reply_text=batch["text"], reply_from_id=123, reply_is_bot=True, text="1. ожидаем оплату 03.12.26",
         author_id=4242, author="Менеджер", telegram_date=STAMP,
         sign=core._web_login_sign("monitor-sales", scope["chat_id"])))
-    assert result["reply_saved"] is True and "synthetic outbox full" in result["followup_error"]
+    assert result["reply_saved"] is True and "synthetic outbox full" in result["receipt_error"]
+    assert result["followup_error"] == ""
     assert len(next(iter(dialogue.load(where, "Продажи")["batches"].values()))["replies"]) == 1
     assert not any(key.startswith("answer:") for key in follow.load(where, "Продажи")["deliveries"])
+    seen = []
+    monkeypatch.setattr(core, "_telegram_group_seen", lambda chat, outcome, **kw: seen.append(outcome))
+    msg = dict(native_message(scope, batch), message_id=102)
+    core._telegram_group_message(msg["chat"], msg)
+    assert "ответ Платону сохранён" in seen[-1]
+    assert "подтверждение сохранения не подготовлено: synthetic outbox full" in seen[-1]
+    assert "отложенный контроль не подготовлен" not in seen[-1]
+    assert not sent
+
+
+def test_native_followup_failure_is_distinct_from_receipt_failure(native, monkeypatch):
+    _, core, where, scope, sent = native
+    batch = next(iter(dialogue.load(where, "Продажи")["batches"].values()))
+    monkeypatch.setattr(follow, "ingest", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("synthetic control failure")))
+    result = core.internal_monitor_sales_chat(core.SalesChatRequest(
+        chat_id=scope["chat_id"], action="reply", message_id=101, reply_to_id=100,
+        reply_text=batch["text"], reply_from_id=123, reply_is_bot=True, text="1. ожидаем оплату 03.12.26",
+        author_id=4242, author="Менеджер", telegram_date=STAMP,
+        sign=core._web_login_sign("monitor-sales", scope["chat_id"])))
+    assert result["reply_saved"] is True and "synthetic control failure" in result["followup_error"]
+    assert result["receipt_error"] == "" and not follow.load(where, "Продажи")["events"]
+    assert len(next(iter(dialogue.load(where, "Продажи")["batches"].values()))["replies"]) == 1
+    notice, = follow.load(where, "Продажи")["deliveries"].values()
+    assert notice["text"] == "Спасибо, ответ принят." and not notice["question"]
     assert not sent

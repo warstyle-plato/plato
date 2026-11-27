@@ -3542,6 +3542,8 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
                 outcome += " без привязки к проекту: исторический вопрос"
             if result.get("followup_error"):
                 outcome += "; отложенный контроль не подготовлен: " + str(result["followup_error"])
+            if result.get("receipt_error"):
+                outcome += "; подтверждение сохранения не подготовлено: " + str(result["receipt_error"])
             _telegram_group_seen(chat, outcome)
         except Exception as exc:
             _telegram_group_seen(chat, "ответ Платону не сохранён: " + str(exc)[:80])

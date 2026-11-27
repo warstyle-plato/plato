@@ -1519,6 +1519,7 @@ def _apply_sales_chat(req: SalesChatRequest, project: str) -> dict[str, Any]:
         target = where if origin else where / "unattributed"
         key = origin or str(req.chat_id)
         followup_error = ""
+        receipt_error = ""
         if origin:
             from market_search import sales_followups
             try:
@@ -1541,9 +1542,10 @@ def _apply_sales_chat(req: SalesChatRequest, project: str) -> dict[str, Any]:
                     message_id=req.message_id, reply_to_id=req.reply_to_id, text=req.text,
                     author_id=req.author_id, telegram_date=req.telegram_date)
             except (ValueError, RuntimeError, OSError) as exc:
-                followup_error = str(exc)[:160]
+                receipt_error = str(exc)[:160]
         return {"sales_project": origin, "reply_saved": saved,
-                "reply_unattributed": not bool(origin), "followup_error": followup_error}
+                "reply_unattributed": not bool(origin), "followup_error": followup_error,
+                "receipt_error": receipt_error}
     _site_chat_title_seen(int(req.chat_id or 0), req.title)
     from market_search import salesroom, sales_store
     if not sales_project:

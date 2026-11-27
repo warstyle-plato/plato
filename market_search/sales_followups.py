@@ -375,7 +375,7 @@ def ingest(where, project, scope, *, message_id, reply_to_id, quoted, text, auth
                        if chat.startswith("-100") else f"сообщение Платона № {message} от {batch.get('asked_at', '')}")
             # One invitation per original batch, not per repeated ordinary message.
             _enqueue(where, project, data, scope, f"candidate:{bid}",
-                     f"Спасибо за пояснение. Пожалуйста, ответьте через Reply на {context}, чтобы я связал пояснения с вопросами. "
+                     f"Спасибо за пояснение. Пожалуйста, нажмите «Ответить» на {context}, чтобы я связал пояснения с вопросами. "
                      "Это сообщение пока не связано с вопросами и сроки контроля не сохранены.", trusted_markup=True)
             _save(where, project, data)
             return {"events": 0, "candidate": True}
