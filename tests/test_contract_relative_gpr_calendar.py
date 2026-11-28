@@ -541,6 +541,7 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         page.route('**/monitor/contracts/gpr.xlsx', download_route)
         page.locator('#contractsTab').click()
         page.locator(f'tr[data-contract-id="{ROW["id"]}"] .contract-open').click()
+        page.locator('#contractGpr > summary').click()
         expect(page.locator('#contractGprHandover')).to_be_visible()
         expect(page.locator('#contractGprBody')).to_contain_text('дата начала не указана')
         # SVG defs contain a hatch sample; only direct plan rectangles are intervals.
@@ -627,6 +628,7 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         page.screenshot(path=str(tmp_path/f'gpr-pending-preview-{width}.png'), full_page=True)
         page.locator('#contractDialogClose').click()
         page.locator(f'tr[data-contract-id="{ROW["id"]}"] .contract-open').click()
+        page.locator('#contractGpr > summary').click()
         expect(page.locator('#contractGprHandover')).to_have_value('2026-02-02')
         page.locator('#contractGprReference').fill('Ошибочная дата снята по учебному акту')
         page.locator('#contractGprClear').click()

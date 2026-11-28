@@ -219,6 +219,7 @@ def test_popup_shows_exact_latest_choices_and_requires_explicit_signed_reference
         page.route('**/monitor/contracts/documents',lambda route:route.fulfill(json=snapshot()))
         page.route('**/monitor/contracts/gpr-change',change)
         page.locator('#contractsTab').click();page.locator('tr[data-contract-id="'+ROW['id']+'"] .contract-open').click()
+        page.locator('#contractGpr > summary').click()
         expect(page.locator('[data-gpr-activate]')).to_have_count(2)
         choices=page.locator('.contract-gpr-source-selection')
         expect(choices).not_to_have_attribute('open','')

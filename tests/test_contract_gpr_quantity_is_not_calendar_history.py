@@ -126,6 +126,7 @@ def test_native_page_today_uses_local_calendar_without_changing_data_cut(card, m
         page.route('**/monitor/contracts/documents',lambda route:route.fulfill(json={'ok':True,'pending':False,'gpr':state}))
         page.locator('#contractsTab').click()
         page.locator('tr[data-contract-id="'+ROW['id']+'"] .contract-open').click()
+        page.locator('#contractGpr > summary').click()
         page.evaluate('(value)=>renderContractGpr(value)',state)
         assert page.evaluate('contractGprToday()') == today
         expect(page.locator('.contract-gpr-markers')).to_contain_text('24.11.2026')

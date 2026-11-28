@@ -13,7 +13,7 @@ from tests.test_contract_comparison_export import native_card, PROJECT, CUT
 def test_native_page_downloads_only_the_bound_full_workbook(case):
     prelude = r"""
 let contractGprState={source:{sha256:'b'.repeat(64)}};
-let contractGprExport={available:true,schema:'contract-gpr-performance-xlsx-v12',ticket:'a'.repeat(32),id:'c'.repeat(64),revision:'d'.repeat(64),cut:'2026-03-05',filename:'synthetic-full-book.xlsx'};
+let contractGprExport={available:true,schema:'contract-gpr-performance-xlsx-v13',mode:'active',draft:false,ticket:'a'.repeat(32),id:'c'.repeat(64),revision:'d'.repeat(64),cut:'2026-03-05',filename:'synthetic-full-book.xlsx'};
 const widgets={contractGprDownload:{isConnected:true,disabled:false},contractComparisonFilter:{value:'behind'}};
 function $(id){return widgets[id]};let live=true,authEpoch=1,calls=[],downloads=[],messages=[],checks=[];
 function hasAuth(){return live};function requireLogin(){throw Error('unexpected login')};
@@ -51,7 +51,7 @@ globalThis.fetch=(path,options)=>{calls.push(path);return new Promise(resolve=>d
 """
     result=page_blocks.run_json(prelude,r"""
 (async()=>{await exportContractGpr();const refused=calls.length;
-contractGprState={source:{sha256:'b'.repeat(64)}};contractGprExport={available:true,schema:'contract-gpr-performance-xlsx-v12',ticket:'a'.repeat(32),revision:'d'.repeat(64)};
+contractGprState={source:{sha256:'b'.repeat(64)}};contractGprExport={available:true,schema:'contract-gpr-performance-xlsx-v13',mode:'active',draft:false,ticket:'a'.repeat(32),revision:'d'.repeat(64)};
 const first=exportContractGpr();await exportContractGpr();deliver({ok:false,status:409,json:async()=>({detail:'Источники изменились'})});
 await first;console.log(JSON.stringify({refused,calls,messages}));})().catch(e=>{console.error(e);process.exit(1)});
 """,page=MONITOR_PAGE)
@@ -75,7 +75,7 @@ globalThis.fetch=async(path)=>{calls.push(path);throw Error('Unexpected legacy d
 def test_full_book_refuses_redirect_before_replaying_credentials(status):
     prelude='const redirectStatus='+str(status)+';\n'+r"""
 let authEpoch=1,calls=[],forwarded=[],downloads=[];
-const contractGprState={source:{sha256:'b'.repeat(64)}},contractGprExport={available:true,schema:'contract-gpr-performance-xlsx-v12',ticket:'a'.repeat(32),id:'c'.repeat(64),revision:'d'.repeat(64),cut:'2026-03-05'};
+const contractGprState={source:{sha256:'b'.repeat(64)}},contractGprExport={available:true,schema:'contract-gpr-performance-xlsx-v13',mode:'active',draft:false,ticket:'a'.repeat(32),id:'c'.repeat(64),revision:'d'.repeat(64),cut:'2026-03-05'};
 const widget={isConnected:true,disabled:false};function $(){return widget};function hasAuth(){return true};function requireLogin(){throw Error('Unexpected login')};function cumulativeContext(){return{key:'synthetic-key',project:'Synthetic'}};function sameCumulativeContext(){return true};function msg(){};function checkAuthResponse(){};
 globalThis.fetch=async(path,options)=>{calls.push({path,redirect:options.redirect||'follow',status:redirectStatus});if(options.redirect==='error')throw new TypeError('Redirect refused');forwarded.push(JSON.parse(options.body));return{ok:false,status:500,json:async()=>({})}};
 const deny=()=>{throw Error('Actual transport forbidden')};require('http').request=deny;require('https').request=deny;require('net').connect=deny;
@@ -113,6 +113,7 @@ def _browser_export(page,cached,contract_id,key,calls):
     page.locator('#cut').fill(CUT);page.locator('#contractsTab').click()
     page.locator(f'tr[data-contract-id="{contract_id}"] .contract-open').click()
     page.locator('#contractGprDownload').wait_for(state='visible')
+    page.locator('#contractExecution > summary').click()
 
 @pytest.mark.parametrize('width',[390,1440])
 def test_one_button_downloads_native_full_book_even_when_comparison_is_filtered(width,tmp_path):

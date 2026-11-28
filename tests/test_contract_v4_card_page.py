@@ -36,6 +36,8 @@ def test_card_shared_projection_distinguishes_calendar_risk_and_shows_unallocate
     with browser_page(width) as (page,responses,errors):
         page.route('**/monitor/contracts/documents',lambda route:route.fulfill(json=dto))
         page.locator('#contractsTab').click();page.locator('tr[data-contract-id="'+CONTRACT+'"] .contract-open').click()
+        page.locator('#contractGpr > summary').click()
+        page.locator('#contractWorkforce > summary').click()
         expect(page.locator('.contract-gpr-position')).to_have_count(3)
         expect(page.locator('[data-company-latest="2026-01-24"]')).to_contain_text('82')
         assert page.locator('[data-company-date]').count()==1
@@ -75,6 +77,8 @@ def test_card_keeps_each_latest_company_direction_beside_an_available_resource_p
     with browser_page(width) as (page,responses,errors):
         page.route('**/monitor/contracts/documents',lambda route:route.fulfill(json=dto))
         page.locator('#contractsTab').click();page.locator('tr[data-contract-id="'+CONTRACT+'"] .contract-open').click()
+        page.locator('#contractGpr > summary').click()
+        page.locator('#contractWorkforce > summary').click()
         latest=page.locator('[data-company-latest="2026-01-24"]')
         expect(latest).to_have_count(2)
         assert '82' in latest.nth(0).inner_text() and '15' in latest.nth(1).inner_text()

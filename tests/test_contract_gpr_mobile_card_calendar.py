@@ -57,6 +57,7 @@ def gpr_page(width, preview=False):
         page.locator('#contractsTab').click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
         page.locator('#contractGprBody[aria-busy="false"]').wait_for(state='attached')
+        page.locator('#contractGpr > summary').click()
         yield page, state, errors
 
 
@@ -87,6 +88,7 @@ def test_calendar_and_compact_names_leave_execution_reachable(width):
         expect(name).to_have_attribute('open', '')
         expect(name.locator('b')).to_have_text('1.1 ' + LONG_NAME)
         assert name.bounding_box()['height'] > 85
+        page.locator('#contractExecution > summary').click()
         page.locator('#contractComparison').scroll_into_view_if_needed()
         expect(page.locator('#contractComparisonTitle')).to_be_in_viewport()
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
@@ -96,11 +98,11 @@ def test_calendar_and_compact_names_leave_execution_reachable(width):
 @pytest.mark.parametrize('width', [390, 440, 1440])
 def test_unselected_preview_names_the_reason_and_choice_before_the_chart(width):
     with gpr_page(width, preview=True) as (page, state, errors):
-        expect(page.locator('#contractGprTitle')).to_have_text('Предпросмотр ГПР')
+        expect(page.locator('#contractGprTitle')).to_have_text('ГПР')
         expect(page.locator('#contractGprDownload')).to_have_text('Скачать ГПР, выполнение и численность')
         expect(page.locator('#contractGprDownload')).to_be_disabled()
-        expect(page.locator('.contract-gpr-preview-note')).to_contain_text('Полная книга с ГПР, выполнением и численностью')
-        expect(page.locator('.contract-gpr-preview-note')).to_contain_text('ещё не принят для расчёта')
+        expect(page.locator('.contract-gpr-preview-note')).to_contain_text('выбор источника в программе, а не юридическая приёмка работ')
+        expect(page.locator('.contract-gpr-preview-note')).to_contain_text('ещё не выбрана в программе для расчёта договора')
         choice = page.locator('.contract-gpr-source-selection')
         expect(choice.locator(':scope>summary')).to_have_text('Выбрать ГПР для расчёта (1)')
         assert choice.bounding_box()['y'] < page.locator('.contract-gpr-scroll').bounding_box()['y']
@@ -109,7 +111,7 @@ def test_unselected_preview_names_the_reason_and_choice_before_the_chart(width):
         expect(choice.locator('[data-gpr-signed]')).not_to_be_checked()
         assert state['source'] is None
         page.evaluate('renderContractGpr(null)')
-        expect(page.locator('#contractGprTitle')).to_have_text('ГПР договора')
+        expect(page.locator('#contractGprTitle')).to_have_text('ГПР')
         expect(page.locator('#contractGprBody')).to_contain_text('пока не загружен')
         expect(page.locator('#contractGprDownload')).to_be_disabled()
         assert not errors
