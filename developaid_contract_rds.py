@@ -138,10 +138,10 @@ def _ks6_reporting(row, fact, identity, sources, *, group, unread, observed):
     quantity = reported if reported is not None else item.get('completed_quantity')
     if (item.get('is_group') is True or item.get('is_duplicate') is True
             or not snapshot or snapshot != source_day or not cut or snapshot > cut
-            or ('quantity_cut' in item and item['quantity_cut'] != fact.get('cut'))
-            or ('future_periods_excluded' in item and item['future_periods_excluded'] is not False)
+            or item.get('quantity_cut') != fact.get('cut')
+            or item.get('future_periods_excluded') is not False
             or type(year) is not int or not 2000 <= year <= cut.year
-            or ('period_year' in item and item['period_year'] != year)
+            or type(item.get('period_year')) is not int or item['period_year'] != year
             or reference.get('source_date') != item.get('snapshot_date')
             or not _numeric(quantity) or quantity != 0
             or _unit(item.get('unit')) != _unit(row['unit'])

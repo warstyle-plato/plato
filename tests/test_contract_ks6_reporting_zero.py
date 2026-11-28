@@ -194,12 +194,10 @@ def test_explicit_source_group_or_unqualified_statement_hash_cannot_be_a_reporte
     assert 'ks_reporting' not in rebuild(cached)
 
 
-def test_retained_source_provenance_uses_qualified_reference_without_guessing_a_year():
+@pytest.mark.parametrize('missing', ['period_year', 'quantity_cut', 'future_periods_excluded'])
+def test_missing_per_row_cut_or_year_provenance_is_unknown_despite_a_qualified_reference(missing):
     cached, _ = statement_card()
-    for key in ('period_year', 'quantity_cut', 'future_periods_excluded', 'quantity_basis'):
-        cached['fact']['physical_source_rows'][0].pop(key)
-    assert rds.reporting_row(rebuild(cached))['fact_quantity'] == 0
-    cached['fact']['statement_components']['sources'][0]['period_year'] = None
+    cached['fact']['physical_source_rows'][0].pop(missing)
     assert 'ks_reporting' not in rebuild(cached)
     cached, _ = statement_card()
     cached['fact']['rds_unread'].append({'estimate': 0, 'index': 0, 'estimate_sha256': 'a'*64, 'reason': 'Строка не прочитана.'})
