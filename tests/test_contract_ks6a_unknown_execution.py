@@ -162,7 +162,12 @@ def test_unknown_indexed_operation_preserves_known_operations_and_exports_blank_
     if not schedule_source_matches:
         # An unrelated source must not supply a plan, even if its dates match.
         assert 'Нет принятой связи' in excel_row[5].comment.text
-    assert all(excel_row[column].value is None for column in (9,11,12,13))
+    assert all(excel_row[column].value is None for column in (9,11,12))
+    assert excel_row[13].value == ('Срок ГПР ещё не наступил; завершение по КС не подтверждено'
+        if schedule_source_matches else 'Отставание по объёму не определено')
+    assert excel_row[14].value == 'Дата завершения не определена'
+    assert excel_row[15].value == 'Задержка к сроку ГПР не определена'
+    assert all(excel_row[column].number_format == 'General' for column in (13,14,15))
     assert 'Период без даты' in excel_row[7].comment.text
     assert [rows[number][7].value for number in ('4.1.1','4.1.3')] == [25,0]
     assert [rows[number][11].value for number in ('4.1.1','4.1.3')] == [250,0]
