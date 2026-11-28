@@ -229,3 +229,35 @@ def test_pending_canonical_reload_keeps_loading_until_the_server_finishes():
         expect(form(page).locator('[data-gpr-sign-reference]')).to_have_value(REFERENCE)
         expect(form(page).locator('[data-gpr-activate]')).to_be_enabled()
         assert not errors
+
+
+@pytest.mark.parametrize('refresh', ['changed_source', 'missing_source', 'missing_gpr', 'same_source'])
+def test_completed_success_stays_affine_to_the_current_canonical_source(refresh):
+    with browser_page(390) as (page, _, errors):
+        server = ChoiceServer(page)
+        open_card(page)
+        choose(page)
+        finish_mutation(page, server)
+        server.reply(server.reloads[-1], server.active)
+        status = page.locator('#contractGprChoiceMsg')
+        expect(status).to_have_class('msg good')
+        confirmed = copy.deepcopy(server.active)
+        if refresh == 'changed_source':
+            confirmed['gpr']['source'] = {'sha256': 'c' * 64}
+        elif refresh == 'missing_source':
+            confirmed = copy.deepcopy(server.initial)
+        elif refresh == 'missing_gpr':
+            confirmed['gpr'] = None
+        page.evaluate('()=>{void loadContractDocuments(contractDocumentsState.id)}')
+        expect(page.locator('#contractDocumentUpload')).to_be_disabled()
+        assert len(server.reloads) == 2
+        server.reply(server.reloads[-1], confirmed)
+        expect(page.locator('#contractDocumentUpload')).to_be_enabled()
+        if refresh == 'same_source':
+            expect(status).to_have_class('msg good')
+            expect(status).to_contain_text(FILENAME)
+        else:
+            expect(status).to_have_text('')
+            expect(status).not_to_have_class('msg good')
+            assert page.evaluate('contractGprChoiceFeedback') is None
+        assert not errors
