@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import re
 from collections import Counter
 
 import developaid_contract_plan as plan
@@ -12,7 +13,9 @@ from developaid_monitor_statement_union import _unit
 LAYOUT = 'rds-plan-fact-v3'
 KS_REPORTING_SCHEMA = 'rds-loaded-ks-reporting-v1'
 KS_REPORTING_NOTICE = ('Факт по загруженным и прочитанным КС. Если позиция в этих актах не предъявлена, '
-    'учтено 0; отклонение равно учтённому факту минус план. Это не утверждение о фактическом отсутствии работ на площадке. '
+    'учтено 0. В КС-6а известный нулевой итог работ показан как учтённый объём 0, отдельно от стоимости материалов. '
+    'Нулевая стоимость требует отдельного подтверждённого денежного итога. Отклонение равно учтённому факту минус план. '
+    'Это не утверждение о фактическом отсутствии работ на площадке. '
     'Непрочитанный или неоднозначный источник остаётся неизвестным.')
 KS_REPORTING_FIELDS = ('fact_quantity', 'fact_quantity_ratio', 'quantity_deviation', 'fact', 'deviation')
 SCHEDULE_REPORTING_SCHEMA = 'rds-schedule-reporting-v1'
@@ -90,6 +93,119 @@ def _ks_reporting(row, fact, identity, observed, unread, reviewed, leaf):
     return values
 
 
+def _ks6_reporting_sources(fact, estimates):
+    """Index exact native statement identities, retaining conflicts as conflicts."""
+    if fact.get('source') != 'ks6a' or fact.get('note'):
+        return {}
+    from developaid_contract_fact import match
+    sources = {}
+    for item in fact.get('physical_source_rows') or []:
+        identity = match({'number': item.get('position'), 'name': item.get('name'), 'unit': item.get('unit')}, estimates)
+        if not isinstance(identity, str):
+            sources.setdefault(tuple(identity[:2]), []).append(item)
+    return sources
+
+
+def _ks6_reporting(row, fact, identity, sources, *, group, unread, observed):
+    """A source/accounting zero is reportable without becoming physical evidence.
+
+    A zero work quantity establishes neither a zero material amount nor a
+    complete historical monetary value. A cash zero needs its own native
+    amount witness and never replaces an observed historical valuation.
+    """
+    audit = row.get('physical_audit') or {}
+    witnesses = sources.get(identity) or []
+    if (group or unread or row.get('fact_quantity') is not None or len(witnesses) != 1
+            or audit.get('state') not in ('known_source_value_unaccepted', 'accounted_zero_physical_unknown')
+            or not _numeric(row.get('contract_quantity')) or row['contract_quantity'] <= 0 or not row.get('unit')
+            or audit.get('rds_position') != list(identity) or audit.get('estimate_sha256') != row.get('source_sha256')
+            or audit.get('cut') != fact.get('cut') or len(audit.get('sources') or []) != 1):
+        return None
+    item, accepted = witnesses[0], audit['sources'][0]
+    source = item.get('source') or {}
+    components = fact.get('statement_components') or {}
+    references = [reference for reference in components.get('sources') or []
+        if all((reference.get('source') or {}).get(key) == source.get(key) for key in
+               ('filename', 'sheet', 'snapshot_id', 'file_sha256', 'source_date'))]
+    if (components.get('available') is not True or components.get('source') != 'ks6a'
+            or components.get('cut') != fact.get('cut') or len(references) != 1
+            or source.get('file_sha256') not in (components.get('source_hashes') or [])):
+        return None
+    reference = references[0]
+    snapshot, source_day, cut = _day(item.get('snapshot_date')), _day(source.get('source_date')), _day(fact.get('cut'))
+    year = reference.get('period_year')
+    reported = item.get('reported_completed_quantity')
+    quantity = reported if reported is not None else item.get('completed_quantity')
+    if (item.get('is_group') is True or item.get('is_duplicate') is True
+            or not snapshot or snapshot != source_day or not cut or snapshot > cut
+            or ('quantity_cut' in item and item['quantity_cut'] != fact.get('cut'))
+            or ('future_periods_excluded' in item and item['future_periods_excluded'] is not False)
+            or type(year) is not int or not 2000 <= year <= cut.year
+            or ('period_year' in item and item['period_year'] != year)
+            or reference.get('source_date') != item.get('snapshot_date')
+            or not _numeric(quantity) or quantity != 0
+            or _unit(item.get('unit')) != _unit(row['unit'])
+            or accepted.get('match_status') != 'linked' or accepted.get('conversion') != '1:1'
+            or accepted.get('reported_work_quantity') != 0 or accepted.get('snapshot_date') != item.get('snapshot_date')
+            or source != accepted.get('source')
+            or not all(isinstance(source.get(key), str) and source[key] for key in
+                ('filename', 'sheet', 'snapshot_id', 'file_sha256', 'completed_quantity_cell'))
+            or not re.fullmatch('[0-9a-f]{64}', source['file_sha256'])
+            or type(source.get('row')) is not int or source['row'] <= 0
+            or not re.fullmatch(r'[A-Z]+'+str(source['row']), source['completed_quantity_cell'])):
+        return None
+    periods = [*(item.get('periods') or []), *(item.get('undated_periods') or [])]
+    for period in periods:
+        begin, end = _day(period.get('date_start')), _day(period.get('date_end'))
+        if ((period.get('date_start') and not begin) or (period.get('date_end') and not end)
+                or (begin and end and begin > end) or (end and end > cut)
+                or (period.get('quantity') is not None and
+                    (not _numeric(period['quantity']) or period['quantity'] != 0))):
+            return None
+    accounted = audit['state'] == 'accounted_zero_physical_unknown'
+    if accounted and (not _numeric(row.get('accounted_work_quantity')) or row['accounted_work_quantity'] != 0
+            or not _numeric(audit.get('accounted_work_quantity')) or audit['accounted_work_quantity'] != 0
+            or not any('нулевой суммой' in str(value).lower() for value in accepted.get('quantity_bases') or [])):
+        return None
+    basis = 'ks6_accounted_work_zero' if accounted else 'ks6_cumulative_source_zero'
+    reason = ('По прочитанной КС-6а от '+snapshot.isoformat()+' учтённый объём работ равен 0. '+
+        ('Ноль учёта выведен из нулевой стоимости работ при положительной цене; физический объём в исходной ячейке не подтверждён. '
+         if accounted else 'Накопительный итог работ известен и равен 0; пустые периоды не устанавливают даты производства. ')+
+        'Это не подтверждённый физический ноль на площадке. Количество и стоимость материалов учитываются отдельно; '
+        'денежный факт по РДС не изменён.')
+    values = {'schema': KS_REPORTING_SCHEMA, 'basis': basis, 'state': 'reported_work_zero',
+        'fact_quantity': 0.0, 'fact_quantity_ratio': 0.0,
+        'quantity_deviation': -row['plan_quantity'] if _numeric(row.get('plan_quantity')) else None,
+        'physical_quantity_confirmed': False, 'sources': [source.copy()], 'basis_note': reason,
+        'comments': {field: reason for field in ('fact_quantity', 'fact_quantity_ratio', 'quantity_deviation')}}
+    if values['quantity_deviation'] is None:
+        values['comments']['quantity_deviation'] = 'План не подтверждён; отклонение от него не рассчитано. '+reason
+    amount = item.get('reported_completed_amount')
+    amount = amount if amount is not None else item.get('completed_amount')
+    amount_cell = source.get('completed_amount_cell')
+    cash_conflict = any(value.get(field) is not None and
+        (not _numeric(value[field]) or value[field] != 0)
+        for value in periods for field in ('amount', 'work_amount', 'material_amount'))
+    if (observed is None and (row.get('fact') is None or _numeric(row.get('fact')) and row['fact'] == 0)
+            and reference.get('financial_complete') is True
+            and _numeric(amount) and amount == 0 and 'completed_amount_derivation' in item
+            and item['completed_amount_derivation'] in (None, {}) and not cash_conflict
+            and isinstance(amount_cell, str) and re.fullmatch(
+                r'[A-Z]+'+str(source['row'])+r'(?:\s*\+\s*[A-Z]+'+str(source['row'])+r')*', amount_cell)):
+        cash_reason = ('Полная стоимость работ и материалов по этой строке прочитанной КС-6а от '+snapshot.isoformat()+
+            ' известна и равна 0; источник: '+source['filename']+', '+source['sheet']+', '+amount_cell+
+            '. Ноль подтверждён отдельным денежным итогом, а не выведен из объёма работ. '
+            'Это учтённое закрытие по источнику, не оплата и не переоценка исторического факта по РДС.')
+        values.update(fact=0.0, deviation=-row['planned'] if _numeric(row.get('planned')) else None,
+            cash_zero={'schema': 'ks6-source-cash-zero-v1', 'amount': 0.0, 'source': source.copy(),
+                       'basis': 'complete_native_statement_amount', 'note': cash_reason})
+        values['comments'].update(fact=cash_reason, deviation=cash_reason)
+        values['basis_note'] += ' '+cash_reason
+        if values['deviation'] is None:
+            values['comments']['deviation'] = 'План не подтверждён; отклонение от него не рассчитано. '+cash_reason
+    return values
+
+
 def reporting_row(row):
     """The page and workbook consume the same server projection; raw physical data stays intact."""
     view = row.get('ks_reporting')
@@ -121,7 +237,8 @@ def _schedule_reporting(row, cut, *, full_schedule_link):
     incomplete = _numeric(physical_ratio) and physical_ratio < 1-1e-6
     completion = 'ks_quantity_complete' if complete else 'ks_quantity_incomplete' if incomplete else 'unconfirmed'
     report = row.get('ks_reporting') or {}
-    credited_zero = report.get('schema') == KS_REPORTING_SCHEMA and report.get('state') == 'unreported_zero'
+    credited_zero = (report.get('schema') == KS_REPORTING_SCHEMA and report.get('physical_quantity_confirmed') is False
+        and report.get('fact_quantity') == 0 and report.get('state') in ('unreported_zero', 'reported_work_zero'))
     audit_reason = (row.get('physical_audit') or {}).get('reason') or 'Физический объём не подтверждён.'
     lag = row.get('day_deviation') if _numeric(row.get('day_deviation')) else None
 
@@ -215,6 +332,7 @@ def build(listed: dict) -> dict:
               if item.get('estimate_sha256') == document['sha256']}
     bindings = {(item['estimate'], item['index']): item for item in current['position_links']}
     reviewed = _loaded_ks2_scope(fact, document['estimates'])
+    ks6_sources = _ks6_reporting_sources(fact, document['estimates'])
     from developaid_contract_fact import _code
     nonleaf = {(e, i) for e, estimate in enumerate(document['estimates'])
                for i, position in enumerate(estimate.get('positions') or [])
@@ -396,6 +514,11 @@ def build(listed: dict) -> dict:
             if row['fact_quantity'] is None:
                 comments['fact_quantity'] = row['physical_audit']['reason']
             report = _ks_reporting(row, fact, identity, observed, unread.get(identity), reviewed, identity not in nonleaf)
+            if report is None:
+                report = _ks6_reporting(row, fact, identity, ks6_sources,
+                    group=(position.get('is_group') is True or position.get('group_row') is True
+                           or position.get('kind') in {'group', 'heading', 'section'}),
+                    unread=unread.get(identity), observed=observed)
             if report is not None:
                 row['ks_reporting'] = report
             row['schedule_reporting'] = _schedule_reporting(row, cut, full_schedule_link=(
