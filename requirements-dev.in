@@ -18,4 +18,4 @@ pytest>=9.2.0
 # `timeout-minutes` раннера, и отмена не называет, кто висел. Метки
 # `@pytest.mark.timeout(...)` в тестах без плагина ничего не делают.
 pytest-timeout==2.4.0
-httpx2>=0.28
+httpx2>=2.16.2
