@@ -158,6 +158,8 @@ def test_unknown_zero_and_full_monetary_completion_keep_distinct_deadline_eviden
     assert all("не завершены" not in line for line in report._contract_risk_lines(block))
 
     with browser_page(width) as (page, responses, errors):
+        from developaid_contract_register_display import attach
+        attach(view, CUT)
         responses.data = view
         page.locator('#contractsTab').click()
         expect(page.locator('#contractsRisk button').first).to_contain_text('Срок договора прошёл')
@@ -179,7 +181,8 @@ def test_unknown_zero_and_full_monetary_completion_keep_distinct_deadline_eviden
         done_row, done_more = named(page, 'DONE')
         expect(done_more.locator(done)).to_contain_text('100% суммы договора')
         expect(done_row.locator('.contract-money')).to_contain_text('100%')
-        expect(done_row.locator('.term')).to_have_text('01.09.2026')
+        expect(done_row.locator('.term .contract-badge')).to_have_text('01.09.2026')
+        expect(done_row.locator('.term .contract-finish-source')).to_have_text('По договору')
         expect(done_row).not_to_contain_text('Работы завершены')
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         page.screenshot(path=f'/tmp/plato1030-risk-evidence-{width}.png', full_page=True)
@@ -254,6 +257,8 @@ def test_real_page_shows_signal_strip_risk_filter_and_unworked_advance(project, 
          payments=[dict(base, contract="LATE", purpose="Аванс", date=dt.datetime(2026, 2, 1), amount=500),
                    dict(base, contract="OK", purpose="Оплата", date=dt.datetime(2026, 2, 1), amount=100)])
     view = contracts.build(project, CUT)
+    from developaid_contract_register_display import attach
+    attach(view, CUT)
     with browser_page(width) as (page, responses, errors):
         responses.data = view
         page.locator('#contractsTab').click()
@@ -262,7 +267,8 @@ def test_real_page_shows_signal_strip_risk_filter_and_unworked_advance(project, 
         expect(strip.locator('button').nth(1)).to_contain_text('1')
         expect(strip.locator('button').nth(3)).to_contain_text('200')
         late, late_more = named(page, 'LATE')
-        expect(late.locator('.term')).to_have_text('30.11.2026')
+        expect(late.locator('.term .contract-badge')).to_have_text('30.11.2026')
+        expect(late.locator('.term .contract-finish-source')).to_have_text('По договору')
         expect(late.locator('.contract-schedule')).to_have_text('Проверить документы')
         expect(late).not_to_contain_text('по темпу: 24.02.2027')
         expect(late_more).to_contain_text('Прогноз окончания: 24.02.2027')

@@ -383,6 +383,28 @@ def _month_ends(first: dt.date, last: dt.date):
         year, month = (year + 1, 1) if month == 12 else (year, month + 1)
 
 
+def _ks2_reporting_context(performed):
+    """Scope attestation for a reporting zero, separate from accepted physical evidence."""
+    import math
+    performed = performed or {}
+    evidence = performed.get('evidence') or {}
+    unread_rows = [{**row, 'source_sha256': item.get('sha256')}
+                  for item in evidence.get('acts') or [] for row in item.get('unread_positions') or []]
+    typed_warnings = {row.get('warning') for row in unread_rows if row.get('warning')}
+    unclassified_warnings = [warning for item in evidence.get('acts') or []
+                             for warning in item.get('warnings') or [] if warning not in typed_warnings]
+    parts = [part for position in performed.get('positions') or [] for part in position.get('parts') or []]
+    def quantity(value):
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+    readable = (type(evidence.get('count')) is int and evidence['count'] > 0
+        and evidence.get('unread_count') == 0 and not performed.get('excluded') and bool(parts)
+        and not unclassified_warnings
+        and all(quantity(part.get('quantity')) or quantity(part.get('quantity_material')) for part in parts))
+    return {'schema': 'loaded-ks2-reporting-scope-v1', 'readable_at_cut': bool(readable and not unread_rows),
+            'reporting_scope_available': bool(readable), 'unread_rows': unread_rows,
+            'excluded_count': len(performed.get('excluded') or [])}
+
+
 def from_acts(performed: dict | None) -> list[dict]:
     """КС-2 rows for reconciliation or fallback fact: one row per act and position."""
     rows = []
@@ -499,6 +521,7 @@ def build(editions: list[dict], in_force: str | None, found: dict | None, cut: s
               "component_gaps": [], 'material_statement': statement_materials(found, cut),
               'physical_groups': (found or {}).get('physical_groups') or [],
               'act_evidence': (performed or {}).get('evidence'),
+              'ks_reporting_context': _ks2_reporting_context(performed),
               'physical_source_rows': (found or {}).get('physical_source_rows') or []}
     result['reconciliation'] = reconcile(performed, None if (found or {}).get('problem') else found, cut)
     result['confirmation'] = confirmation(performed, found, cut, result['reconciliation'])

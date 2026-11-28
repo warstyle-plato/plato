@@ -82,7 +82,7 @@ def test_real_business_register_keeps_core_facts_visible_and_sources_closed(widt
         expect(second).to_contain_text('полная сумма не подтверждена')
         expect(second).to_contain_text('Процент денежного закрытия не подтверждён')
         assert second.locator('.contract-money .contract-progress').count() == 0
-        expect(second).to_contain_text('Указать срок договора')
+        expect(second.locator('.term')).to_contain_text('Не определён')
         expect(second).to_contain_text('Работы не указаны')
         expect(second).not_to_contain_text('просрочен')
         expect(second).not_to_contain_text('0%')
@@ -230,10 +230,15 @@ def test_passed_contract_deadline_stays_in_attention_count_filter_and_next_step(
         future.update(id=OTHER, deadline='2026-12-01', deadline_passed=False)
         future['reconciliation']['daily_evidence'][0]['contract_id'] = OTHER
         responses.data['rows'] = [row, future]
+        from developaid_contract_register_display import attach
+        for value in responses.data['rows']:
+            value.update(monetary_comparable=True, amount_basis='with_vat', completed_basis='with_vat')
+        attach(responses.data, responses.data['cut'])
         page.locator('#contractsTab').click()
         expect(page.locator('#contractsSummary b').nth(1)).to_have_text('1')
         passed = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(passed.locator('.term')).to_have_text('01.11.2026')
+        expect(passed.locator('.term .contract-badge')).to_have_text('01.11.2026')
+        expect(passed.locator('.term .contract-finish-source')).to_have_text('По договору')
         expect(passed.locator('.term .attention')).to_have_count(1)
         expect(passed.locator('.contract-schedule')).to_have_text('Проверить документы')
         expect(passed.locator('.contract-attention')).to_have_text('Срок прошёл')

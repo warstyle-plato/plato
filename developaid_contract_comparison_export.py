@@ -18,10 +18,10 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
 
-from developaid_contract_rds import LAYOUT, FIELDS
+from developaid_contract_rds import LAYOUT, FIELDS, reporting_row
 from developaid_contract_fact import _money
 
-SCHEMA = "contract-rds-plan-fact-export-v8"
+SCHEMA = "contract-rds-plan-fact-export-v9"
 MAX_ROWS = 10_000
 MAX_XLSX_BYTES = 8 * 1024 * 1024
 FILTERS = {"all": "Все работы и поставки", "behind": "Отстают от плана", "ahead": "Опережают план",
@@ -153,8 +153,8 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     sheet.title = 'РДС — план и факт'
     book.properties.creator = 'DevelopAid'
     labels = ('№', 'Работа из РДС', 'Ед. изм.', 'Начало ГПР', 'Конец ГПР', 'План, объём',
-              'План, % объёма РДС', 'Факт, объём', 'Факт, % объёма РДС', 'Отклонение, объём',
-              'План, ₽', 'Факт, ₽', 'Отклонение, ₽', 'Отставание на дату среза, дни',
+              'План, % объёма РДС', 'Факт по КС, объём', 'Факт по КС, % объёма РДС', 'Отклонение, объём',
+              'План, ₽', 'Факт по КС, ₽', 'Отклонение, ₽', 'Отставание на дату среза, дни',
               'Окончание: прогноз / факт', 'Отставание к сроку ГПР, дни')
     label = meta.get('label') or {}
 
@@ -181,6 +181,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     sheet.row_dimensions[2].height = 30
     sheet['A3'].comment = Comment(_text('\n'.join(filter_none([
         comparison.get('source_note'), comparison.get('confirmation', {}).get('message'),
+        (comparison.get('ks_reporting') or {}).get('notice'),
         'Пустая ячейка означает неизвестное значение; подтверждённый ноль записан числом 0.',
         'Файл содержит все позиции действующей РДС и не зависит от фильтров таблицы ГПР.',
         *comparison.get('data_gaps', [])]))), 'DevelopAid')
@@ -212,7 +213,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         if comparison.get('remaining_source'):
             plan_comment += ' Источник: '+comparison['remaining_source']+'.'
     sheet['F6'].comment = Comment(_text(plan_comment), 'DevelopAid')
-    sheet['H6'].comment = Comment('Физический объём выполненной работы в единице РДС. Количество поставленного материала сюда не прибавляется и из стоимости не выводится.', 'DevelopAid')
+    sheet['H6'].comment = Comment('Объём работы, учтённый по загруженным КС, в единице РДС. Для отсутствующей позиции прочитанных КС-2 учтено 0; это не подтверждённый физический ноль на площадке. Количество поставленного материала сюда не прибавляется и из стоимости не выводится.', 'DevelopAid')
     sheet['K6'].comment = Comment(_text(plan_comment), 'DevelopAid')
     evidence = comparison.get('act_evidence') or {}
     fact_comment = 'Полная стоимость работ и поставки по принятому расчёту РДС. Это не оплаты. '+(comparison.get('fact_assumption') or '')
@@ -233,7 +234,8 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     for heading in comparison.get('headings') or []:
         headings.setdefault(heading['before_position'], []).append(heading)
     excel_row = 6
-    for ordinal, source in enumerate(rows):
+    for ordinal, original in enumerate(rows):
+        source = reporting_row(original)
         for heading in headings.get(ordinal, []):
             excel_row += 1
             put(excel_row, 1, heading.get('number') or '')
@@ -273,7 +275,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         }.items():
             sheet.cell(excel_row,column,formula)
             if column in (10,13):
-                sheet.cell(excel_row,column).comment = Comment('Факт минус план, только когда оба числа подтверждены. Пустой факт не заменяется нулём; явно записанный числовой 0 сохраняется.','DevelopAid')
+                sheet.cell(excel_row,column).comment = Comment('Учтённый по КС факт минус план, когда оба числа определены. Непредъявленная позиция прочитанных КС-2 имеет учтённый факт 0; непрочитанный или неоднозначный источник остаётся неизвестным.','DevelopAid')
         from developaid_contract_hierarchy import style_row
         style_row(sheet, excel_row, source.get('number'))
         sheet.row_dimensions[excel_row].height = min(78, max(30, 14*(len(str(source.get('name') or ''))//48+1)))

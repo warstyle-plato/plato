@@ -44,13 +44,13 @@ def test_native_workbook_conditionally_includes_staff_and_checks_even_unavailabl
     response = client.post('/monitor/contracts/gpr.xlsx', json=body)
     assert response.status_code == 200, response.text
     book = load_workbook(io.BytesIO(response.content))
-    assert book.sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']+(['Численность','Численность подрядчика'] if has_plan else [])
+    assert book.sheetnames == ['ГПР', 'Выполнение', 'Численность подрядчика']
     assert all(sheet.freeze_panes is None for sheet in book)
     if has_plan:
         assert projection['coverage']['workers_pairs'] == projection['coverage']['itr_pairs'] == 1
-        assert book['Численность']['D6'].data_type == book['Численность']['G6'].data_type == 'f'
+        assert book['Численность подрядчика']['D6'].data_type == book['Численность подрядчика']['G6'].data_type == 'f'
         cached=load_workbook(io.BytesIO(response.content),data_only=True)
-        assert list(next(cached['Численность'].iter_rows(min_row=6, max_row=6, min_col=2, max_col=7, values_only=True))) == [10, 8, -2, 2, 1, -1]
+        assert list(next(cached['Численность подрядчика'].iter_rows(min_row=6, max_row=6, min_col=2, max_col=7, values_only=True))) == [10, 8, -2, 2, 1, -1]
     else:
         assert projection['reason'] in '\n'.join(str(cell.value) for row in book['ГПР'] for cell in row)
     # Even an unavailable staffing projection pins its current source set. The
@@ -135,7 +135,7 @@ def test_persisted_document_change_rebuilds_fresh_scope_and_keeps_gpr_download_u
     assert workforce.require_current(changed['gpr']['workforce'], PROJECT)
     response = client.post('/monitor/contracts/gpr.xlsx', json={**base, 'ticket': changed['ticket'],
         'revision': changed['gpr_export']['revision']})
-    assert response.status_code == 200 and load_workbook(io.BytesIO(response.content)).sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']
+    assert response.status_code == 200 and load_workbook(io.BytesIO(response.content)).sheetnames == ['ГПР', 'Выполнение', 'Численность подрядчика']
 
 
 def test_corrected_operational_document_write_seals_old_context_then_reads_fresh_gpr_card(pair, monkeypatch):

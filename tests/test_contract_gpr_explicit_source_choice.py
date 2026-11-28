@@ -194,7 +194,7 @@ def test_native_admin_choice_refreshes_control_and_denies_old_ticket(card,monkey
     exported=client.post('/monitor/contracts/gpr.xlsx',json={**base,'ticket':updated['ticket'],'revision':updated['gpr_export']['revision']})
     assert exported.status_code == 200
     workbook = load_workbook(io.BytesIO(exported.content))
-    assert workbook.sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']
+    assert workbook.sheetnames == ['ГПР', 'Выполнение', 'Численность подрядчика']
     assert all(workbook[name].max_row > 1 for name in workbook.sheetnames)
 
 
@@ -220,7 +220,11 @@ def test_popup_shows_exact_latest_choices_and_requires_explicit_signed_reference
         page.route('**/monitor/contracts/gpr-change',change)
         page.locator('#contractsTab').click();page.locator('tr[data-contract-id="'+ROW['id']+'"] .contract-open').click()
         expect(page.locator('[data-gpr-activate]')).to_have_count(2)
-        box=page.locator('[data-gpr-pending]').filter(has_text=second)
+        choices=page.locator('.contract-gpr-source-selection')
+        expect(choices).not_to_have_attribute('open','')
+        choices.locator(':scope > summary').click()
+        expect(choices).to_have_attribute('open','')
+        box=choices.locator('[data-gpr-pending]').filter(has_text=second)
         expect(box).to_contain_text('DS1-separate-GPR.pdf')
         expect(box).to_contain_text('цена, условия и РДС остальных файлов сохраняются')
         box.locator('[data-gpr-activate]').click();assert calls==[]

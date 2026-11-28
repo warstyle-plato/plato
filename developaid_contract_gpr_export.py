@@ -20,7 +20,7 @@ import developaid_contract_workforce as workforce
 import developaid_contract_gpr_reporting as reporting
 from developaid_contract_rds import LAYOUT
 
-SCHEMA = 'contract-gpr-performance-xlsx-v11'
+SCHEMA = 'contract-gpr-performance-xlsx-v12'
 PRESENTATION_SCHEMA = 'contract-gpr-known-state-v9'
 COLORS = reporting.COLORS
 LEGEND = reporting.LEGEND
@@ -356,25 +356,30 @@ def company_workforce_rows(projection):
     return projection.get('company_rows') if isinstance(projection.get('company_rows'),list) else workforce.company_rows(projection)
 
 
-def write_company_workforce(book,projection):
+def write_company_workforce(book,projection, *, sheet=None, required=False):
     rows = company_workforce_rows(projection)
     if not rows and projection.get('report_input_status') == 'not_loaded':
         rows = [{'date':None,'workers':None,'itr':None,'candidates':[],
                  'reason':projection.get('report_status_note') or workforce.REPORTS_NOT_LOADED}]
+    if not rows and required:
+        rows = [{'date': None, 'workers': None, 'itr': None, 'candidates': [],
+                 'reason': projection.get('reason') or projection.get('report_status_note')
+                     or 'Нет сопоставимых данных численности по этому договору.'}]
     if not rows:
         return None
-    sheet = book.create_sheet('Численность подрядчика')
+    offset = sheet.max_row + 2 if sheet is not None else 0
+    sheet = sheet if sheet is not None else book.create_sheet('Численность подрядчика')
     title = 'Численность подрядчика · '+str(projection.get('contractor') or '')
     scope = 'Записи о подрядчике из отчётов, без распределения по договорам. По нескольким договорам повторно не суммировать. План и отклонение не подтверждены; отсутствие не означает ноль.'
-    for index,text in enumerate((title,scope),1):
+    for index,text in enumerate((title,scope),offset+1):
         cell = sheet.cell(index,1,rds_export._text(text));cell.data_type='s'
         sheet.merge_cells(start_row=index,start_column=1,end_row=index,end_column=8)
         sheet.row_dimensions[index].height=42
     headers=('Дата','План рабочих','Рабочие подрядчика','Отклонение','План ИТР','ИТР подрядчика','Отклонение','Основание / пределы')
     for column,text in enumerate(headers,1):
-        cell=sheet.cell(4,column,text);cell.fill=PatternFill('solid',fgColor='1F4E78')
+        cell=sheet.cell(offset+4,column,text);cell.fill=PatternFill('solid',fgColor='1F4E78')
         cell.font=Font(name='Calibri',size=10,bold=True,color='FFFFFF')
-    for index,item in enumerate(rows,5):
+    for index,item in enumerate(rows,offset+5):
         annotations = [a for a in projection.get('plan_annotations') or [] if
             gpr.day(item.get('date')) and gpr.day(a.get('start')) and gpr.day(a.get('finish')) and a['start'] <= item['date'] <= a['finish']]
         reason = item['reason']
@@ -399,10 +404,11 @@ def write_company_workforce(book,projection):
     for cells in sheet:
         for cell in cells:
             cell.alignment=Alignment(wrap_text=True,vertical='top')
-            if cell.row != 4:cell.font=Font(name='Calibri',size=10)
+            if cell.row not in (5,offset+4):cell.font=Font(name='Calibri',size=10)
     for column,width in zip('ABCDEFGH',(14,15,18,15,13,17,15,66)):
         sheet.column_dimensions[column].width=width
-    sheet.auto_filter.ref='A4:H'+str(sheet.max_row)
+    if offset == 0:
+        sheet.auto_filter.ref='A4:H'+str(sheet.max_row)
     annotations = projection.get('plan_annotations') or []
     if annotations:
         sheet.append([])
@@ -444,9 +450,6 @@ def workbook(meta, cached):
     base = rds_export.workbook({**meta, 'layout': LAYOUT}, {**comparison, 'layout': LAYOUT, 'rows': rows}, rows)
     book = load_workbook(io.BytesIO(base))
     book.active.title = 'Выполнение'
-    from developaid_contract_physical_sheets import write_audit, write_builder_template
-    write_audit(book, comparison)
-    write_builder_template(book, comparison, state.get('schedule'))
     if not comparison.get('available'):
         book.active['A4'] = comparison.get('detail') or 'РДС или пригодные данные выполнения не определены.'
     sheet = book.create_sheet('ГПР', 0)
@@ -712,8 +715,11 @@ def workbook(meta, cached):
         sheet.merge_cells(start_row=row+1, start_column=1, end_row=row+1, end_column=6)
         sheet.row_dimensions[row+1].height = 44
         row += 1
-    workforce.write_sheet(book, state.get('workforce') or {})
-    write_company_workforce(book,state.get('workforce') or {})
+    personnel = state.get('workforce') or {}
+    personnel_sheet = workforce.write_sheet(book, personnel)
+    if personnel_sheet is not None:
+        personnel_sheet.title = 'Численность подрядчика'
+    write_company_workforce(book, personnel, sheet=personnel_sheet, required=True)
     for page in book:
         page.freeze_panes = None
         page.sheet_view.topLeftCell = 'A1'

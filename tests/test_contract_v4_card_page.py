@@ -49,10 +49,14 @@ def test_card_shared_projection_distinguishes_calendar_risk_and_shows_unallocate
         assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
         scroll=page.locator('.contract-gpr-scroll')
         if width==390:
-            assert scroll.evaluate('(e)=>e.scrollWidth>e.clientWidth')
+            assert scroll.evaluate('(e)=>e.scrollWidth<=e.clientWidth+1')
             assert known.locator('.contract-gpr-name').evaluate('(e)=>getComputedStyle(e).position')=='static'
-            scroll.evaluate('(e)=>e.scrollLeft=280')
-            assert scroll.evaluate('(e)=>e.scrollLeft')>0
+            track=known.locator('[data-track="source-plan"]')
+            viewport=scroll.bounding_box();bar=track.bounding_box()
+            assert bar['width']>=250
+            assert viewport['x']<=bar['x']
+            assert bar['x']+bar['width']<=viewport['x']+viewport['width']
+            expect(known.locator('.contract-gpr-local-axis')).to_be_visible()
         ids=page.locator('pattern[id^="contract-gpr-risk-"]').evaluate_all('(els)=>els.map(e=>e.id)')
         assert len(ids)==len(set(ids))
         assert not errors,errors

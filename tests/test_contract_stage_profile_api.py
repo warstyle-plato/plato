@@ -124,11 +124,14 @@ def test_current_calculation_fingerprint_accepts_omitted_and_false_flag_unchange
     purpose = 'monitor-cumulative-v1:contracts'
     owner = jobs.owner_binding(KEY, '', purpose)
     import developaid_contract_control as control
+    import developaid_contract_register_display as display
     context = ledgers.snapshot_job_context(PROJECT)
     legacy_payload = {'operation': 'view', 'click': 'a'*32, 'project': PROJECT, 'cut': CUT,
-                      'contract_calculation_revision':control.CALCULATION_REVISION,'source_context':context}
+                      'contract_calculation_revision':control.CALCULATION_REVISION,'source_context':context,
+                      'contract_register_display_schema':display.SCHEMA}
     # The calculation is current; only omitted/false diagnostic flags are old.
-    legacy_result = {'ok': True, 'register': {'rows': [], 'unknown': None, 'zero': 0},
+    legacy_result = {'ok': True, 'register': {'rows': [], 'unknown': None, 'zero': 0,
+                                          'display_schema':display.SCHEMA},
                      'contract_calculation_revision':control.CALCULATION_REVISION}
     store.start(owner, purpose, legacy_payload, lambda: legacy_result, 'a'*32,
                 result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES, context=context,

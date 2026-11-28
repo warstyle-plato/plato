@@ -138,14 +138,17 @@ def test_explicit_source_bound_payload_accepts_false_verify_without_rebuilding(a
     family='monitor-cumulative-v1:contracts';owner=jobs.owner_binding(KEY,'',family)
     context=ledgers.snapshot_job_context(PROJECT)
     import developaid_contract_control as control
+    import developaid_contract_register_display as display
     payload={'operation':'view','click':'a'*32,'project':PROJECT,'cut':CUT,'source_context':context,
-             'contract_calculation_revision':control.CALCULATION_REVISION}
+             'contract_calculation_revision':control.CALCULATION_REVISION,
+             'contract_register_display_schema':display.SCHEMA}
     flags={}
     if mode!='ordinary':payload['diagnostics']=stages.PURPOSE;flags['profile_stages']=True
     if mode=='off':payload['matching_cache']=cache.DISABLED_PURPOSE;flags['profile_matching_cache_off']=True
     # This is a current calculation with an older diagnostics request shape;
     # seed the producer's current output policy instead of a legacy money DTO.
-    stored={'ok':True,'register':{'rows':[]},'contract_calculation_revision':control.CALCULATION_REVISION}
+    stored={'ok':True,'register':{'rows':[],'display_schema':display.SCHEMA},
+            'contract_calculation_revision':control.CALCULATION_REVISION}
     store.start(owner,family,payload,lambda:stored,'a'*32,
                 result_limit_bytes=jobs.MAX_EXTENDED_RESULT_BYTES,context=context,
                 result_revision=control.CALCULATION_REVISION)

@@ -1053,6 +1053,10 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
         if listed.get('gpr'):
             row['schedule_control']['gpr_binding'] = {key: value for key, value in listed['gpr'].items()
                 if key in {'project', 'contract_id', 'guard', 'document_source_ids', 'source'}}
+            from developaid_contract_register_display import schedule_reference
+            reference = schedule_reference(listed['gpr'])
+            if reference:
+                row['schedule_control']['gpr_reference'] = reference
         if found.get('schedule_source'):
             row['schedule_control']['schedule_source'] = found['schedule_source']
     return register
@@ -1061,10 +1065,11 @@ def _register_control_raw(project: str, register: dict, cut: str) -> dict:
 @stage_profile.stage('card_controls')
 def register_control(project: str, register: dict, cut: str) -> dict:
     import developaid_contract_ownership as ownership
+    from developaid_contract_register_display import attach
     with ownership.read_scope(project, cut) as context:
         context.require_current(register)
         if not ownership.has_raw_views(register):
-            return _register_control_raw(project, register, cut)
+            return attach(_register_control_raw(project, register, cut), cut)
         raw = ownership.raw_view(register)
         corrected_ids = {identifier for state in register['logical_ownership']['states'].values()
                          if state.get('membership_confirmed') for identifier in state['member_ids']}
@@ -1083,7 +1088,7 @@ def register_control(project: str, register: dict, cut: str) -> dict:
                 row['schedule_control'] = active['schedule_control']
             except correction.store.IdentityProblem as exc:
                 row['schedule_control'] = {'state': 'unknown', 'documents': None, 'note': str(exc)}
-        return result
+        return attach(result, cut)
 
 
 def save_links(project: str, contract_id: str, sha256: str, estimate: int, picked: list[dict],

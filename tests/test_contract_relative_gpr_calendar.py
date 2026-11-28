@@ -306,7 +306,7 @@ def test_two_sheet_export_preserves_current_source_and_disjoint_bars(card):
     result['gpr_export'] = meta
     selected = export.select_snapshot(result, PROJECT, CUT, ROW['id'], meta['revision'])
     book = load_workbook(io.BytesIO(export.workbook(selected, result)))
-    assert book.sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']
+    assert book.sheetnames == ['ГПР', 'Выполнение', 'Численность подрядчика']
     text = '\n'.join(str(cell.value) for row in book['ГПР'] for cell in row if cell.value is not None)
     provenance = book['ГПР']['A1'].comment.text
     assert listed['gpr']['source']['sha256'] in provenance and listed['gpr']['schedule']['anchor']['event_id'] in provenance
@@ -499,7 +499,7 @@ def test_native_admin_route_current_export_and_stale_ticket(card, monkeypatch):
     old = client.post('/monitor/contracts/gpr.xlsx', json={**base, 'ticket': opened['ticket'], 'revision': opened['gpr_export']['revision']})
     assert old.status_code == 409
     fresh = client.post('/monitor/contracts/gpr.xlsx', json={**base, 'ticket': updated['ticket'], 'revision': updated['gpr_export']['revision']})
-    assert fresh.status_code == 200 and load_workbook(io.BytesIO(fresh.content)).sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']
+    assert fresh.status_code == 200 and load_workbook(io.BytesIO(fresh.content)).sheetnames == ['ГПР', 'Выполнение', 'Численность подрядчика']
     assert "filename*=UTF-8''" in fresh.headers['content-disposition']
     assert ROW['contract'] in updated['gpr_export']['filename'] and PROJECT in updated['gpr_export']['filename']
 
@@ -561,7 +561,7 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         target = tmp_path/f'gpr-performance-{width}.xlsx'
         assert ROW['contract'] in transfer.value.suggested_filename and PROJECT in transfer.value.suggested_filename
         transfer.value.save_as(target)
-        assert load_workbook(target).sheetnames == ['ГПР', 'Выполнение', 'Аудит физобъёмов', 'Физфакт строителей']
+        assert load_workbook(target).sheetnames == ['ГПР', 'Выполнение', 'Численность подрядчика']
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
         assert page.locator('#contractGpr').evaluate('(element)=>element.getBoundingClientRect().right<=innerWidth')
         page.screenshot(path=str(tmp_path/f'gpr-popup-{width}.png'), full_page=True)
@@ -616,7 +616,10 @@ def test_native_popup_gantt_anchor_reload_and_two_sheet_download(card, width, tm
         expect(page.locator('#contractGprBody')).to_contain_text('Предварительный просмотр обнаруженного ГПР')
         expect(page.locator('#contractGprDownload')).to_be_disabled()
         assert page.locator('#contractGprHandover').count() == 0
-        expect(page.locator('[data-gpr-activate]')).to_be_visible()
+        choices = page.locator('.contract-gpr-source-selection')
+        expect(choices).not_to_have_attribute('open', '')
+        choices.locator(':scope > summary').click()
+        expect(choices.locator('[data-gpr-activate]')).to_be_visible()
         assert page.locator('.contract-gpr-track rect[fill="#70AD47"]').count() == 0
         assert page.locator('.contract-gpr-track rect[fill="#E06666"]').count() == 0
         assert page.locator('.contract-gpr-track rect[fill="#D9D9D9"]').count()+page.locator('.contract-gpr-track rect[fill="#E4DFEC"]').count() == 2

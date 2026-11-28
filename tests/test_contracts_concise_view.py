@@ -24,9 +24,13 @@ def test_contract_answers_are_visible_and_calculation_details_are_optional(width
         row['source'] = {'filename': 'technical-source.xlsx', 'row': 41}
         row['physical_items'][0]['quantity_basis'] = 'Проверочное происхождение объёма.'
         row['reconciliation']['issues'] = ['Проверочное замечание к исходному сообщению.']
+        from developaid_contract_register_display import attach
+        row.update(monetary_comparable=True, amount_basis='with_vat', completed_basis='with_vat')
+        attach(responses.data, responses.data['cut'])
         page.locator('#contractsTab').click()
         first = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(first.locator('.term')).to_have_text('30.11.2026')
+        expect(first.locator('.term .contract-badge')).to_have_text('30.11.2026')
+        expect(first.locator('.term .contract-finish-source')).to_have_text('По договору')
         expect(first.locator('.contract-schedule')).to_have_text('Проверить документы')
         visible = first.inner_text()
         assert '25%' in visible and 'задержка 15 дн.' not in visible
@@ -66,7 +70,7 @@ def test_missing_forecast_inputs_have_short_specific_explanations():
                        'reason': 'Длинное техническое пояснение. ' * 20}
         page.locator('#contractsTab').click()
         first = page.locator(f'tr[data-contract-id="{CONTRACT}"]')
-        expect(first.locator('.term')).to_have_text('Указать срок договора')
+        expect(first.locator('.term')).to_have_text('Не определён')
         expect(first.locator('.contract-attention')).to_contain_text('Уточнить сумму')
         more = opened(page, CONTRACT)
         expect(more.locator('.contract-money-forecast')).to_contain_text('Для прогноза нужна полная сумма договора.')

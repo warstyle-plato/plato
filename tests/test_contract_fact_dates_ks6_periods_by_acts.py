@@ -61,7 +61,7 @@ def test_an_act_is_read_by_the_labels_of_its_header_and_names_no_edition(twice):
     got = documents.read(act_pdf(twice=twice))
     positions = got["act"].pop("positions")
     assert got["act"] == {"number": "2", "date": "2026-02-03", "start": "2026-02-01", "finish": "2026-02-03",
-                          "total": 4000.0, "table_total": 4000.0}
+                          "total": 4000.0, "table_total": 4000.0, "unread_positions": []}
     assert [(p["row"], p["number"], p["name"], p["unit"], p["quantity"], p["amount"]["total"], p["section"])
             for p in positions] == [(2, "1.1", "Устройство стен", "м3", 0.5, 4000.0,
                                      "Раздел № 1. Корпус 1. Надземная часть")]

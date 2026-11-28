@@ -125,7 +125,8 @@ def test_original_pricing_fixture_matching_unread_keeps_only_the_known_subtotal(
     assert listed['control']['total'] is None
 
 
-def test_unknown_indexed_operation_preserves_known_operations_and_exports_blank_fact():
+@pytest.mark.parametrize('schedule_source_matches', [True, False])
+def test_unknown_indexed_operation_preserves_known_operations_and_exports_blank_fact(schedule_source_matches):
     import io
     from openpyxl import load_workbook
     import developaid_contract_comparison_export as export
@@ -147,16 +148,24 @@ def test_unknown_indexed_operation_preserves_known_operations_and_exports_blank_
     assert parts['4.1.3']['readiness'] == 0
     cached={'ok':True,'contract_id':'c'*64,'control':observed,'fact':measured,'plan':planned,
             'documents':[{'sha256':'b'*64,'title':'Учебная РДС','estimates':edition['estimates']},
-                         {'sha256':'schedule','title':'Учебный ГПР','schedule':edition['schedule']}]}
+                         {'sha256':edition['schedule_sha256'] if schedule_source_matches else 'schedule',
+                          'title':'Учебный ГПР','schedule':edition['schedule']}]}
     cached['comparison']=comparison.build(cached,operation_cut)
     cached['rds_comparison']=rds.build(cached)
     meta=export.bind_snapshot('Учебный',operation_cut,'c'*64,cached,{})
     raw = export.workbook(meta,cached['rds_comparison'],cached['rds_comparison']['rows'])
     sheet = load_workbook(io.BytesIO(raw), data_only=True).active
-    excel_row = next(row for row in sheet if row[0].value=='4.1.2')
-    assert excel_row[7].value is None and excel_row[5].value is not None
-    assert excel_row[11].value is None and excel_row[13].value is None
+    rows = {row[0].value:row for row in sheet if row[0].value in parts}
+    excel_row = rows['4.1.2']
+    assert excel_row[7].value is None
+    assert excel_row[5].value == (50 if schedule_source_matches else None)
+    if not schedule_source_matches:
+        # An unrelated source must not supply a plan, even if its dates match.
+        assert 'Нет принятой связи' in excel_row[5].comment.text
+    assert all(excel_row[column].value is None for column in (9,11,12,13))
     assert 'Период без даты' in excel_row[7].comment.text
+    assert [rows[number][7].value for number in ('4.1.1','4.1.3')] == [25,0]
+    assert [rows[number][11].value for number in ('4.1.1','4.1.3')] == [250,0]
 
 
 from tests.test_contract_fact_prices_ks_by_the_edition import card  # noqa: E402,F401
