@@ -20,32 +20,91 @@ import developaid_contract_workforce as workforce
 import developaid_contract_gpr_reporting as reporting
 from developaid_contract_rds import LAYOUT
 
-SCHEMA = 'contract-gpr-performance-xlsx-v12'
+SCHEMA = 'contract-gpr-performance-xlsx-v13'
 PRESENTATION_SCHEMA = 'contract-gpr-known-state-v9'
 COLORS = reporting.COLORS
 LEGEND = reporting.LEGEND
+DRAFT_NOTICE = ('Предпросмотр ГПР: редакция не выбрана для действующего расчёта. '
+                'Черновик только для просмотра. Сроки предпросмотра приведены справочно; '
+                'план и связи с РДС по ним не принимаются. '
+                'Выполнение и численность сохранены по данным карточки и их исходным ограничениям.')
 
 
-def filename(project, contract, cut):
+def filename(project, contract, cut, *, draft=False):
     stem = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', '_', str(project)+'_'+str(contract)).strip(' ._')[:160]
-    return (stem or 'contract')+'_ГПР_выполнение_'+cut+'.xlsx'
+    return (stem or 'contract')+('_ЧЕРНОВИК' if draft else '')+'_ГПР_выполнение_'+cut+'.xlsx'
 
 
 def disposition(meta):
-    return 'attachment; filename="contract-gpr-performance-'+meta['cut']+'.xlsx"; filename*=UTF-8\'\''+quote(meta['filename'], safe='')
+    kind = 'draft' if meta.get('draft') else 'performance'
+    return 'attachment; filename="contract-gpr-'+kind+'-'+meta['cut']+'.xlsx"; filename*=UTF-8\'\''+quote(meta['filename'], safe='')
+
+
+def _export_source(project, cut, contract_id, result):
+    """Resolve the saved visible preview, without selecting or activating a GPR.
+
+    A preview has to retain its exact native document and latest candidate
+    witness. Neither a request parameter nor another pending file can replace it.
+    The source policy remains owned by gpr.view/project_records.
+    """
+    state = result.get('gpr') or {}
+    if state.get('source'):
+        if not (state.get('schedule') or {}).get('lines'):
+            raise rds_export.ExportProblem('У действующего ГПР нет пригодных строк для выгрузки. Откройте карточку заново.')
+        return 'active', state['source'], state['schedule'], None
+    preview = state.get('preview') or {}
+    if not preview:
+        raise rds_export.ExportProblem('В карточке нет действующего ГПР или сохранённого предпросмотра для выгрузки.')
+    if state.get('schedule') or (state.get('project'), state.get('cut'), state.get('contract_id')) != (project, cut, contract_id):
+        raise rds_export.ExportProblem('Предпросмотр не соответствует договору, срезу или состоянию ГПР. Откройте карточку заново.')
+    try:
+        from developaid_contract_files import awaits_confirmation
+        source, schedule = preview['source'], preview['schedule']
+        sha = source['sha256']
+        if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{64}', sha) or not schedule.get('lines'):
+            raise ValueError
+        documents = [record for record in result.get('documents') or [] if record.get('sha256') == sha]
+        pending = [record for record in state.get('pending') or [] if record.get('source') == source]
+        candidates = state.get('activation_candidate_set') or []
+        matches = [candidate for candidate in candidates if candidate.get('source') == source]
+        if len(documents) != 1 or len(pending) != 1 or len(matches) != 1:
+            raise ValueError
+        record, candidate = documents[0], matches[0]
+        if (record.get('gpr_status') not in {'pending_signed_confirmation', 'conflicting_edition'}
+                or pending[0].get('state') != record.get('gpr_status')
+                or record.get('removed_at') or awaits_confirmation(record)
+                or gpr.source_key(record) != source or record.get('schedule') != schedule
+                or schedule.get('source_identity') != source
+                or record.get('_gpr_candidate_witness') != candidate or gpr._candidate(record) != candidate):
+            raise ValueError
+        if not re.fullmatch(r'[0-9a-f]{64}', state['guard']):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise rds_export.ExportProblem('Точный источник и состав предпросмотра ГПР не подтверждены сохранённой карточкой. Откройте её заново; выбор действующей редакции не выполнялся.') from None
+    return 'preview', source, schedule, candidate
 
 
 def bind_snapshot(project, cut, contract_id, result, label):
     state = result.get('gpr') or {}
-    if not state.get('source') or not (state.get('schedule') or {}).get('lines'):
-        return {'available': False, 'detail': 'Действующий ГПР не определён. Проверьте документы договора.'}
-    context = {'schema': SCHEMA, 'project': project, 'cut': cut, 'contract_id': contract_id, 'label': label, 'filename': filename(project, label.get('contract') or 'contract', cut),
+    try:
+        mode, source, schedule, candidate = _export_source(project, cut, contract_id, result)
+    except rds_export.ExportProblem as exc:
+        return {'available': False, 'detail': str(exc)}
+    draft = mode == 'preview'
+    context = {'schema': SCHEMA, 'mode': mode, 'draft': draft,
+               'project': project, 'cut': cut, 'contract_id': contract_id, 'label': label,
+               'filename': filename(project, label.get('contract') or 'contract', cut, draft=draft),
                'gpr_binding': {key: state[key] for key in ('project', 'contract_id', 'documents_raw_id',
                    'document_source_ids', 'guard', 'source') if key in state}}
+    context['gpr_binding']['source'] = source
+    if draft:
+        context.update(detail=DRAFT_NOTICE, preview_binding={'source': source,
+            'schedule_sha256': gpr.digest(schedule), 'candidate': candidate})
     if result.get('source_correction'):
         context['source_correction'] = result['source_correction']
     return {**context, 'available': True, 'revision': gpr.digest({**context, 'gpr': state,
-                                                               'rds': result.get('rds_comparison')})}
+        'rds': result.get('rds_comparison'), 'canonical': {key: result.get(key) for key in
+            ('documents', 'plan', 'fact', 'price', 'terms', 'comparison', 'control')}})}
 
 
 def select_snapshot(cached, project, cut, contract_id, revision):
@@ -445,6 +504,15 @@ def _fact_source_label(comparison):
 
 def workbook(meta, cached):
     state = cached['gpr']
+    draft = meta.get('mode') == 'preview' and meta.get('draft') is True
+    if draft:
+        mode, source, schedule, candidate = _export_source(meta['project'], meta['cut'], meta['contract_id'], cached)
+        if mode != 'preview' or meta.get('preview_binding') != {
+                'source': source, 'schedule_sha256': gpr.digest(schedule), 'candidate': candidate}:
+            raise rds_export.ExportProblem('Версия предпросмотра изменилась. Откройте карточку заново перед выгрузкой.')
+        # Local render context only. The saved gpr.source/schedule, RDS plan,
+        # links, physical facts and workforce remain exactly as in the card.
+        state = {**state, 'source': source, 'schedule': schedule, 'overlays': {}}
     comparison = cached.get('rds_comparison') or {}
     rows = comparison.get('rows') or [] if comparison.get('available') else []
     base = rds_export.workbook({**meta, 'layout': LAYOUT}, {**comparison, 'layout': LAYOUT, 'rows': rows}, rows)
@@ -454,7 +522,7 @@ def workbook(meta, cached):
         book.active['A4'] = comparison.get('detail') or 'РДС или пригодные данные выполнения не определены.'
     sheet = book.create_sheet('ГПР', 0)
     schedule, overlays = state['schedule'], state.get('overlays') or {}
-    positions = ordered_positions(gpr.position_projections(cached, comparison, schedule),meta['cut'])
+    positions = ordered_positions(gpr.position_projections(cached, comparison, {} if draft else schedule),meta['cut'])
     display = presentation(schedule, overlays, meta['cut'], positions,
                            source_dates=fact_source_dates(comparison),
                            _include_day=dt.date.today().isoformat(),_headroom_days=14)
@@ -524,9 +592,10 @@ def workbook(meta, cached):
         cell.fill = PatternFill('solid', fgColor='1F4E78')
         cell.font = Font(color='FFFFFF', bold=True, size=9)
     def identity(line,track):
+        unlinked_preview_position = draft and line.get('position_key') is not None
         return {'track':track,'position_key':line.get('position_key'),'code':line['code'],
-                'source_gpr_code':line.get('gpr_code') or line['code'],'section':line.get('section'),
-                'gpr_sha256':source['sha256']}
+                'source_gpr_code':None if unlinked_preview_position else line.get('gpr_code') or line['code'],
+                'section':line.get('section'), 'gpr_sha256':None if unlinked_preview_position else source['sha256']}
     def status_note(row,status):
         if not status:
             return
@@ -721,6 +790,17 @@ def workbook(meta, cached):
         personnel_sheet.title = 'Численность подрядчика'
     write_company_workforce(book, personnel, sheet=personnel_sheet, required=True)
     for page in book:
+        if draft:
+            title = page['A1']
+            title.value = DRAFT_NOTICE+'\n'+str(title.value or '')
+            title.data_type = 's'
+            title.font = Font(name='Calibri', size=11, bold=True, color='9C6500')
+            title.fill = PatternFill('solid', fgColor='FFF2CC')
+            title.alignment = Alignment(vertical='top', wrap_text=True)
+            page.row_dimensions[1].height = max(page.row_dimensions[1].height or 0, 105)
+            note = json.dumps({'export_mode': 'preview', 'view_only': True,
+                'preview_binding': meta['preview_binding'], 'active_gpr_source': cached['gpr'].get('source')}, ensure_ascii=False)
+            title.comment = Comment((title.comment.text+'\n' if title.comment else '')+note, 'DevelopAid')
         page.freeze_panes = None
         page.sheet_view.topLeftCell = 'A1'
     book.active = 0
