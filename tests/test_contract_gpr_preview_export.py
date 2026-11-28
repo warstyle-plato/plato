@@ -220,30 +220,33 @@ def test_native_preview_rechecks_sources_after_book_generation(card, monkeypatch
     assert gpr.events(card[0]) == []
 
 
-def test_native_v5_completed_preview_cache_cannot_reenter_and_fresh_nonce_builds_once(card, monkeypatch):
+@pytest.mark.parametrize('legacy_revision', ['contract-gpr-source-material-components-v5',
+                                          'contract-gpr-source-material-components-v6'])
+def test_native_old_completed_preview_cache_cannot_reenter_and_fresh_v7_nonce_builds_once(card, monkeypatch, legacy_revision):
     import main
     import developaid_contract_control as control
     import developaid_management_report_jobs as jobs
     import developaid_monitor as monitor
-    legacy_revision = 'contract-gpr-source-material-components-v5'
     current_revision = control.CALCULATION_REVISION
-    assert current_revision != legacy_revision
+    assert current_revision == 'contract-gpr-source-material-components-v7'
     pending_card(card)
     monkeypatch.setenv('DEVELOPAID_ADMIN_KEY', KEY)
     monkeypatch.setattr(contracts, 'build', lambda *args, **kwargs: {'rows': [copy.deepcopy(ROW)], 'cut': CUT})
     client = TestClient(main.app)
     base = {'key': KEY, 'session': 'synthetic-owner', 'project': PROJECT, 'cut': CUT, 'contract_id': ROW['id']}
     old_ticket, new_ticket = 'a'*32, 'b'*32
-    # Retain a completed native v5 calculation with the old export policy:
-    # its visible preview existed, but the download required an active GPR.
+    # v5 had a visible preview but no download; v6 admitted preview downloads
+    # while lacking the source-backed KS-6a reporting-zero projection.
     with monkeypatch.context() as legacy:
         legacy.setattr(control, 'CALCULATION_REVISION', legacy_revision)
-        legacy.setattr(export, 'bind_snapshot', lambda *args, **kwargs: {
-            'available': False, 'detail': 'Действующий ГПР не определён. Проверьте документы договора.'})
+        if legacy_revision.endswith('-v5'):
+            legacy.setattr(export, 'bind_snapshot', lambda *args, **kwargs: {
+                'available': False, 'detail': 'Действующий ГПР не определён. Проверьте документы договора.'})
         old = finished(client, client.post('/monitor/contracts/documents', json={**base, 'ticket': old_ticket}))
     assert old['ok'] and not old['pending']
     assert old['contract_calculation_revision'] == legacy_revision
-    assert not old['gpr_export']['available'] and old['gpr']['preview']
+    assert old['gpr']['preview']
+    assert old['gpr_export']['available'] is legacy_revision.endswith('-v6')
     store = jobs.Store(monitor._SNAPSHOT_DIR/'.cumulative_jobs')
     old_bytes = {suffix: store._path(old_ticket, suffix).read_bytes() for suffix in ('json', 'result')}
     source_bytes = {p.name: p.read_bytes() for p in card[0].iterdir() if p.is_file()}
@@ -260,7 +263,8 @@ def test_native_v5_completed_preview_cache_cannot_reenter_and_fresh_nonce_builds
         refused = client.post('/monitor/contracts/'+route, json={**auth, **extra})
         assert refused.status_code == 409
         assert refused.headers['x-monitor-job-error'] == 'calculation_changed'
-    assert download(client, base, {**old, 'gpr_export': {'revision': '0'*64}}).status_code == 409
+    assert download(client, base, {**old, 'gpr_export': {
+        'revision': old['gpr_export'].get('revision') or '0'*64}}).status_code == 409
     # A retained nonce is immutable, even when its method fingerprint is old.
     assert client.post('/monitor/contracts/documents', json={**base, 'ticket': old_ticket}).status_code == 409
     assert calls == []
