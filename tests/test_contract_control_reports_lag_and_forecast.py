@@ -245,6 +245,7 @@ def test_the_card_reports_the_lag_and_the_threat_in_plain_words(card, width):  #
         _serve(page, [], cut="2026-02-04", acts=fact.acts(REGISTER_ROW))
         page.locator("#contractsTab").click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        page.locator('#contractExecution > summary').click()
         report=page.locator('#contractComparison')
         expect(report.locator('thead th')).to_have_text([
             'Работа или поставка / единица','Всего по договору','План на дату','Факт','Отклонение','Срок строки','Прогноз окончания'])
@@ -292,6 +293,7 @@ def test_finished_matched_works_keep_their_date_without_claiming_full_contract_c
         _serve(page,[],cut='2026-02-04',acts=fact.acts(row))
         page.locator('#contractsTab').click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        page.locator('#contractExecution > summary').click()
         forecast=page.locator('#contractCardSummary [data-label="Прогноз окончания"]')
         expect(forecast).to_contain_text('03.02.2026')
         expect(forecast).to_contain_text('Не определён')

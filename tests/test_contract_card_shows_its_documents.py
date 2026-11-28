@@ -46,6 +46,7 @@ def _open(page):
     page.locator('#contractComparison[aria-busy="false"]').wait_for(state='attached')
     # Source-specific reader tests deliberately expand the new closed source
     # hierarchy; the modal tests separately assert its default closed state.
+    page.locator('#contractExecution > summary').click()
     page.locator('#contractDocumentList > summary').click()
     for document in page.locator('#contractDocuments .contract-document').all():
         document.locator(':scope > summary').click()
