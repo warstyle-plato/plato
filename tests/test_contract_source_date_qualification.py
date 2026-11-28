@@ -81,6 +81,7 @@ def test_native_page_exposes_interval_estimate_in_methodology_with_computed_metr
         _serve(page, listed, [])
         page.locator('#contractsTab').click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        page.locator('#contractExecution > summary').click()
         methodology = page.locator('#contractComparisonMethodology')
         expect(methodology).to_contain_text(documents.CHART_INTERVALS_ASSUMPTION)
         methodology.locator('summary').first.click()

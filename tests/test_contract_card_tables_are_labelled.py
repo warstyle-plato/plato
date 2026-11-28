@@ -34,6 +34,7 @@ def test_every_cell_of_the_card_tables_names_its_column_on_the_phone(card, width
         _serve(page, [], cut="2026-02-04", acts=fact.acts(REGISTER_ROW))
         page.locator("#contractsTab").click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        page.locator('#contractExecution > summary').click()
         expect(page.locator("#contractComparison[aria-busy=\"false\"]")).to_be_visible()
         _open_every_table(page)
         tables = page.locator("#contractsDetails .contract-detail table.contract-table")
@@ -60,6 +61,7 @@ def test_a_broken_connection_during_upload_says_the_file_may_be_kept(card):  # n
         page.route("**/monitor/contracts/document-upload", lambda route: route.abort())
         page.locator("#contractsTab").click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        page.locator('#contractExecution > summary').click()
         expect(page.locator("#contractComparison[aria-busy=\"false\"]")).to_be_visible()
         page.locator("#contractDocumentFile").set_input_files(
             {"name": "ДС5.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.7 synthetic"})

@@ -56,7 +56,7 @@ def test_native_known_values_zero_units_and_dates_survive_roundtrip():
     assert sheet.cell(header+1,4).value.date() == dt.date(2026,3,1)
     assert sheet.cell(header+1,5).value.date() == dt.date(2026,3,10)
     assert sheet.cell(header+2,8).value == 0 and sheet.cell(header+2,8).data_type == 'n'
-    assert sheet.cell(6,14).value == 'Отставание на дату среза, дни'
+    assert sheet.cell(6,14).value == 'На срез: отставание по объёму / дни после срока ГПР'
     assert sheet.cell(header+1,14).number_format.startswith('[Red]+0')
     assert 'плюс — отставание' in sheet['N6'].comment.text
     assert sheet.freeze_panes is None and sheet.auto_filter.ref.startswith('A6:P')
@@ -79,7 +79,10 @@ def test_remaining_start_source_and_missing_data_are_comments_not_extra_rows_or_
 def test_unknown_and_no_rds_are_not_zero_or_pseudo_estimate_rows():
     sheet, header = table(xlsx(native_card(unknown=True)), data_only=True)
     assert sheet.cell(header+1,6).value == 10
-    assert all(sheet.cell(header+1,i).value is None for i in (8,9,12,14,15,16))
+    assert all(sheet.cell(header+1,i).value is None for i in (8,9,12))
+    assert 'ещё не наступил' in sheet.cell(header+1,14).value
+    assert sheet.cell(header+1,15).value == 'Дата завершения не определена'
+    assert sheet.cell(header+1,16).value == 'Задержка к сроку ГПР не определена'
     assert sheet.cell(header+1,10).value is None
     assert sheet.cell(header+1,13).value is None
     assert 'не подтверждена' in sheet.cell(header+1,8).comment.text

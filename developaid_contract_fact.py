@@ -136,6 +136,8 @@ def acts(row: dict | None) -> dict | None:
             'physical_source_rows': [{key:item[key] for key in (
                 'position','name','unit','plan_quantity','source','snapshot_date',
                 'reported_completed_quantity','completed_quantity','reported_material_quantity','material_quantity',
+                'period_year','quantity_cut','future_periods_excluded','quantity_basis',
+                'reported_completed_amount','completed_amount','completed_amount_derivation',
                 'periods','undated_periods') if key in item} for item in row.get('physical_items') or []
                 if not item.get('is_group') and not item.get('is_duplicate')],
             'statement_sources':[{k:x[k] for k in ('source','source_date','period_year','completed',

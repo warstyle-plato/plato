@@ -27,7 +27,8 @@ def retained(root, result, *, ticket='a'*32, revision='', key=KEY, session='', p
 @pytest.mark.parametrize('body',[{'register':{}},{'register':{'rows':[]}},
     {'control':{'components':{'material':{'counted':120.0}}}},
     {'comparison':{'lines':[]}}, {'gpr':{'presentation':{'schema':'contract-gpr-known-state-v9'}}}])
-@pytest.mark.parametrize('revision',[None,'contract-gpr-calendar-rds-plan-fact-v4',False,{},''])
+@pytest.mark.parametrize('revision',[None,'contract-gpr-calendar-rds-plan-fact-v4',
+    'contract-gpr-source-material-components-v5','contract-gpr-source-material-components-v6',False,{},''])
 def test_old_calculated_dto_refused_even_without_a_source_binding(api,body,revision):  # noqa:F811
     client,root=api
     result={'ok':True,**body}
