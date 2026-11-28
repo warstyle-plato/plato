@@ -149,6 +149,7 @@ def test_the_table_shows_lag_deviation_and_forecast_in_plain_words(card, width):
         expect(more.locator('#contractComparisonInfo')).to_contain_text('Не учтено периодов КС: 2')
         first=more.locator('[data-comparison-code="1.1"]')
         expect(first).to_contain_text('Отставание: 3 дня')
+        more.locator('#contractExecution > summary').click()
         more.locator('#contractComparisonMethodology > details > summary').click()
         expect(more.locator('.contract-comparison-money')).to_have_text(
             'Денежный план и факт, включая материалы: план 10 000 ₽, факт 5 500 ₽, отклонение −4 500 ₽.')
