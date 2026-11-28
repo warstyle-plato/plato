@@ -15,6 +15,10 @@ KS_REPORTING_NOTICE = ('Факт по загруженным и прочитан
     'учтено 0; отклонение равно учтённому факту минус план. Это не утверждение о фактическом отсутствии работ на площадке. '
     'Непрочитанный или неоднозначный источник остаётся неизвестным.')
 KS_REPORTING_FIELDS = ('fact_quantity', 'fact_quantity_ratio', 'quantity_deviation', 'fact', 'deviation')
+SCHEDULE_REPORTING_SCHEMA = 'rds-schedule-reporting-v1'
+SCHEDULE_REPORTING_NOTICE = ('Отставание по объёму — разница с днём, когда план достиг учтённого физического объёма. '
+    'Дни после срока ГПР считаются отдельно. Если завершение по КС не подтверждено, это календарный срок без '
+    'подтверждения закрытия, а не доказанная физическая просрочка. Минимум не является прогнозом даты окончания.')
 FIELDS = ('number', 'name', 'unit', 'start', 'finish', 'plan_quantity', 'plan_quantity_ratio',
           'fact_quantity', 'fact_quantity_ratio', 'quantity_deviation', 'planned', 'fact', 'deviation',
           'day_deviation', 'forecast_finish', 'forecast_delay_days')
@@ -93,6 +97,100 @@ def reporting_row(row):
         return row
     return {**row, **{key: view[key] for key in KS_REPORTING_FIELDS if key in view},
             'comments': {**(row.get('comments') or {}), **(view.get('comments') or {})}}
+
+
+def _day(value):
+    try:
+        return dt.date.fromisoformat(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def _schedule_reporting(row, cut, *, full_schedule_link):
+    """Qualify calendar exposure separately from physical lag and a dated forecast.
+
+    Absence from read acts may support a credited zero, but never a physical
+    completion claim. Its lower bound concerns the elapsed period without KS
+    confirmation only; it must not be used as a physical forecast delay.
+    """
+    day = _day(cut)
+    finish = _day(row.get('finish')) if full_schedule_link else None
+    elapsed = max(0, (day-finish).days) if day and finish else None
+    physical_ratio = row.get('fact_quantity_ratio')
+    complete = _numeric(physical_ratio) and physical_ratio >= 1-1e-6
+    incomplete = _numeric(physical_ratio) and physical_ratio < 1-1e-6
+    completion = 'ks_quantity_complete' if complete else 'ks_quantity_incomplete' if incomplete else 'unconfirmed'
+    report = row.get('ks_reporting') or {}
+    credited_zero = report.get('schema') == KS_REPORTING_SCHEMA and report.get('state') == 'unreported_zero'
+    audit_reason = (row.get('physical_audit') or {}).get('reason') or 'Физический объём не подтверждён.'
+    lag = row.get('day_deviation') if _numeric(row.get('day_deviation')) else None
+
+    def measure(kind, value, text, basis):
+        return {'kind': kind, 'value': value, 'text': text, 'basis': basis}
+
+    lag_basis = ('Отставание минус опережение: дни между срезом и днём достижения текущего физического '
+        'объёма по плану ГПР. Плюс — отставание, минус — опережение. Это не дни после срока ГПР. '
+        'Последний учтённый объём КС сохраняется до среза; это не подтверждение ежедневного производства.')
+    calendar_basis = ('От окончания этой позиции по ГПР до среза: '+str(row.get('finish') or '')+' → '+str(cut)+
+        '. Юридический срок договора не подставляется. ')
+    if lag is not None:
+        current = measure('physical_plan_day_deviation', lag,
+            ('Отставание по объёму: ' if lag > 0 else 'Опережение по объёму: ' if lag < 0 else 'По объёму: ')+
+            format(abs(lag), 'g')+' дн.', lag_basis)
+    elif elapsed and not complete:
+        current = measure('gpr_deadline_elapsed_incomplete' if incomplete else 'gpr_deadline_elapsed_unconfirmed',
+            elapsed, 'Срок прошёл '+str(elapsed)+' дн.; '+
+            ('объём по КС не завершён' if incomplete else 'завершение по КС не подтверждено'),
+            calendar_basis+('Принятый физический объём меньше полного объёма РДС.' if incomplete else
+                'Физическое завершение неизвестно. '+('Учтённый ноль по загруженным КС не означает отсутствие работ.'
+                    if credited_zero else audit_reason)))
+    else:
+        current = measure('unknown', None, 'Отставание по объёму не определено',
+            (row.get('comments') or {}).get('day_deviation') or audit_reason)
+        if finish and day and not complete:
+            current['text'] = ('Срок ГПР сегодня' if day == finish else 'Срок ГПР ещё не наступил')+\
+                '; завершение по КС не подтверждено'
+            current['basis'] += ' '+calendar_basis
+
+    value = row.get('forecast_finish')
+    kind = 'actual' if row.get('forecast_kind') == 'actual' else 'forecast'
+    if _day(value):
+        date_text = _day(value).strftime('%d.%m.%Y')
+        ending = measure(kind, value, ('Факт: ' if kind == 'actual' else 'Прогноз: ')+date_text,
+            (row.get('comments') or {}).get('forecast_finish') or '')
+    else:
+        zero = credited_zero or row.get('fact_quantity') == 0
+        reason = ('Нет подтверждённого положительного темпа; при нулевом учтённом объёме дата '
+            'завершения из плана не выводится.' if zero else
+            (row.get('comments') or {}).get('forecast_finish') or audit_reason)
+        if not incomplete and not complete:
+            reason += ' '+audit_reason
+        ending = measure('unknown', None,
+            'Прогноз даты не определён: нет подтверждённого темпа' if zero else
+            'Дата завершения не определена', reason)
+
+    point_delay = row.get('forecast_delay_days')
+    if ending['value'] and _numeric(point_delay):
+        delay = measure('actual' if kind == 'actual' else 'forecast', point_delay,
+            ('Задержка факта: ' if kind == 'actual' else 'Задержка прогноза: ')+format(point_delay, 'g')+' дн.',
+            (row.get('comments') or {}).get('forecast_delay_days') or '')
+    elif elapsed and not complete:
+        delay = measure('ks_quantity_lower_bound' if incomplete else 'ks_closure_lower_bound', elapsed,
+            'Не менее '+str(elapsed)+' дн.'+(' по незакрытому объёму КС' if incomplete else
+                ' без подтверждения завершения по КС'), calendar_basis+
+            ('Учтённый по КС объём меньше полного объёма РДС; подтверждения полного завершения по КС нет. '
+                'Это нижняя граница периода после срока без полного закрытия по КС, а не доказанная физическая просрочка. '
+                'Последний учтённый объём сохраняется до среза без подтверждения новых работ; дата окончания не определена.'
+             if incomplete else 'Нижняя граница периода после срока без подтверждения завершения по КС. '
+                'Она не доказывает физическую просрочку и не задаёт дату будущего окончания.'))
+    else:
+        delay = measure('unknown', None, 'Задержка к сроку ГПР не определена',
+            'Нет подтверждённой даты завершения или прогноза; будущий плановый срок не является просрочкой.')
+    return {'schema': SCHEDULE_REPORTING_SCHEMA, 'cut': cut,
+            'gpr_finish': finish.isoformat() if finish else None,
+            'gpr_deadline_elapsed_days': elapsed, 'earned_plan_day_deviation': lag,
+            'completion_state': completion, 'credited_zero': credited_zero,
+            'current': current, 'finish': ending, 'delay': delay}
 
 
 def build(listed: dict) -> dict:
@@ -288,16 +386,26 @@ def build(listed: dict) -> dict:
                     row['forecast_delay_days']=(dt.date.fromisoformat(forecast['finish'])-dt.date.fromisoformat(row['finish'])).days
                     row['forecast_kind']='physical_remaining_forecast'
                     comments['forecast_finish']=comments['forecast_delay_days']=reporting.forecast_text(forecast)
+            if row['fact_quantity'] == 0:
+                # A zero volume can establish physical lag when evidenced, but
+                # it cannot establish a positive pace or a point finish date.
+                row['forecast_finish'] = row['forecast_delay_days'] = None
+                row.pop('forecast_kind', None)
+                comments['forecast_finish'] = comments['forecast_delay_days'] = \
+                    'Прогноз даты не определён: нет подтверждённого положительного темпа выполнения.'
             if row['fact_quantity'] is None:
                 comments['fact_quantity'] = row['physical_audit']['reason']
             report = _ks_reporting(row, fact, identity, observed, unread.get(identity), reviewed, identity not in nonleaf)
             if report is not None:
                 row['ks_reporting'] = report
+            row['schedule_reporting'] = _schedule_reporting(row, cut, full_schedule_link=(
+                len(targets) == 1 and targets[0].get('share') == 1 and source_codes[targets[0]['code']] == 1))
             rows.append(row)
     return {'layout': LAYOUT, 'available': True, 'cut': cut, 'rows': rows, 'headings': headings,
             'estimate_title': document.get('title') or '', 'estimate_sha256': document['sha256'],
             'source': fact.get('source'), 'source_note': fact.get('source_note') or '',
             'ks_reporting': {'schema': KS_REPORTING_SCHEMA, 'notice': KS_REPORTING_NOTICE},
+            'schedule_reporting': {'schema': SCHEDULE_REPORTING_SCHEMA, 'notice': SCHEDULE_REPORTING_NOTICE},
             'date_assumption': schedule.get('assumption') or '',
             'plan_assumption': listed['plan'].get('assumption') or '',
             'remaining_start': current.get('start'),
