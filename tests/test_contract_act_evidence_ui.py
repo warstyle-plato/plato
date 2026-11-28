@@ -73,7 +73,11 @@ def test_excel_qualifies_document_totals_in_comments_and_preserves_all_sixteen_r
     if no_gpr:
         # Guarded deviation formulas remain editable, but a missing plan must
         # still download as unknown rather than as -fact or a fabricated zero.
-        assert all(values.cell(header+1, column).value is None for column in (4,5,6,7,10,11,13,14,15,16))
+        assert all(values.cell(header+1, column).value is None for column in (4,5,6,7,10,11,13))
+        assert [values.cell(header+1, column).value for column in (14,15,16)] == [
+            'Отставание по объёму не определено', 'Дата завершения не определена',
+            'Задержка к сроку ГПР не определена']
+        assert all(values.cell(header+1, column).number_format == 'General' for column in (14,15,16))
         assert all(sheet.cell(header+1, column).data_type == 'f' for column in (10,13))
         assert all(sheet.cell(header+1, column).comment for column in (4,5,6,7,10,11,13,14,15,16))
     assert not any(value in ('Итого по документам', 'Количество актов', 'Сумма прочитанных итогов')
