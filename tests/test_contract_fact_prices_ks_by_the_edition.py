@@ -258,7 +258,7 @@ def test_a_month_before_the_first_fact_shows_zero_and_the_plan_stays_reached(car
             page.locator('#cut').fill(cut)
             page.locator('#contractsTab').click()
             page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
-        page.locator('#contractExecution > summary').click()
+            page.locator('#contractExecution > summary').click()
             first=page.locator('#contractComparisonRows tr[data-comparison-code="1.1"]')
             expect(first.locator('[data-label="Факт"]')).to_contain_text(actual)
             expect(first.locator('[data-label="План на дату"]')).to_have_text('0,375 м3')
