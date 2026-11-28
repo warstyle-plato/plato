@@ -72,6 +72,81 @@ def _image_pdf(data: bytes) -> bytes:
         return output.getvalue()
 
 
+def _native_pdf_lines(page) -> str:
+    """Keep native blocks, joining fragments on the same baseline into lines."""
+    import pymupdf
+    import xml.etree.ElementTree as ET
+    native = page.get_text("text") or ""
+    document_processing.check()
+    # Do not expand a large layer into a glyph XML tree. The ordinary native
+    # layer still follows the existing document-text budget downstream.
+    if len(native) > DOCUMENT_TEXT_BUDGET:
+        return native
+    xml = page.get_text("xml", flags=pymupdf.TEXTFLAGS_TEXT)
+    document_processing.check()
+    tree = ET.fromstring(xml)
+    blocks = []
+    for block in tree.findall("./block"):
+        document_processing.check()
+        fragments = []
+        for line in block.findall("./line"):
+            if line.get("dir", "1 0") != "1 0":
+                return native
+            chars = line.findall(".//char")
+            if not chars:
+                continue
+            text = []
+            for index, char in enumerate(chars):
+                value = char.get("c", "")
+                # MuPDF flags512 marks an inserted gap, not a PDF character.
+                # Suppress only such a gap inside a literal comma decimal;
+                # preserve explicit source spaces and all source glyphs.
+                if (value.isspace() and int(char.get("flags", "0")) & 512
+                        and index and index+1 < len(chars)
+                        and chars[index-1].get("c") == ","
+                        and chars[index+1].get("c", "").isdigit()):
+                    continue
+                text.append(value)
+            fragments.append((float(chars[0].get("y")), float(chars[0].get("x")), "".join(text)))
+        rows = []
+        for y, x, text in sorted(fragments):
+            if not rows or y-rows[-1][0] > 1.0:
+                rows.append([y, []])
+            rows[-1][1].append((x, text))
+        rendered = []
+        for _, parts in rows:
+            row = ""
+            for _, part in sorted(parts, key=lambda item: item[0]):
+                part = part.strip()
+                if not part:
+                    continue
+                join = (not row or part[0] in ",;:.!?²³)/" or row.endswith(("(", "/")))
+                row += ("" if join else " ")+part
+            rendered.append(row)
+        blocks.append("\n".join(rendered))
+    return "\n\n".join(blocks)
+
+
+def _native_pdf_text(data: bytes, page_index: int) -> str:
+    """Read the existing page layer with the already installed second reader."""
+    document_processing.check()
+    try:
+        import pymupdf
+        document = pymupdf.open(stream=data, filetype="pdf")
+        try:
+            document_processing.check()
+            text = _native_pdf_lines(document[page_index])
+            document_processing.check()
+            return text
+        finally:
+            document.close()
+    except (document_processing.Cancelled, document_processing.Expired):
+        raise
+    except Exception as exc:
+        logging.warning("document_intake: alternate PDF layer unavailable (%s)", type(exc).__name__)
+        return ""
+
+
 def extract_text(data: bytes, filename: str = "",
                  recognize: bool = True) -> dict[str, Any]:
     """Текст документа и честный ответ, если его там нет.
@@ -130,6 +205,11 @@ def extract_text(data: bytes, filename: str = "",
             layer = ""
         document_processing.check()
         sparse = len(re.sub(r"\s", "", layer)) < MIN_CHARS_PER_PAGE
+        if sparse:
+            native = _native_pdf_text(data, index - 1)
+            if len(re.sub(r"\s", "", native)) >= MIN_CHARS_PER_PAGE:
+                layer = native
+                sparse = False
         item = {"page": index, "status": "text", "text": layer,
                 "needs_recognition": sparse}
         if sparse:

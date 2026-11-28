@@ -34,11 +34,72 @@ def _flat(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
 
+def _area_basis(quote: str, number: re.Match, unit_end: int, whole_house_marks) -> str:
+    """Bind area labels to this amount, without borrowing a neighbour's label."""
+    previous, following = 0, len(quote)
+    for other in _NUMBER.finditer(quote):
+        unit = _UNIT.match(quote[other.end():])
+        if unit is None or _dimension(unit.group()) != "area":
+            continue
+        end = other.end()+unit.end()
+        if end <= number.start():
+            previous = max(previous,end)
+        elif other.start() >= unit_end:
+            following = min(following,other.start())
+    before = quote[previous:number.start()]
+    prefix = re.split(r"[;|]",before)[-1]
+    # A label immediately following the preceding amount's dash belongs to
+    # that amount. Without a separating clause its ownership is ambiguous.
+    if previous and not re.search(r"[;|]",before) and re.match(r"\s*[—–:=\-(]",prefix):
+        prefix = ""
+    after = quote[unit_end:following]
+    # With no following quantity, every remaining label can qualify this
+    # amount, regardless of punctuation. With a following quantity, keep only
+    # an explicitly separated preceding clause, never the next amount's label.
+    postfix = after if following == len(quote) else (
+        re.split(r"[;|]",after)[0] if re.search(r"[;|]",after) else "")
+    explicit_postfix = bool(re.match(r"\s*[—–:=\-(]",postfix))
+
+    def label_basis(label):
+        text = _flat(label)
+        if not text:
+            return ""
+        saleable = bool(re.search(
+            r"(?:продаваем[а-яё]*|реализуем[а-яё]*)\s+(?:[а-яё]+\s+){0,2}площад[а-яё]*"
+            r"|площад[а-яё]*\s+(?:продаваем[а-яё]*|реализуем[а-яё]*)",text))
+        gross = bool(re.search(r"\b(?:гнс|спп)\b",text))
+        project = bool(re.search(r"\b(?:гнс|спп|площад[а-яё]*)\s+(?:в\s+гнс\s+)?(?:всего\s+)?проект[а-яё]*",text))
+        house = any(mark in text for mark in whole_house_marks)
+        apartment = bool(re.search(r"\bквартир[а-яё]*",text))
+        if saleable:
+            return "saleable_area"
+        if project:
+            return "unscoped_project_area"
+        if house:
+            return "residential_house"
+        if apartment:
+            return "apartments_gns"
+        return "unscoped_project_area" if gross else ""
+
+    prefix_basis, postfix_basis = label_basis(prefix), label_basis(postfix)
+    bases = {basis for basis in (prefix_basis,postfix_basis) if basis}
+    if len(bases) > 1:
+        return "ambiguous_area_basis"
+    if prefix_basis:
+        return prefix_basis
+    # Inspecting an unmarked suffix for contradictions must not newly admit
+    # an area whose only positive scope appears in an uncertain trailing phrase.
+    if explicit_postfix or postfix_basis == "saleable_area":
+        return postfix_basis or "unscoped_project_area"
+    return "unscoped_project_area"
+
+
 def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, Any]:
     import document_intake as di
 
     body = _flat(document.get("text"))
     fields, refused = [], list(extraction.get("unverified") or [])
+    notes = list(extraction.get("notes") or [])
     grouped: dict[str, list[dict[str, Any]]] = {}
     for item in extraction.get("fields") or []:
         row = dict(item)
@@ -69,6 +130,7 @@ def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, 
                 # Read the source number WITH ITS OWN unit. A model-provided
                 # unit cannot turn the source's 400 RUB into 400 million RUB.
                 matched = False
+                source_match = None
                 for match in _NUMBER.finditer(quote):
                     suffix_match = _UNIT.match(quote[match.end():])
                     suffix = suffix_match.group() if suffix_match else ""
@@ -87,9 +149,37 @@ def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, 
                     if (not error and number is not None and math.isfinite(number)
                             and math.isclose(number, value, rel_tol=1e-10, abs_tol=1e-8)):
                         matched = True
+                        source_match = match
+                        source_unit_end = match.end()+suffix_match.end()
                         break
                 if not matched:
                     why = "число или его единица не совпадает с цитатой"
+        if not why and key in {"apartments_gns_sqm", "residential_spp_sqm"}:
+            kind = ""
+            basis = _area_basis(quote,source_match,source_unit_end,di._WHOLE_HOUSE_MARKS)
+            if basis == "saleable_area":
+                kind = "saleable_area"
+                why = ("Это продаваемая площадь, а поле модели принимает ГНС. Перенос не выполнен; "
+                       "исходное значение сохранено в примечаниях.")
+            elif basis == "ambiguous_area_basis":
+                kind = basis
+                why = ("Подписи выбранной площади противоречат друг другу. Перенос не выполнен; "
+                       "исходное значение сохранено в примечаниях.")
+            elif basis != ("residential_house" if key == "residential_spp_sqm" else "apartments_gns"):
+                kind = "unscoped_project_area"
+                why = ("Подпись выбранного числа не подтверждает назначение площади для этого поля. "
+                       "Перенос не выполнен; исходное значение сохранено в примечаниях.")
+            if kind:
+                from teaser_card import quote_page
+                page = quote_page(str(document.get("text") or ""), quote)
+                row["refusal_code"] = kind
+                row["source_fact"] = {"kind": kind, "value": row.get("value"),
+                    "unit": row.get("unit"), "quote": quote, "page": page}
+                row["page"] = page
+                note = (f"В источнике, стр. {page}" if page is not None else "В источнике")
+                note += f": «{quote}». {why}"
+                if note not in notes:
+                    notes.append(note)
         if why:
             refused.append({**row, "reason": why})
         else:
@@ -150,5 +240,5 @@ def validate(extraction: dict[str, Any], document: dict[str, Any]) -> dict[str, 
         elif quote and _flat(quote) in body:
             item["source_quote"] = quote
         questions.append(item)
-    return {**extraction, "fields": fields, "conflicts": conflicts,
+    return {**extraction, "fields": fields, "conflicts": conflicts, "notes": notes,
             "questions": questions, "unverified": refused}
