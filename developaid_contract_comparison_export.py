@@ -18,10 +18,10 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
 
-from developaid_contract_rds import LAYOUT, FIELDS, reporting_row
+from developaid_contract_rds import LAYOUT, FIELDS, SCHEDULE_REPORTING_SCHEMA, reporting_row
 from developaid_contract_fact import _money
 
-SCHEMA = "contract-rds-plan-fact-export-v9"
+SCHEMA = "contract-rds-plan-fact-export-v10"
 MAX_ROWS = 10_000
 MAX_XLSX_BYTES = 8 * 1024 * 1024
 FILTERS = {"all": "Все работы и поставки", "behind": "Отстают от плана", "ahead": "Опережают план",
@@ -154,8 +154,8 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     book.properties.creator = 'DevelopAid'
     labels = ('№', 'Работа из РДС', 'Ед. изм.', 'Начало ГПР', 'Конец ГПР', 'План, объём',
               'План, % объёма РДС', 'Факт по КС, объём', 'Факт по КС, % объёма РДС', 'Отклонение, объём',
-              'План, ₽', 'Факт по КС, ₽', 'Отклонение, ₽', 'Отставание на дату среза, дни',
-              'Окончание: прогноз / факт', 'Отставание к сроку ГПР, дни')
+              'План, ₽', 'Факт по КС, ₽', 'Отклонение, ₽', 'На срез: отставание по объёму / дни после срока ГПР',
+              'Окончание: прогноз / факт / причина', 'К сроку ГПР: задержка / нижняя граница, дни')
     label = meta.get('label') or {}
 
     def put(row, column, value, comment=''):
@@ -182,6 +182,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     sheet['A3'].comment = Comment(_text('\n'.join(filter_none([
         comparison.get('source_note'), comparison.get('confirmation', {}).get('message'),
         (comparison.get('ks_reporting') or {}).get('notice'),
+        (comparison.get('schedule_reporting') or {}).get('notice'),
         'Пустая ячейка означает неизвестное значение; подтверждённый ноль записан числом 0.',
         'Файл содержит все позиции действующей РДС и не зависит от фильтров таблицы ГПР.',
         *comparison.get('data_gaps', [])]))), 'DevelopAid')
@@ -199,7 +200,7 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
             cell.font = Font(name='Calibri', size=10, bold=True, color='FFFFFF')
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
     sheet.row_dimensions[5].height = 26
-    sheet.row_dimensions[6].height = 42
+    sheet.row_dimensions[6].height = 60
     sheet['B6'].comment = Comment(_text('Действующая РДС: '+comparison.get('estimate_title', '')+
                                       '. Позиции и их порядок сохранены из этой редакции.'), 'DevelopAid')
     date_comment = comparison.get('date_assumption') or 'Даты взяты из отдельной принятой строки ГПР.'
@@ -220,22 +221,30 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
     if evidence.get('total') is not None:
         fact_comment += ' Итоги загруженных актов по самим документам: '+_money(_number(evidence['total']))+'. Это отдельная сверка, а не факт каждой позиции по РДС.'
     sheet['L6'].comment = Comment(_text(fact_comment), 'DevelopAid')
-    sheet['N6'].comment = Comment('Отставание минус опережение по принятому расчёту ГПР: плюс — отставание, минус — опережение. Это не дни юридической просрочки. Без отдельного показателя позиции ячейка пустая.', 'DevelopAid')
+    sheet['N6'].comment = Comment('По подтверждённому физическому объёму: отставание минус опережение; плюс — отставание, минус — опережение. '
+        'Если такой показатель неизвестен, но срок ГПР прошёл, показаны дни после срока с прямой подписью о неподтверждённом завершении по КС. '
+        'Эти дни не подменяют физическое отставание и не являются юридической просрочкой договора.', 'DevelopAid')
     for column in ('G6', 'I6'):
         sheet[column].comment = Comment('100% — полное физическое количество этой позиции РДС. '
             'План и факт делятся каждый на это количество, не на рубли и не друг на друга. '
             'Перевыполнение может быть больше 100%; без положительного количества РДС процент неизвестен.', 'DevelopAid')
     sheet['O6'].comment = Comment('Незавершённая работа: условный прогноз существующего расчёта ГПР с сохранением текущего отставания. '
         'Завершённая: фактический конец последнего периода КС. Только отдельная физическая позиция с единственной полной связью ГПР; '
-        'без такого источника ячейка пустая. Это не обещанная дата. '+date_comment, 'DevelopAid')
+        'без такого источника указана причина неизвестной даты. При нулевом объёме положительный темп и дата не выводятся из плана. '
+        'Это не обещанная дата. '+date_comment, 'DevelopAid')
     sheet['P6'].comment = Comment('Дата в предыдущей графе минус окончание этой позиции по ГПР: плюс — задержка, минус — раньше срока. '
-        'Это отдельный показатель от опережения/отставания на дату среза и от юридической просрочки договора.', 'DevelopAid')
+        'Без прогноза после срока может быть показана нижняя граница. Подпись «без подтверждения по КС» означает период после срока без '
+        'подтверждённого завершения, а не доказанную физическую просрочку. Нижняя граница не задаёт дату окончания. '
+        'Это отдельный показатель от опережения/отставания по объёму и от юридической просрочки договора.', 'DevelopAid')
     headings = {}
     for heading in comparison.get('headings') or []:
         headings.setdefault(heading['before_position'], []).append(heading)
     excel_row = 6
     for ordinal, original in enumerate(rows):
         source = reporting_row(original)
+        schedule_report = source.get('schedule_reporting') or {}
+        if schedule_report.get('schema') != SCHEDULE_REPORTING_SCHEMA:
+            schedule_report = {}
         for heading in headings.get(ordinal, []):
             excel_row += 1
             put(excel_row, 1, heading.get('number') or '')
@@ -248,11 +257,15 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
         excel_row += 1
         for column, field in enumerate(FIELDS, 1):
             value = source.get(field)
-            if field in ('start', 'finish', 'forecast_finish'):
+            measure = schedule_report.get({'day_deviation': 'current', 'forecast_finish': 'finish',
+                                           'forecast_delay_days': 'delay'}.get(field)) or {}
+            if measure:
+                value = measure.get('value') if measure.get('value') is not None else measure.get('text')
+            if field in ('start', 'finish') or (field == 'forecast_finish' and not (measure and measure.get('kind') == 'unknown')):
                 value = _date(value)
-            elif column >= 6:
+            elif column >= 6 and not (measure and measure.get('kind') == 'unknown'):
                 value = _number(value)
-            comment = (source.get('comments') or {}).get(field) or ''
+            comment = measure.get('basis') or (source.get('comments') or {}).get(field) or ''
             if column in (4, 5) and value is not None:
                 comment = (comment+' '+date_comment).strip()
             cell = put(excel_row, column, value, comment)
@@ -266,20 +279,32 @@ def workbook(meta: dict, comparison: dict, rows: list[dict], *, query: str = "",
                 cell.number_format = '0.0%;[Red]-0.0%;0.0%'
             elif field == 'day_deviation':
                 cell.number_format = '[Red]+0;-0;0'
+                if measure.get('kind') in ('gpr_deadline_elapsed_incomplete', 'gpr_deadline_elapsed_unconfirmed'):
+                    suffix = 'объём по КС не завершён' if measure['kind'].endswith('_incomplete') else 'завершение по КС не подтверждено'
+                    cell.number_format = '"Срок прошёл "0" дн.; '+suffix+'"'
             elif field == 'forecast_delay_days':
                 cell.number_format = '[Red]+0;-0;0'
-        for column,formula in {
+                if measure.get('kind') in ('ks_quantity_lower_bound', 'ks_closure_lower_bound'):
+                    suffix = ' по незакрытому объёму КС' if measure['kind'] == 'ks_quantity_lower_bound' else ' без подтверждения завершения по КС'
+                    cell.number_format = '"не менее "0" дн.'+suffix+'"'
+            if measure.get('kind') == 'unknown':
+                cell.number_format = 'General'
+        formulas = {
             10:f'=IF(COUNT(F{excel_row},H{excel_row})<2,"",H{excel_row}-F{excel_row})',
             13:f'=IF(COUNT(K{excel_row},L{excel_row})<2,"",L{excel_row}-K{excel_row})',
             16:f'=IF(OR(O{excel_row}="",E{excel_row}=""),"",O{excel_row}-E{excel_row})'
-        }.items():
+        }
+        if schedule_report and schedule_report['delay']['kind'] not in ('actual', 'forecast'):
+            formulas.pop(16)
+        for column,formula in formulas.items():
             sheet.cell(excel_row,column,formula)
             if column in (10,13):
                 sheet.cell(excel_row,column).comment = Comment('Учтённый по КС факт минус план, когда оба числа определены. Непредъявленная позиция прочитанных КС-2 имеет учтённый факт 0; непрочитанный или неоднозначный источник остаётся неизвестным.','DevelopAid')
         from developaid_contract_hierarchy import style_row
         style_row(sheet, excel_row, source.get('number'))
-        sheet.row_dimensions[excel_row].height = min(78, max(30, 14*(len(str(source.get('name') or ''))//48+1)))
-    widths = (9, 58, 11, 13, 13, 14, 13, 14, 13, 15, 17, 17, 17, 14, 18, 16)
+        sheet.row_dimensions[excel_row].height = min(90, max(60 if schedule_report else 30,
+            14*(len(str(source.get('name') or ''))//48+1)))
+    widths = (9, 58, 11, 13, 13, 14, 13, 14, 13, 15, 17, 17, 17, 26, 30, 28)
     for column, width in enumerate(widths, 1):
         sheet.column_dimensions[get_column_letter(column)].width = width
     sheet.freeze_panes = None
