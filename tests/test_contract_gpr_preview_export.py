@@ -218,3 +218,66 @@ def test_native_preview_rechecks_sources_after_book_generation(card, monkeypatch
     if change == 'workforce':
         assert 'численности' in response.json()['detail']
     assert gpr.events(card[0]) == []
+
+
+def test_native_v5_completed_preview_cache_cannot_reenter_and_fresh_nonce_builds_once(card, monkeypatch):
+    import main
+    import developaid_contract_control as control
+    import developaid_management_report_jobs as jobs
+    import developaid_monitor as monitor
+    legacy_revision = 'contract-gpr-source-material-components-v5'
+    current_revision = control.CALCULATION_REVISION
+    assert current_revision != legacy_revision
+    pending_card(card)
+    monkeypatch.setenv('DEVELOPAID_ADMIN_KEY', KEY)
+    monkeypatch.setattr(contracts, 'build', lambda *args, **kwargs: {'rows': [copy.deepcopy(ROW)], 'cut': CUT})
+    client = TestClient(main.app)
+    base = {'key': KEY, 'session': 'synthetic-owner', 'project': PROJECT, 'cut': CUT, 'contract_id': ROW['id']}
+    old_ticket, new_ticket = 'a'*32, 'b'*32
+    # Retain a completed native v5 calculation with the old export policy:
+    # its visible preview existed, but the download required an active GPR.
+    with monkeypatch.context() as legacy:
+        legacy.setattr(control, 'CALCULATION_REVISION', legacy_revision)
+        legacy.setattr(export, 'bind_snapshot', lambda *args, **kwargs: {
+            'available': False, 'detail': 'Действующий ГПР не определён. Проверьте документы договора.'})
+        old = finished(client, client.post('/monitor/contracts/documents', json={**base, 'ticket': old_ticket}))
+    assert old['ok'] and not old['pending']
+    assert old['contract_calculation_revision'] == legacy_revision
+    assert not old['gpr_export']['available'] and old['gpr']['preview']
+    store = jobs.Store(monitor._SNAPSHOT_DIR/'.cumulative_jobs')
+    old_bytes = {suffix: store._path(old_ticket, suffix).read_bytes() for suffix in ('json', 'result')}
+    source_bytes = {p.name: p.read_bytes() for p in card[0].iterdir() if p.is_file()}
+    assert store._meta(old_ticket)['result_revision'] == legacy_revision
+    assert json.loads(old_bytes['result'])['gpr_export'] == old['gpr_export']
+    native_producer = main.core._monitor_cumulative_execute
+    calls = []
+    def calculate(*args):
+        calls.append(args[0])
+        return native_producer(*args)
+    monkeypatch.setattr(main.core, '_monitor_cumulative_execute', calculate)
+    auth = {'key': KEY, 'session': base['session'], 'ticket': old_ticket}
+    for route, extra in [('result', {}), ('result-part', {'offset': 0})]:
+        refused = client.post('/monitor/contracts/'+route, json={**auth, **extra})
+        assert refused.status_code == 409
+        assert refused.headers['x-monitor-job-error'] == 'calculation_changed'
+    assert download(client, base, {**old, 'gpr_export': {'revision': '0'*64}}).status_code == 409
+    # A retained nonce is immutable, even when its method fingerprint is old.
+    assert client.post('/monitor/contracts/documents', json={**base, 'ticket': old_ticket}).status_code == 409
+    assert calls == []
+    fresh = finished(client, client.post('/monitor/contracts/documents', json={**base, 'ticket': new_ticket}))
+    assert calls == ['documents']
+    assert fresh['contract_calculation_revision'] == current_revision
+    assert store._meta(new_ticket)['result_revision'] == current_revision
+    assert fresh['gpr_export']['schema'] == export.SCHEMA
+    assert fresh['gpr_export']['available'] and fresh['gpr_export']['mode'] == 'preview'
+    assert fresh['gpr_export']['draft'] is True
+    assert fresh['gpr']['source'] is None and fresh['gpr']['schedule'] is None
+    assert fresh['gpr']['preview']['source'] == old['gpr']['preview']['source']
+    assert fresh['gpr']['guard'] == old['gpr']['guard']
+    assert fresh['rds_comparison'] == old['rds_comparison']
+    assert download(client, base, fresh).status_code == 200
+    retried = finished(client, client.post('/monitor/contracts/documents', json={**base, 'ticket': new_ticket}))
+    assert retried == fresh and calls == ['documents']
+    assert {suffix: store._path(old_ticket, suffix).read_bytes() for suffix in old_bytes} == old_bytes
+    assert {p.name: p.read_bytes() for p in card[0].iterdir() if p.is_file()} == source_bytes
+    assert gpr.events(card[0]) == []

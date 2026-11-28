@@ -40,7 +40,7 @@ import datetime as dt
 import developaid_contract_plan as plan
 from developaid_monitor_statement_union import _unit
 
-CALCULATION_REVISION = 'contract-gpr-source-material-components-v5'
+CALCULATION_REVISION = 'contract-gpr-source-material-components-v6'
 
 
 def is_calculation_result(value):
