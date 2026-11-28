@@ -142,6 +142,7 @@ def test_the_card_shows_the_ks6a_fact_and_the_ks2_reconciliation(card, width):  
         _serve(page, [], cut="2026-02-04", acts=fact.acts(REGISTER_ROW))
         page.locator("#contractsTab").click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        page.locator('#contractExecution > summary').click()
         page.locator("#contractComparisonMethodology > details > summary").click()
         facts = page.locator(".contract-fact-audit")
         expect(page.locator("#contractComparisonInfo")).to_contain_text("Факт по накопительной КС-6а.")

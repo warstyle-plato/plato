@@ -139,6 +139,7 @@ def test_confirmation_note_opens_the_existing_upload_picker_without_blocking_the
         _serve(page, [], cut='2026-02-04', acts=fact.acts(row))
         page.locator('#contractsTab').click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        page.locator('#contractExecution > summary').click()
         note = page.locator('.contract-ks2-confirmation')
         expect(note.locator('summary')).to_have_text('Загрузите КС-2 № 1, 2 для подтверждения.')
         expect(page.locator('#contractComparisonInfo')).to_contain_text('Факт по накопительной КС-6а.')

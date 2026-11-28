@@ -27,6 +27,7 @@ def test_a_ks_sum_below_the_estimate_shows_both_sums_and_why(card, width):  # no
         _serve(page, [], cut="2026-02-04", acts=fact.acts(BELOW))
         page.locator("#contractsTab").click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        page.locator('#contractExecution > summary').click()
         page.locator('#contractComparisonMethodology > details > summary').click()
         shown=page.locator('.contract-fact-audit')
         expect(page.locator('.contract-comparison-money')).to_contain_text('факт 4 000 ₽')
