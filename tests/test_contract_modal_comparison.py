@@ -96,6 +96,7 @@ def test_plan_unknown_fact_and_filter_remain_visible_in_the_modal(card,width):  
         _serve(page,listed,[])
         page.locator('#contractsTab').click()
         page.locator(f'tr[data-contract-id="{CONTRACT}"] .contract-open').click()
+        page.locator('#contractExecution > summary').click()
         page.locator('#contractComparisonFilter').select_option('unknown')
         rows=page.locator('#contractComparisonRows tr[data-comparison-code]')
         expect(rows).to_have_count(len(listed['comparison']['lines']))
